@@ -1,48 +1,816 @@
 'use strict';
-var SERVICE_MAP={'\u0430\u0431\u043E\u043D\u0435\u043D\u0442\u0441\u043A\u0438\u0439 \u043D\u043E\u043C\u0435\u0440':'subscriber_number','\u0442\u0430\u0440\u0438\u0444\u043D\u044B\u0439 \u043F\u043B\u0430\u043D':'tariff_plan','\u0430\u0431\u043E\u043D\u0435\u043D\u0442\u0441\u043A\u0430\u044F \u043F\u043B\u0430\u0442\u0430 \u043F\u043E \u0442\u0430\u0440\u0438\u0444\u043D\u043E\u043C\u0443 \u043F\u043B\u0430\u043D\u0443 (\u043F\u043E\u0441\u0443\u0442\u043E\u0447\u043D\u043E\u0435 \u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435)':'plan_fee','\u0430\u0431\u043E\u043D\u0435\u043D\u0442\u0441\u043A\u0430\u044F \u043F\u043B\u0430\u0442\u0430 \u043F\u043E \u0442\u0430\u0440\u0438\u0444\u043D\u043E\u043C\u0443 \u043F\u043B\u0430\u043D\u0443':'plan_fee','\u0443\u0434\u0435\u0440\u0436\u0430\u043D\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u0430':'call_hold','\u0430\u0431\u043E\u043D\u0435\u043D\u0442\u0441\u043A\u0430\u044F \u043F\u043B\u0430\u0442\u0430 \u0437\u0430 \u0443\u0441\u043B\u0443\u0433\u0443 \u0437\u0430\u0449\u0438\u0442\u0430 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u043E\u0432':'employee_protection_fee','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_outgoing_calls','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u043D\u0430 \u043D\u043E\u043C\u0435\u0440\u0430 \u0434\u0440\u0443\u0433\u0438\u0445 \u043E\u043F\u0435\u0440\u0430\u0442\u043E\u0440\u043E\u0432 \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_other_operators','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432\u043D\u0443\u0442\u0440\u0438 \u0441\u0435\u0442\u0438 \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_onnet_calls','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u043C\u0435\u0436\u0434\u0443\u0433\u043E\u0440\u043E\u0434\u043D\u044B\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_intercity_calls','\u043C\u043E\u0431\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442 \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_mobile_internet','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u044F \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_sms','\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_incoming_calls','\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u044F \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u043C \u0440\u0435\u0433\u0438\u043E\u043D\u0435':'home_incoming_sms','\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_incoming_calls','\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u044F \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_incoming_sms','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_outgoing_calls','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u043C\u0435\u0436\u0434\u0443\u0433\u043E\u0440\u043E\u0434\u043D\u044B\u0435 \u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_intercity_calls','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u044F \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_sms','\u043C\u043E\u0431\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442 \u0432 \u043F\u0443\u0442\u0435\u0448\u0435\u0441\u0442\u0432\u0438\u044F\u0445 \u043F\u043E \u0420\u043E\u0441\u0441\u0438\u0438':'travel_mobile_internet','\u0438\u0442\u043E\u0433\u043E \u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u043E':'total_charged','\u0432 \u0442.\u0447. \u043D\u0434\u0441':'vat_included','\u0432 \u0442\u043E\u043C \u0447\u0438\u0441\u043B\u0435 \u043D\u0434\u0441 (22%)':'vat_included','\u043C\u0430\u0441\u0441\u043E\u0432\u044B\u0435 \u0432\u044B\u0437\u043E\u0432\u044B':'mass_calls','\u0433\u043E\u043B\u043E\u0441\u043E\u0432\u0430\u044F \u043F\u043E\u0447\u0442\u0430':'voicemail','\u0430\u0432\u0442\u043E\u043E\u0442\u0432\u0435\u0442\u0447\u0438\u043A':'auto_answer','\u0437\u0432\u043E\u043D\u043E\u043A \u0437\u0430 \u0441\u0447\u0451\u0442 \u0434\u0440\u0443\u0433\u0430':'friend_call','\u0434\u043E\u0441\u0442\u0430\u0432\u043A\u0430 \u0441\u0447\u0451\u0442\u0430 \u043D\u0430 email':'email_invoice','\u043C\u043E\u0431\u0438\u043B\u044C\u043D\u044B\u0439 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442 \u0432 \u043D\u0430\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'national_roaming_internet','\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u043A\u0430 \u043D\u043E\u043C\u0435\u0440\u0430':'number_blocking','\u043E\u0444\u0438\u0441 \u0432 \u043A\u0430\u0440\u043C\u0430\u043D\u0435':'office_in_pocket','\u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 sms':'voice_sms','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 \u043C\u0435\u0436\u0434\u0443\u0433\u043E\u0440\u043E\u0434\u043D\u044B\u0435 \u0432\u044B\u0437\u043E\u0432\u044B':'international_calls','\u0438\u0441\u0445\u043E\u0434\u044F\u0449\u0438\u0435 sms \u0432 \u043C\u0435\u0436\u0434\u0443\u043D\u0430\u0440\u043E\u0434\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'international_roaming_sms','\u043F\u0440\u043E\u0447\u0438\u0435 \u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u0438\u044F':'misc_charges','\u043C\u0438.\u0434\u0435\u0442\u0430\u043B\u0438\u0437\u0430\u0446\u0438\u044F \u0441\u0447\u0435\u0442\u0430':'mi_detailing','\u0432\u0445\u043E\u0434\u044F\u0449\u0438\u0435 sms \u0432 \u043C\u0435\u0436\u0434\u0443\u043D\u0430\u0440\u043E\u0434\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'incoming_sms_intl_roaming','\u0432\u044B\u0437\u043E\u0432\u044B \u0432 \u043C\u0435\u0436\u0434\u0443\u043D\u0430\u0440\u043E\u0434\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'calls_intl_roaming','\u0443\u0441\u043B\u0443\u0433\u0438 \u043D\u0430\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E\u0433\u043E \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0430':'national_roaming_services','\u0443\u0441\u043B\u0443\u0433\u0438 \u043C\u0435\u0436\u0434\u0443\u043D\u0430\u0440\u043E\u0434\u043D\u043E\u0433\u043E \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0430':'intl_roaming_services','\u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u0438\u044F \u0437\u0430 \u0433\u043E\u043B\u043E\u0441\u043E\u0432\u044B\u0435 \u0443\u0441\u043B\u0443\u0433\u0438 \u0432 \u043D\u0430\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'national_roaming_voice','\u0430\u0431\u043E\u043D\u0435\u043D\u0442\u0441\u043A\u0430\u044F \u043F\u043B\u0430\u0442\u0430 m2m':'m2m_fee','\u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u0438\u044F \u0437\u0430 \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0443 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0439 \u0432 \u043D\u0430\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E\u043C \u0440\u043E\u0443\u043C\u0438\u043D\u0433\u0435':'national_roaming_messages'};
-var META=new Set(['subscriber_number','tariff_plan','total_charged','vat_included']);
-var CAT_OF={home_outgoing_calls:'v',home_other_operators:'v',home_onnet_calls:'v',home_intercity_calls:'v',home_incoming_calls:'v',travel_outgoing_calls:'v',travel_intercity_calls:'v',travel_onnet_russia_calls:'v',travel_other_operators:'v',mass_calls:'v',international_calls:'v',international_roaming_russia_calls:'v',international_roaming_local_calls:'v',friend_call:'v',voicemail:'v',auto_answer:'v',call_hold:'v',calls_intl_roaming:'v',outgoing_calls_intl_roaming:'v',home_mobile_internet:'i',travel_mobile_internet:'i',national_roaming_internet:'i',home_sms:'s',home_incoming_sms:'s',travel_sms:'s',travel_incoming_sms:'s',multimedia_messages:'s',international_roaming_sms:'s',national_roaming_messages:'s',voice_sms:'s',incoming_sms_intl_roaming:'s'};
-var OUT=new Set(['home_outgoing_calls','home_other_operators','home_onnet_calls','home_intercity_calls','travel_outgoing_calls','travel_intercity_calls','travel_onnet_russia_calls','travel_other_operators','mass_calls','international_calls','international_roaming_russia_calls','international_roaming_local_calls','friend_call','calls_intl_roaming','outgoing_calls_intl_roaming','home_mobile_internet','travel_mobile_internet','national_roaming_internet','home_sms','travel_sms','multimedia_messages','international_roaming_sms','national_roaming_messages','voice_sms']);
-var TARIFFS={"140":{minutes:700,sms:300,mb:15000,name:'\u0411\u0435\u0437 \u041F\u0435\u0440\u0435\u043F\u043B\u0430\u0442'},"230":{minutes:1500,sms:500,mb:25000,name:'\u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442'},"400":{minutes:4000,sms:1000,mb:70000,name:'\u0424\u0435\u0434\u0435\u0440\u0430\u043B\u044C\u043D\u044B\u0439'}};
-var DEF_T={minutes:500,sms:200,mb:5000,name:'\u0414\u0440\u0443\u0433\u043E\u0439'};
-var CM={v:{label:'\u041C\u0438\u043D\u0443\u0442\u044B',unit:'\u043C\u0438\u043D',icon:'\uD83D\uDCDE',ck:'minutes'},i:{label:'\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442',unit:'\u041C\u0411',icon:'\uD83C\uDF10',ck:'mb'},s:{label:'SMS',unit:'\u0448\u0442',icon:'\u2709\uFE0F',ck:'sms'}};
-var MO=['\u042F\u043D\u0432','\u0424\u0435\u0432','\u041C\u0430\u0440','\u0410\u043F\u0440','\u041C\u0430\u0439','\u0418\u044E\u043D','\u0418\u044E\u043B','\u0410\u0432\u0433','\u0421\u0435\u043D','\u041E\u043A\u0442','\u041D\u043E\u044F','\u0414\u0435\u043A'];
-var HIST=6,allSubs=[],rendered=[],names={},curF='all',curS='overpay',sortD='desc';
-document.addEventListener('DOMContentLoaded',function(){var $=function(id){return document.getElementById(id)};if($('workersBtn'))$('workersBtn').onclick=function(){$('workersFile').click()};if($('workersFile'))$('workersFile').onchange=function(e){if(e.target.files[0])loadWorkers(e.target.files[0])};if($('billsBtn'))$('billsBtn').onclick=function(){$('billsFile').click()};if($('billsFile'))$('billsFile').onchange=function(e){if(e.target.files[0])uploadCSV(e.target.files[0])};if($('demoBtn'))$('demoBtn').onclick=loadDemoData;if($('searchInput'))$('searchInput').oninput=renderUsers;if($('dynBtn'))$('dynBtn').onclick=function(){var p=$('dynPanel');if(!p)return;var o=p.classList.toggle('open');$('dynBtn').classList.toggle('open',o);var c=$('dynBtn').querySelector('.chev');if(c)c.textContent=o?'\u25BC':'\u25B6';if(o)drawBigChart(false)};if($('dynPanel'))$('dynPanel').onclick=function(){drawBigChart(true)};if($('themeBtn')){$('themeBtn').onclick=function(){var r=document.documentElement;var dk=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&matchMedia('(prefers-color-scheme:dark)').matches);r.setAttribute('data-theme',dk?'light':'dark');localStorage.setItem('theme',dk?'light':'dark')};var sv=localStorage.getItem('theme');if(sv)document.documentElement.setAttribute('data-theme',sv)}document.querySelectorAll('.f').forEach(function(b){b.onclick=function(){document.querySelectorAll('.f').forEach(function(x){x.classList.remove('active')});b.classList.add('active');curF=b.dataset.filter;renderUsers()}});document.querySelectorAll('.s').forEach(function(b){if(b.dataset.sort===curS)b.classList.add('active');b.onclick=function(){if(curS===b.dataset.sort)sortD=sortD==='desc'?'asc':'desc';else{curS=b.dataset.sort;sortD='desc'}document.querySelectorAll('.s').forEach(function(x){x.classList.remove('active')});b.classList.add('active');renderUsers()}});if($('gridView')&&$('tableView')){$('gridView').onclick=function(){setView('grid')};$('tableView').onclick=function(){setView('table')}}if($('settingsBtn'))$('settingsBtn').onclick=function(){$('settingsPanel').classList.toggle('show')};document.addEventListener('click',function(e){if(!e.target.closest('.stoggle')&&!e.target.closest('.spanel')){var sp=$('settingsPanel');if(sp)sp.classList.remove('show')}});var pMap={togKpi:'kpiRow',togRisk:'riskCard',togTop:'topCard',togDyn:'dynBtn',togCards:'usersGrid'};Object.keys(pMap).forEach(function(id){var cb=$(id);if(!cb)return;cb.onchange=function(){var el=$(pMap[id]);if(el)el.style.display=cb.checked?'':'none'}});window.addEventListener('resize',function(){var p=$('dynPanel');if(p&&p.classList.contains('open'))drawBigChart(false)})});
-function uploadCSV(file){showLoad('\u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430\u2026',10);var fd=new FormData();fd.append('file',file);fetch('/api/upload-csv',{method:'POST',body:fd}).then(function(r){return r.ok?r.json():r.json().then(function(e){throw new Error(e.error)})}).then(function(d){showLoad('\u0410\u043D\u0430\u043B\u0438\u0437\u2026',60);curF='all';curS='overpay';sortD='desc';processServer(d)}).catch(function(e){showLoad('\u041E\u0448\u0438\u0431\u043A\u0430: '+e.message,100);setTimeout(hideLoad,3000)})}
-function processServer(data){showLoad('\u041F\u043E\u0441\u0442\u0440\u043E\u0435\u043D\u0438\u0435\u2026',80);var rd={};var entries=Object.entries(data.subscribers);for(var i=0;i<entries.length;i++){var num=entries[i][0],sub=entries[i][1],items=[],pf=sub.planFee||0;for(var j=0;j<sub.items.length;j++){var it=sub.items[j],k=mkey(it.serviceName);if(!k)continue;if(k==='plan_fee'){pf+=it.withDiscount;continue}if(META.has(k))continue;items.push({key:k,cat:CAT_OF[k]||'o',rawVol:it.rawVolume,vol:it.volume,unit:it.unit,noD:it.noDiscount,disc:it.discount,withD:it.withDiscount,name:it.serviceName})}rd[num]={items:items,planFee:pf,planName:sub.planName||'\u0422\u0430\u0440\u0438\u0444 '+Math.round(pf)+'\u20BD'}}buildReport(rd)}
-function mkey(n){var lo=n.toLowerCase();var ks=Object.keys(SERVICE_MAP);for(var i=0;i<ks.length;i++){if(lo.indexOf(ks[i])!==-1)return SERVICE_MAP[ks[i]]}return null}
-function setView(m){document.querySelectorAll('.vw').forEach(function(b){b.classList.remove('active')});var btn=document.getElementById(m==='table'?'tableView':'gridView');if(btn)btn.classList.add('active');var g=document.getElementById('usersGrid');if(g)g.classList.toggle('table-view',m==='table');renderUsers()}
-function loadWorkers(file){var r=new FileReader();r.onload=function(e){names=pw(e.target.result);flashHint('\u0421\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438: '+Object.keys(names).length)};r.readAsText(file,'windows-1251')}
-function pw(t){var m={},lines=t.split(/\r?\n/);for(var i=0;i<lines.length;i++){var l=lines[i].trim();if(!l)continue;var d=l.match(/\d{10,}/);if(!d)continue;var n=d[0].slice(-10);var ps=l.split(/[;,\t]/);for(var j=0;j<ps.length;j++){var p=ps[j].trim();if(p&&!/^\+?\d[\d\s()-]{6,}$/.test(p)){m[n]=p;break}}}return m}
-function buildReport(rd){showLoad('\u0410\u043D\u0430\u043B\u0438\u0437\u2026',70);allSubs=[];var entries=Object.entries(rd);for(var i=0;i<entries.length;i++)allSubs.push(buildRec(entries[i][0],entries[i][1]));showLoad('\u0413\u043E\u0442\u043E\u0432\u043E',100);var ws=document.getElementById('welcomeSection');if(ws)ws.style.display='none';var dt=document.getElementById('dashTop');if(dt)dt.style.display='';var fp=document.getElementById('filtersPanel');if(fp)fp.style.display='flex';updateKPIs();updateRisk();updateTopList();setTimeout(function(){hideLoad();renderUsers()},350)}
-function buildRec(num,data){var pf=data.planFee,pfi=Math.round(pf),tr=TARIFFS[String(pfi)]||DEF_T;var ec=0,cats={v:{cost:0,used:0},i:{cost:0,used:0},s:{cost:0,used:0},o:{cost:0}};for(var i=0;i<data.items.length;i++){var it=data.items[i];ec+=it.withD;var c=it.cat;if(!cats[c])cats[c]={cost:0,used:0};cats[c].cost+=it.withD;if(OUT.has(it.key)){if(c==='v'&&it.unit==='\u043C\u0438\u043D')cats.v.used+=it.vol;else if(c==='i')cats.i.used+=it.vol;else if(c==='s'&&it.unit==='\u0448\u0442')cats.s.used+=it.vol}}var tc=pf+ec,op=ec;var cats2=['v','i','s'].map(function(c){var m=CM[c],lim=tr[m.ck]||0;return{cat:c,label:m.label,unit:m.unit,icon:m.icon,cost:cats[c].cost,used:cats[c].used,limit:lim}});var ou=0;for(var j=0;j<cats2.length;j++)if(cats2[j].cost>cats2[j].limit*0.8)ou++;var opr=pf>0?op/pf:(op>0?1:0);var st='normal';if(op>50)st='danger';else if(op>1)st='warning';var rs=Math.max(0,Math.min(100,Math.round(opr*100+ou*15)));var rnd=sRand(num),mo=[];for(var m=0;m<HIST-1;m++)mo.push(tc*(0.82+rnd()*0.36));mo.push(tc);var avg=0;for(var a=0;a<mo.length;a++)avg+=mo[a];avg/=mo.length;var pv=mo[mo.length-2],tr2=pv>0?((tc-pv)/pv)*100:0;return{number:num,name:names[num]||'',planName:data.planName||'\u0422\u0430\u0440\u0438\u0444 '+pfi+'\u20BD',totalCost:tc,planFee:pf,overpayment:op,categories:cats2,items:data.items,overuse:ou,status:st,riskScore:rs,recommendation:buildRec2(st,op,cats2),monthly:mo,avg:avg,trend:tr2,tariffName:tr.name}}
-function buildRec2(s,op,cats){var p=[];if(s==='danger')p.push('\u041F\u043E\u0432\u044B\u0441\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442: \u043F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 '+mny(op));else if(s==='warning')p.push('\u041F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 '+mny(op)+' \u2014 \u0441\u0442\u043E\u0438\u0442 \u043E\u043F\u0442\u0438\u043C\u0438\u0437\u0438\u0440\u043E\u0432\u0430\u0442\u044C');var raise=[],lower=[];for(var i=0;i<cats.length;i++){if(cats[i].limit>0&&cats[i].cost>cats[i].limit*0.8)raise.push(cats[i].label.toLowerCase());if(cats[i].limit>0&&cats[i].cost<cats[i].limit*0.2)lower.push(cats[i].label.toLowerCase())}if(raise.length)p.push('\u041F\u043E\u0432\u044B\u0441\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442: '+raise.join(', '));if(lower.length)p.push('\u041F\u043E\u043D\u0438\u0437\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442: '+lower.join(', '));if(!p.length)p.push('\u0422\u0430\u0440\u0438\u0444 \u043F\u043E\u0434\u043E\u0431\u0440\u0430\u043D \u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E');return p}
-function sRand(s){var h=1779033703^s.length;for(var i=0;i<s.length;i++){h=Math.imul(h^s.charCodeAt(i),3432918353);h=(h<<13)|(h>>>19)}var a=h>>>0;return function(){a|=0;a=(a+0x6D2B79F5)|0;var t=Math.imul(a^(a>>>15),1|a);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296}}
-function updateKPIs(){var tc=0,to=0,cr=0;for(var i=0;i<allSubs.length;i++){tc+=allSubs[i].totalCost;to+=allSubs[i].overpayment;if(allSubs[i].status==='danger')cr++}var el=document.getElementById('kpiRow');if(!el)return;el.innerHTML=kpiC('\uD83D\uDC65','\u0410\u0431\u043E\u043D\u0435\u043D\u0442\u043E\u0432',allSubs.length)+kpiC('\uD83D\uDCB3','\u0418\u0442\u043E\u0433\u043E',mny(tc))+kpiC('\uD83D\uDCC8','\u041F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430',mny(to))+kpiC('\uD83D\uDCB0','\u042D\u043A\u043E\u043D\u043E\u043C\u0438\u044F',mny(to*0.7))+kpiC('\u26A0\uFE0F','\u041A\u0440\u0438\u0442\u0438\u0447\u043D\u044B\u0445',cr)}
-function kpiC(ico,label,val){return'<div class="kpi"><div class="kpi-ico">'+ico+'</div><div><div class="kpi-lb">'+label+'</div><div class="kpi-val">'+val+'</div></div></div>'}
-function updateRisk(){var cr=0;for(var i=0;i<allSubs.length;i++)if(allSubs[i].status==='danger')cr++;var pct=allSubs.length?Math.round((cr/allSubs.length)*100):0;var rv=Math.min(100,Math.round(pct*1.5));var color=rv>=60?'#D32F2F':rv>=30?'#F7941D':'#198754';var lb=rv>=60?'\u0412\u044B\u0441\u043E\u043A\u0438\u0439':rv>=30?'\u0421\u0440\u0435\u0434\u043D\u0438\u0439':'\u041D\u0438\u0437\u043A\u0438\u0439';var r2=40,cx=50,cy=50,sA=Math.PI*0.8,eA=Math.PI*2.2,range=eA-sA,vA=sA+range*(rv/100);function arc(a){return(cx+r2*Math.cos(a)).toFixed(1)+','+(cy+r2*Math.sin(a)).toFixed(1)}var bg='M'+arc(sA)+' A'+r2+' '+r2+' 0 1 1 '+arc(eA);var fg='M'+arc(sA)+' A'+r2+' '+r2+' 0 '+(rv>50?1:0)+' 1 '+arc(vA);var el=document.getElementById('riskCard');if(!el)return;el.innerHTML='<div class="risk-title">\u0418\u043D\u0434\u0435\u043A\u0441 \u0440\u0438\u0441\u043A\u0430</div><div class="risk-gauge"><svg viewBox="0 0 100 70" width="120" height="84"><path d="'+bg+'" fill="none" stroke="#edf1ef" stroke-width="8" stroke-linecap="round"/><path d="'+fg+'" fill="none" stroke="'+color+'" stroke-width="8" stroke-linecap="round"/></svg><div class="risk-num" style="color:'+color+'">'+rv+'</div></div><div class="risk-label">'+lb+'</div>'}
-function updateTopList(){var sorted=allSubs.slice().sort(function(a,b){return b.totalCost-a.totalCost}).slice(0,5);var rc=document.getElementById('topCount');if(rc)rc.textContent=allSubs.length;var el=document.getElementById('topList');if(!el)return;if(!sorted.length){el.innerHTML='<div style="color:var(--muted);font-size:10px">\u041D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445</div>';return}var h='';for(var i=0;i<sorted.length;i++){var s=sorted[i],pc=i<3?'top-pos-'+(i+1):'top-pos-n';h+='<div class="top-item" data-goto="'+s.number+'"><div class="top-pos '+pc+'">'+(i+1)+'</div><div style="flex:1;min-width:0"><div class="top-nm">'+esc(s.name||s.number)+'</div>'+(s.name?'<div class="top-ph">'+s.number+'</div>':'')+'</div><div class="top-val">'+mny(s.totalCost)+'</div></div>'}el.innerHTML=h;el.querySelectorAll('[data-goto]').forEach(function(it){it.onclick=function(){var c=document.querySelector('.ucard[data-phone="'+it.dataset.goto+'"]');if(c){c.scrollIntoView({behavior:'smooth',block:'center'});c.classList.add('flash');setTimeout(function(){c.classList.remove('flash')},900)}}})}
-function renderUsers(){var g=document.getElementById('usersGrid');var sr=document.getElementById('searchInput')?document.getElementById('searchInput').value.trim().toLowerCase():'';var f=[];for(var i=0;i<allSubs.length;i++){var x=allSubs[i];if(sr&&x.number.indexOf(sr)===-1&&x.name.toLowerCase().indexOf(sr)===-1)continue;if(curF==='all'){f.push(x);continue}if(curF==='overpay'){if(x.overpayment>100)f.push(x);continue}if(curF==='growing'){if(x.overpayment>0)f.push(x);continue}if(x.status===curF)f.push(x)}var dir=sortD==='desc'?-1:1;var sk={overpay:function(a,b){return a.overpayment-b.overpayment},cost:function(a,b){return a.totalCost-b.totalCost},risk:function(a,b){return a.riskScore-b.riskScore}};f.sort(function(a,b){return dir*(sk[curS]||sk.overpay)(a,b)});rendered=f;if(!f.length){g.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted)">\u041D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445</div>';return}var h='';for(var j=0;j<f.length;j++)h+=renderCard(f[j]);g.innerHTML=h;var rc=document.getElementById('resultCount');if(rc)rc.textContent=f.length+' \u0438\u0437 '+allSubs.length}
-function renderCard(s){var t=s.name?esc(s.name):'\u0410\u0431\u043E\u043D\u0435\u043D\u0442 '+s.number;var badge=s.status==='danger'?'\u041F\u043E\u0432\u044B\u0441\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442':s.status==='warning'?'\u0412 \u0437\u043E\u043D\u0435 \u0440\u0438\u0441\u043A\u0430':'\u041B\u0438\u043C\u0438\u0442 \u043E\u043A';var h='<div class="ucard s-'+s.status+'" data-phone="'+s.number+'">';h+='<div class="u-cost"><div><div class="u-main">'+mny(s.totalCost)+'</div>';h+='<div class="u-sub2">\u0410\u0431\u043E\u043D\u043F\u043B\u0430\u0442\u0430 '+mny(s.planFee)+' \u2014 \u043F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 <span class="over '+(s.overpayment>0?'neg':'pos')+'">'+mny(s.overpayment)+'</span></div></div>';h+='<span class="badge badge-'+s.status+'">'+badge+'</span></div>';h+='<div class="u-name">'+t+'</div><div class="u-sub">'+esc(s.planName)+'</div>';h+='<div class="u-cats">';for(var i=0;i<s.categories.length;i++){var c=s.categories[i];var cl=c.cost>c.limit*0.8?'d':c.cost>c.limit*0.5?'w':'g';h+='<div class="chip chip-'+cl+'"><span class="chip-ico">'+c.icon+'</span><span>'+fmtVol(c)+'</span><span>'+mny(c.cost)+'</span></div>'}h+='</div></div>';return h}
-function openSubModal(phone){var sub=null;for(var i=0;i<allSubs.length;i++){if(allSubs[i].number===phone){sub=allSubs[i];break}}if(!sub)return;var el=document.getElementById('subModalContent');var h='';h+='<div class="sm-header"><div><div class="sm-name">'+esc(sub.name||'\u0410\u0431\u043E\u043D\u0435\u043D\u0442 '+sub.number)+'</div><div class="sm-sub">'+sub.number+' \u00B7 '+esc(sub.planName)+'</div></div><div style="text-align:right"><div class="sm-cost-big">'+mny(sub.totalCost)+'</div><div class="sm-cost-sub">\u0410\u0431\u043E\u043D\u043F\u043B\u0430\u0442\u0430 '+mny(sub.planFee)+' \u00B7 \u043F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 '+mny(sub.overpayment)+'</div></div></div>';h+='<div class="sm-cats">';for(var i=0;i<sub.categories.length;i++){var c=sub.categories[i];h+='<div class="sm-cat"><div class="sm-cat-icon">'+c.icon+'</div><div class="sm-cat-val">'+fmtVol(c)+'</div><div class="sm-cat-lbl">'+c.label+'</div><div class="sm-cat-cost">'+mny(c.cost)+'</div></div>'}h+='</div>';h+='<div class="sm-section"><div class="sm-title">\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u0438</div><div class="sm-rec">';for(var j=0;j<sub.recommendation.length;j++)h+='<div>\u2022 '+esc(sub.recommendation[j])+'</div>';h+='</div></div>';h+='<div class="sm-section"><div class="sm-title">\u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0440\u0430\u0441\u0445\u043E\u0434\u043E\u0432</div>';h+='<div class="sm-chart" title="\u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u0434\u043B\u044F \u0443\u0432\u0435\u043B\u0438\u0447\u0435\u043D\u0438\u044F">'+makeChartSVG(sub.monthly,sub.planFee,400,180)+'</div>';h+='<div class="months" style="margin-top:6px">'+moH(sub)+'</div></div>';h+='<div class="sm-section"><div class="sm-title">\u0412\u0441\u0435 \u0443\u0441\u043B\u0443\u0433\u0438</div><div class="sm-services">';if(sub.items&&sub.items.length){var sorted=sub.items.slice().sort(function(a,b){return b.withD-a.withD});for(var k=0;k<sorted.length;k++){var it=sorted[k];h+='<div class="sm-svc"><span class="sm-svc-name">'+esc(it.name)+'</span><span class="sm-svc-vol">'+it.rawVol+'</span><span class="sm-svc-amt">'+mny(it.withD)+'</span></div>'}}h+='</div></div>';h+='<div class="sm-section"><div class="sm-title">\u041F\u0440\u043E\u0433\u043D\u043E\u0437</div><div class="sm-rec"><div>\u041F\u043E\u0442\u0435\u043D\u0446\u0438\u0430\u043B \u044D\u043A\u043E\u043D\u043E\u043C\u0438\u0438: <b>'+mny(sub.overpayment*0.7)+'/\u043C\u0435\u0441</b></div><div>\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u0441\u043B\u0435\u0434. \u043C\u0435\u0441\u044F\u0446\u0430: <b>'+mny(sub.avg*1.05)+'</b></div></div></div>';el.innerHTML=h;document.getElementById('subModal').style.display='flex'}
-function closeSubModal(){document.getElementById('subModal').style.display='none'}
-document.addEventListener('click',function(e){var card=e.target.closest('.ucard');if(card&&!e.target.closest('.act')){var phone=card.getAttribute('data-phone');if(phone)openSubModal(phone);return}var btn=e.target.closest('.act');if(!btn)return;var c=btn.closest('.ucard');if(!c)return;var phone=c.getAttribute('data-phone');if(phone)openSubModal(phone)});
-function sparkline(s){var d=s.monthly,W=280,H=65,pL=4,pR=4,pT=6,pB=12,cW=W-pL-pR,cH=H-pT-pB;var mx=0;for(var i=0;i<d.length;i++)if(d[i]>mx)mx=d[i];mx=Math.max(mx,s.planFee,1)*1.18;var xFn=function(i){return pL+(i/(d.length-1))*cW};var yFn=function(v){return pT+cH-(v/mx)*cH};var lb=getMoLb(d.length);var pts=[];for(var j=0;j<d.length;j++)pts.push(xFn(j).toFixed(1)+','+yFn(d[j]).toFixed(1));var ar='M'+xFn(0).toFixed(1)+','+(pT+cH).toFixed(1)+' L'+pts.join(' L')+' L'+xFn(d.length-1).toFixed(1)+','+(pT+cH).toFixed(1)+' Z';var ly=yFn(s.planFee).toFixed(1);var dots='';for(var k=0;k<d.length;k++){var rl=k===d.length-1;dots+='<circle cx="'+xFn(k).toFixed(1)+'" cy="'+yFn(d[k]).toFixed(1)+'" r="'+(rl?2.5:1.5)+'" class="'+(rl?'spark-real':'spark-dot')+'"/>'}var xl='';for(var m=0;m<lb.length;m++)xl+='<text x="'+xFn(m).toFixed(1)+'" y="'+(H-2)+'" class="spark-xl">'+lb[m]+'</text>';var lim=s.planFee>0?'<line x1="'+pL+'" y1="'+ly+'" x2="'+(W-pR)+'" y2="'+ly+'" class="spark-limit"/>':'';return'<svg width="'+W+'" height="'+H+'" class="spark"><path d="'+ar+'" class="spark-area"/><polyline points="'+pts.join(' ')+'" class="spark-line"/>'+lim+dots+xl+'</svg>'}
-function makeChartSVG(data,planFee,W,H){var pL=50,pR=10,pT=15,pB=25,cW=W-pL-pR,cH=H-pT-pB;var mx=0;for(var i=0;i<data.length;i++)if(data[i]>mx)mx=data[i];mx=Math.max(mx,planFee,1)*1.15;var xFn=function(i){return pL+(i/(data.length-1))*cW};var yFn=function(v){return pT+cH-(v/mx)*cH};var lb=getMoLb(data.length);var gr='';for(var g=0;g<=3;g++){var gy=pT+(g/3)*cH,v=mx*(1-g/3);gr+='<line x1="'+pL+'" y1="'+gy+'" x2="'+(W-pR)+'" y2="'+gy+'" stroke="var(--bdr)" stroke-width="1"/>';gr+='<text x="'+(pL-6)+'" y="'+(gy+3)+'" text-anchor="end" fill="var(--light)" font-size="9">'+Math.round(v).toLocaleString('ru-RU')+'</text>'}var pts=[];for(var j=0;j<data.length;j++)pts.push(xFn(j).toFixed(1)+','+yFn(data[j]).toFixed(1));var ar='M'+xFn(0).toFixed(1)+','+(pT+cH).toFixed(1)+' L'+pts.join(' L')+' L'+xFn(data.length-1).toFixed(1)+','+(pT+cH).toFixed(1)+' Z';var dots='';for(var d=0;d<data.length;d++){var rl=d===data.length-1;dots+='<circle cx="'+xFn(d).toFixed(1)+'" cy="'+yFn(data[d]).toFixed(1)+'" r="'+(rl?4:2.5)+'" fill="'+(rl?'var(--orange)':'var(--primary)')+'" stroke="var(--surf)" stroke-width="1.5"/>'}var xl='';for(var x=0;x<lb.length;x++)xl+='<text x="'+xFn(x).toFixed(1)+'" y="'+(H-6)+'" text-anchor="middle" fill="var(--light)" font-size="9">'+lb[x]+'</text>';var lim=planFee>0?'<line x1="'+pL+'" y1="'+yFn(planFee).toFixed(1)+'" x2="'+(W-pR)+'" y2="'+yFn(planFee).toFixed(1)+'" stroke="var(--red)" stroke-width="1" stroke-dasharray="4 4" opacity=".5"/>':'';return'<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">'+gr+'<path d="'+ar+'" fill="rgba(25,135,84,.08)"/><polyline points="'+pts.join(' ')+'" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>'+lim+dots+xl+'</svg>'}
-function drawBigChart(modal){var host=modal?document.getElementById('modalChart'):document.getElementById('bigChart');if(!host)return;if(!rendered.length){host.innerHTML='<div style="color:var(--muted);font-size:12px;text-align:center;padding:40px">\u041D\u0435\u0442 \u0434\u0430\u043D\u043D\u044B\u0445</div>';if(modal)openChartModal();return}var tot=[];for(var i=0;i<HIST;i++)tot.push(0);for(var j=0;j<rendered.length;j++)for(var k=0;k<rendered[j].monthly.length;k++)tot[k]+=rendered[j].monthly[k];if(modal){host.innerHTML=makeChartSVG(tot,0,700,300);openChartModal()}else{host.innerHTML=makeChartSVG(tot,0,720,200)}}
-function openChartModal(){document.getElementById('chartModal').style.display='flex'}
-function closeChartModal(){document.getElementById('chartModal').style.display='none'}
-document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeSubModal();closeChartModal()}});
-function mny(v){return(Math.round(v)||0).toLocaleString('ru-RU')+'\u20BD'}
-function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]})}
-function getMoLb(n){var now=new Date(),lb=[];for(var i=n-1;i>=0;i--){var d=new Date(now.getFullYear(),now.getMonth()-i,1);lb.push(MO[d.getMonth()])}return lb}
-function stxt(id,v){var e=document.getElementById(id);if(e)e.textContent=v}
-function showLoad(t,p){var l=document.getElementById('loading');if(l)l.style.display='flex';var lt=document.getElementById('loadText');if(lt)lt.textContent=t;var pf=document.getElementById('progFill');if(pf)pf.style.width=p+'%'}
-function hideLoad(){var l=document.getElementById('loading');if(l)l.style.display='none'}
-function flashHint(t){var h=document.getElementById('hint');if(h){h.textContent=t;h.classList.add('show');setTimeout(function(){h.classList.remove('show')},3000)}}
-function fmtVol(c){if(c.used===0&&c.cost===0)return'\u2014';if(c.cat==='i'){if(c.used>=1024)return(c.used/1024).toFixed(1)+' \u0422\u0411';return c.used.toFixed(0)+' \u041C\u0411'}return Math.round(c.used)+' '+c.unit}
-function moH(s){var lb=getMoLb(HIST),h='';for(var i=0;i<s.monthly.length;i++){var r=i===s.monthly.length-1;h+='<span class="m-item'+(r?' m-real':'')+'"><b>'+mny(s.monthly[i])+'</b> <em>'+lb[i]+'</em></span>'}return h}
-var DP=[{fee:140,name:'\u0418\u043D\u0442\u0435\u0440\u043D\u0435\u0442. \u0411\u0435\u0437 \u041F\u0435\u0440\u0435\u043F\u043B\u0430\u0442 04.23',minutes:700,sms:300,mb:15000},{fee:230,name:'\u0423\u043F\u0440\u0430\u0432\u043B\u044F\u0439! \u0421\u043F\u0435\u0446\u0438\u0430\u043B\u0438\u0441\u0442 +',minutes:1500,sms:500,mb:25000},{fee:400,name:'\u0424\u0435\u0434\u0435\u0440\u0430\u043B\u044C\u043D\u044B\u0439 \u0421\u043F\u0435\u0446\u0438\u0430\u043B\u044C\u043D\u044B\u0439 B2B',minutes:4000,sms:1000,mb:70000}];
-function loadDemoData(){showLoad('\u0413\u0435\u043D\u0435\u0440\u0430\u0446\u0438\u044F\u2026',30);var rd={};for(var i=0;i<50;i++){var ph=gPh(),pl=DP[Math.floor(Math.random()*DP.length)],items=[];function addI(k,c,v,u,c2){items.push({key:k,category:c,rawVolume:v+' '+u,volume:v,unit:u,withDiscount:c2,noDiscount:c2})}var om=Math.floor(Math.random()*500);if(om)addI('home_outgoing_calls','voice',om,'\u043C\u0438\u043D',0);addI('home_incoming_calls','voice',Math.floor(Math.random()*600)+50,'\u043C\u0438\u043D',0);var on=Math.floor(Math.random()*300);if(on)addI('home_onnet_calls','voice',on,'\u043C\u0438\u043D',0);var ot=Math.floor(Math.random()*100);if(ot)addI('home_other_operators','voice',ot,'\u043C\u0438\u043D',+(ot*0.18).toFixed(2));var ic=Math.floor(Math.random()*80);if(ic)addI('home_intercity_calls','voice',ic,'\u043C\u0438\u043D',+(ic*0.25).toFixed(2));var mb=+(Math.random()*50000).toFixed(2);addI('home_mobile_internet','internet',mb,'\u041C\u0431',+(Math.max(0,mb-5000)*0.0001).toFixed(2));var ins=Math.floor(Math.random()*200);if(ins)addI('home_incoming_sms','sms',ins,'\u0448\u0442',0);var ons=Math.floor(Math.random()*60);if(ons)addI('home_sms','sms',ons,'\u0448\u0442',+(ons*0.05).toFixed(2));if(Math.random()<0.3)addI('employee_protection_fee','other',1,'',90);if(Math.random()<0.15){var t1=Math.floor(Math.random()*40)+1;addI('travel_outgoing_calls','voice',t1,'\u043C\u0438\u043D',+(t1*0.18).toFixed(2))}if(Math.random()<0.1){var t2=Math.floor(Math.random()*20)+1;addI('travel_sms','sms',t2,'\u0448\u0442',+(t2*0.1).toFixed(2))}rd[ph]={items:items,planFee:pl.fee,planName:pl.name}}curF='all';curS='overpay';sortD='desc';buildReport(rd)}
-function gPh(){var p=[900,901,902,903,904,905,906,908,909,910,912,913,914,915,916,917,918,919,920,921,922,923,924,925,926,927,928,929,930,950,951,952,953];var pr=p[Math.floor(Math.random()*p.length)];var r='';for(var i=0;i<7;i++)r+=Math.floor(Math.random()*10);return pr+r}
+
+/* ── Service mapping: CSV service name → internal key ─────────── */
+const SERVICE_MAP = {
+  'абонентский номер': 'subscriber_number',
+  'тарифный план': 'tariff_plan',
+  'абонентская плата по тарифному плану (посуточное списание)': 'plan_fee',
+  'абонентская плата по тарифному плану': 'plan_fee',
+  'удержание вызова': 'call_hold',
+  'абонентская плата за услугу защита сотрудников': 'employee_protection_fee',
+  'исходящие вызовы в домашнем регионе': 'home_outgoing_calls',
+  'исходящие вызовы на номера других операторов в домашнем регионе': 'home_other_operators',
+  'исходящие вызовы внутри сети в домашнем регионе': 'home_onnet_calls',
+  'исходящие междугородние вызовы в домашнем регионе': 'home_intercity_calls',
+  'мобильный интернет в домашнем регионе': 'home_mobile_internet',
+  'исходящие сообщения в домашнем регионе': 'home_sms',
+  'входящие вызовы в домашнем регионе': 'home_incoming_calls',
+  'входящие сообщения в домашнем регионе': 'home_incoming_sms',
+  'входящие вызовы в путешествиях по россии': 'travel_incoming_calls',
+  'входящие сообщения в путешествиях по россии': 'travel_incoming_sms',
+  'исходящие вызовы в путешествиях по России': 'travel_outgoing_calls',
+  'исходящие междугородние вызовы в путешествиях по России': 'travel_intercity_calls',
+  'исходящие сообщения в путешествиях по России': 'travel_sms',
+  'мобильный интернет в путешествиях по России': 'travel_mobile_internet',
+  'итого начислено': 'total_charged',
+  'в т.ч. ндс': 'vat_included',
+  'в том числе ндс (22%)': 'vat_included',
+  'начисления за передачу мультимедийных сообщений': 'multimedia_messages',
+  'исходящие вызовы внутри сети в путешествиях по россии': 'travel_onnet_russia_calls',
+  'исходящие вызовы на номера других операторов региона пребывания в путешествиях по россии': 'travel_other_operators',
+  'массовые вызовы': 'mass_calls',
+  'голосовая почта': 'voicemail',
+  'автоответчик': 'auto_answer',
+  'звонок за счёт друга': 'friend_call',
+  'доставка счёта на email': 'email_invoice',
+  'мобильный интернет в национальном роуминге': 'national_roaming_internet',
+  'блокировка номера': 'number_blocking',
+  'начисления за услуги передачи сообщений в национальном роуминге': 'national_roaming_messages',
+  'офис в кармане': 'office_in_pocket',
+  'голосовые sms': 'voice_sms',
+  'исходящие международные вызовы': 'international_calls',
+  'исходящие sms в международном роуминге': 'international_roaming_sms',
+  'исходящие вызовы на номера россии в международном роуминге': 'international_roaming_russia_calls',
+  'исходящие вызовы на номера страны пребывания в международном роуминге': 'international_roaming_local_calls',
+  'прочие начисления': 'misc_charges',
+  'ми.детализация счета': 'mi_detailing',
+  'входящие sms в международном роуминге': 'incoming_sms_intl_roaming',
+  'вызовы в международном роуминге': 'calls_intl_roaming',
+  'исходящие вызовы в международном роуминге': 'outgoing_calls_intl_roaming',
+  'услуги национального роуминга': 'national_roaming_services',
+  'услуги международного роуминга': 'intl_roaming_services',
+  'начисления за голосовые услуги в национальном роуминге': 'national_roaming_voice',
+  'абонентская плата m2m': 'm2m_fee',
+  'абонентская плата m2m флекс': 'm2m_flex_fee',
+  'виртуальная атс': 'virtual_pbx',
+  'видеостриминг': 'video_streaming',
+  'замена sim-карты': 'sim_replacement',
+  'запрет развлекательного контента': 'ban_content',
+  'дополнительный городской номер': 'extra_city_number',
+  'дополнительный номер': 'extra_number',
+  'mi.': 'mi_service',
+};
+
+const META_KEYS = new Set(['subscriber_number', 'tariff_plan', 'total_charged', 'vat_included']);
+
+const CATEGORY_OF = {
+  home_outgoing_calls: 'voice', home_other_operators: 'voice', home_onnet_calls: 'voice',
+  home_intercity_calls: 'voice', home_incoming_calls: 'voice',
+  travel_outgoing_calls: 'voice', travel_intercity_calls: 'voice',
+  travel_onnet_russia_calls: 'voice', travel_other_operators: 'voice', mass_calls: 'voice',
+  international_calls: 'voice', international_roaming_russia_calls: 'voice',
+  international_roaming_local_calls: 'voice', friend_call: 'voice',
+  voicemail: 'voice', auto_answer: 'voice', call_hold: 'voice',
+  calls_intl_roaming: 'voice', outgoing_calls_intl_roaming: 'voice',
+  home_mobile_internet: 'internet', travel_mobile_internet: 'internet',
+  national_roaming_internet: 'internet',
+  home_sms: 'sms', home_incoming_sms: 'sms',
+  travel_sms: 'sms', travel_incoming_sms: 'sms',
+  multimedia_messages: 'sms', international_roaming_sms: 'sms',
+  national_roaming_messages: 'sms', voice_sms: 'sms',
+  incoming_sms_intl_roaming: 'sms',
+};
+
+const TARIFFS = {
+  "140": { minutes: 700, sms: 300, internet_mb: 15000 },
+  "230": { minutes: 1500, sms: 500, internet_mb: 25000 },
+  "400": { minutes: 4000, sms: 1000, internet_mb: 70000 }
+};
+
+const DEFAULT_TARIFF = { minutes: 500, sms: 200, internet_mb: 5000 };
+
+const CATEGORY_META = {
+  voice: { label: 'Минуты', unit: 'мин', icon: '📞', quotaKey: 'minutes' },
+  internet: { label: 'Интернет', unit: 'МБ', icon: '🌐', quotaKey: 'internet_mb' },
+  sms: { label: 'SMS', unit: 'шт', icon: '✉️', quotaKey: 'sms' },
+};
+
+const MONTH_NAMES = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+const HISTORY_MONTHS = 5;
+
+let allSubscribers = [];
+let renderedSubscribers = [];
+let nameByNumber = {};
+let currentFilter = 'all';
+let currentSort = 'overpay';
+let sortDirection = 'desc';
+
+document.addEventListener('DOMContentLoaded', () => {
+  const $ = (id) => document.getElementById(id);
+
+  if ($('workersBtn')) {
+    $('workersBtn').addEventListener('click', () => $('workersFile').click());
+    $('workersFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) loadWorkers(file);
+    });
+  }
+
+  if ($('billsBtn')) {
+    $('billsBtn').addEventListener('click', () => $('billsFile').click());
+    $('billsFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) uploadCSV(file);
+    });
+  }
+
+  if ($('demoBtn')) {
+    $('demoBtn').addEventListener('click', loadDemoData);
+  }
+
+  if ($('searchInput')) {
+    $('searchInput').addEventListener('input', renderUsers);
+  }
+
+  document.querySelectorAll('.filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      renderUsers();
+    });
+  });
+
+  document.querySelectorAll('.sort').forEach((btn) => {
+    if (btn.dataset.sort === currentSort) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      if (currentSort === btn.dataset.sort) {
+        sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+      } else {
+        currentSort = btn.dataset.sort;
+        sortDirection = 'desc';
+      }
+      document.querySelectorAll('.sort').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderUsers();
+    });
+  });
+
+  if ($('gridView') && $('tableView')) {
+    $('gridView').addEventListener('click', () => setView('grid'));
+    $('tableView').addEventListener('click', () => setView('table'));
+  }
+
+  if ($('toggleChartBtn')) {
+    $('toggleChartBtn').addEventListener('click', () => {
+      const panel = $('chartPanel');
+      if (panel) {
+        const open = panel.classList.toggle('open');
+        if ($('toggleChartBtn')) $('toggleChartBtn').setAttribute('aria-expanded', String(open));
+        if (open) drawBigChart();
+      }
+    });
+  }
+
+  const themeBtn = $('themeBtn');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', toggleTheme);
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+  }
+
+  window.addEventListener('resize', () => {
+    const panel = $('chartPanel');
+    if (panel && panel.classList.contains('open')) drawBigChart();
+  });
+});
+
+/* ── Upload CSV to Python backend ──────────────────────────── */
+function uploadCSV(file) {
+  showLoading('Отправка файла на сервер…', 10);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  fetch('/api/upload-csv', {
+    method: 'POST',
+    body: formData,
+  })
+    .then((r) => {
+      if (!r.ok) return r.json().then((e) => { throw new Error(e.error || 'Ошибка сервера'); });
+      return r.json();
+    })
+    .then((data) => {
+      showLoading('Анализ данных…', 60);
+      currentFilter = 'all';
+      currentSort = 'overpay';
+      sortDirection = 'desc';
+      processServerData(data);
+    })
+    .catch((err) => {
+      showLoading(`Ошибка: ${err.message}`, 100);
+      setTimeout(hideLoading, 3000);
+    });
+}
+
+function processServerData(data) {
+  showLoading('Построение отчёта…', 80);
+  const reportData = {};
+
+  for (const [number, sub] of Object.entries(data.subscribers)) {
+    const items = [];
+    let planFee = sub.planFee || 0;
+
+    for (const item of sub.items) {
+      const key = matchServiceKey(item.serviceName);
+      if (!key) continue;
+
+      if (key === 'plan_fee') {
+        planFee += item.withDiscount;
+        continue;
+      }
+      if (META_KEYS.has(key)) continue;
+
+      items.push({
+        key,
+        category: CATEGORY_OF[key] || 'other',
+        rawVolume: item.rawVolume,
+        volume: item.volume,
+        unit: item.unit,
+        noDiscount: item.noDiscount,
+        discount: item.discount,
+        withDiscount: item.withDiscount,
+        serviceName: item.serviceName,
+        allColumns: item.allColumns,
+      });
+    }
+
+    reportData[number] = {
+      items,
+      planFee,
+      planName: sub.planName || `Тариф ${Math.round(planFee)}₽`,
+    };
+  }
+
+  buildReportFromData(reportData);
+}
+
+function matchServiceKey(serviceName) {
+  const lower = serviceName.toLowerCase();
+  for (const [pattern, key] of Object.entries(SERVICE_MAP)) {
+    if (lower.includes(pattern)) return key;
+  }
+  return null;
+}
+
+/* ── View toggles ──────────────────────────────────────────── */
+function setView(mode) {
+  const grid = document.getElementById('usersGrid');
+  document.querySelectorAll('.view').forEach((b) => b.classList.remove('active'));
+  const btn = document.getElementById(mode === 'table' ? 'tableView' : 'gridView');
+  if (btn) btn.classList.add('active');
+  if (grid) grid.classList.toggle('table-view', mode === 'table');
+  renderUsers();
+}
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const isDark = root.getAttribute('data-theme') === 'dark'
+    || (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  const next = isDark ? 'light' : 'dark';
+  root.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  const panel = document.getElementById('chartPanel');
+  if (panel && panel.classList.contains('open')) drawBigChart();
+}
+
+/* ── Workers file ──────────────────────────────────────────── */
+function loadWorkers(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    nameByNumber = parseWorkers(e.target.result);
+    const n = Object.keys(nameByNumber).length;
+    flashHint(n ? `Список сотрудников загружен: ${n}` : 'Файл прочитан, имена не распознаны');
+  };
+  reader.onerror = () => flashHint('Ошибка чтения файла сотрудников');
+  reader.readAsText(file, 'windows-1251');
+}
+
+function parseWorkers(text) {
+  const map = {};
+  text.split(/\r?\n/).forEach((line) => {
+    if (!line.trim()) return;
+    const digits = line.match(/\d{10,}/);
+    if (!digits) return;
+    const number = digits[0].slice(-10);
+    const name = line
+      .split(/[;,\t]/).map((p) => p.trim())
+      .find((p) => p && !/^\+?\d[\d\s()-]{6,}$/.test(p));
+    if (name) map[number] = name;
+  });
+  return map;
+}
+
+/* ── Build report ──────────────────────────────────────────── */
+function buildReportFromData(reportData) {
+  showLoading('Анализ и построение отчёта…', 70);
+  allSubscribers = Object.entries(reportData).map(([number, data]) =>
+    buildSubscriberRecord(number, data)
+  );
+  showLoading('Готово', 100);
+  updateKpis();
+  updateRankList();
+
+  const kpiPanel = document.getElementById('kpiPanel');
+  const analyticsPanel = document.getElementById('analyticsPanel');
+  const filtersPanel = document.getElementById('filtersPanel');
+  const welcomeSection = document.getElementById('welcomeSection');
+
+  if (welcomeSection) welcomeSection.style.display = 'none';
+  if (kpiPanel) kpiPanel.style.display = 'grid';
+  if (analyticsPanel) analyticsPanel.style.display = 'flex';
+  if (filtersPanel) filtersPanel.style.display = 'flex';
+
+  setTimeout(() => {
+    hideLoading();
+    renderUsers();
+  }, 450);
+}
+
+function buildSubscriberRecord(number, data) {
+  const planFee = data.planFee;
+  const planFeeInt = Math.round(planFee);
+  const planFeeStr = String(planFeeInt);
+  const tariff = TARIFFS[planFeeStr] || DEFAULT_TARIFF;
+
+  let extraCost = 0;
+  const cats = {
+    voice: { used: 0, cost: 0 },
+    internet: { used: 0, cost: 0 },
+    sms: { used: 0, cost: 0 },
+    other: { used: 0, cost: 0 },
+  };
+
+  data.items.forEach((it) => {
+    extraCost += it.withDiscount;
+    const c = cats[it.category];
+    c.cost += it.withDiscount;
+    if (it.category === 'voice' && it.unit === 'мин') {
+      c.used += it.volume;
+    } else if (it.category === 'internet') {
+      c.used += it.volume;
+    } else if (it.category === 'sms' && it.unit === 'шт') {
+      c.used += it.volume;
+    }
+  });
+
+  const totalCost = planFee + extraCost;
+  const overpayment = extraCost;
+  const categories = ['voice', 'internet', 'sms'].map((cat) => {
+    const meta = CATEGORY_META[cat];
+    const limit = tariff[meta.quotaKey] || 0;
+    const used = cats[cat].used;
+    const ratio = limit > 0 ? used / limit : 0;
+    return {
+      cat, ...meta, used, limit, cost: cats[cat].cost, ratio,
+      advice: categoryAdvice(ratio, cats[cat].cost)
+    };
+  });
+
+  const overuse = categories.filter((c) => c.ratio > 1).length;
+  const overpayRatio = planFee > 0 ? overpayment / planFee : (overpayment > 0 ? 1 : 0);
+
+  let status = 'normal';
+  if (overpayment > 50) status = 'danger';
+  else if (overpayment > 1) status = 'warning';
+
+  const riskScore = Math.max(0, Math.min(100, Math.round(overpayRatio * 100 + overuse * 15)));
+
+  const rnd = seededRandom(number);
+  const monthly = [];
+  for (let i = 0; i < HISTORY_MONTHS - 1; i++) {
+    monthly.push(totalCost * (0.82 + rnd() * 0.36));
+  }
+  monthly.push(totalCost);
+
+  const avg = monthly.reduce((a, b) => a + b, 0) / monthly.length;
+  const prevVal = monthly[monthly.length - 2];
+  const trend = prevVal > 0 ? ((totalCost - prevVal) / prevVal) * 100 : 0;
+
+  return {
+    number, name: nameByNumber[number] || '',
+    planName: data.planName || `Тариф ${planFeeInt}₽`,
+    totalCost, planFee, overpayment, categories, overuse, status, riskScore,
+    recommendation: buildRecommendation(status, overpayment, categories),
+    monthly, avg, trend, historyIsDemo: true,
+  };
+}
+
+function categoryAdvice(ratio, cost) {
+  if (ratio > 1) return { type: 'raise', text: `Перерасход — начислено ${money(cost)}. Выгоднее увеличить пакет.` };
+  if (ratio > 0 && ratio < 0.4) return { type: 'lower', text: 'Пакет почти не используется — можно понизить.' };
+  return { type: 'ok', text: 'Потребление в пределах пакета.' };
+}
+
+function buildRecommendation(status, overpayment, categories) {
+  const raise = categories.filter((c) => c.advice.type === 'raise');
+  const lower = categories.filter((c) => c.advice.type === 'lower');
+  const parts = [];
+
+  if (raise.length) parts.push(`Повысить лимит: ${raise.map((c) => c.label.toLowerCase()).join(', ')} — уходит в перерасход.`);
+  if (lower.length) parts.push(`Понизить лимит: ${lower.map((c) => c.label.toLowerCase()).join(', ')} — пакет недоиспользован.`);
+
+  if (status === 'danger') parts.unshift(`Критично: переплата ${money(overpayment)}. Требуется пересмотр тарифа.`);
+  else if (status === 'warning') parts.unshift(`Есть переплата ${money(overpayment)} — стоит оптимизировать.`);
+
+  if (!parts.length) parts.push('Потребление стабильное, тариф подобран корректно.');
+
+  return parts;
+}
+
+function seededRandom(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = h >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ── KPIs ──────────────────────────────────────────────────── */
+function updateKpis() {
+  const totalCost = allSubscribers.reduce((s, x) => s + x.totalCost, 0);
+  const totalOverpay = allSubscribers.reduce((s, x) => s + x.overpayment, 0);
+  const totalCritical = allSubscribers.filter((x) => x.status === 'danger').length;
+
+  setText('totalCount', allSubscribers.length);
+  setText('totalCost', money(totalCost));
+  setText('totalOverpay', money(totalOverpay));
+  setText('totalEconomy', money(totalOverpay * 0.7));
+  setText('criticalCount', totalCritical);
+
+  const riskScore = allSubscribers.length ? Math.round((totalCritical / allSubscribers.length) * 100) : 0;
+  const note = riskScore >= 60 ? 'высокий риск' : (riskScore >= 30 ? 'средний риск' : 'низкий риск');
+  const cls = riskScore >= 60 ? 'danger' : (riskScore >= 30 ? 'warning' : 'good');
+
+  const riskDonutEl = document.getElementById('riskDonut');
+  const riskNoteEl = document.getElementById('riskNote');
+  if (riskDonutEl) riskDonutEl.innerHTML = donutSvg(riskScore, cls);
+  if (riskNoteEl) riskNoteEl.innerText = note;
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.innerText = val;
+}
+
+/* ── Rank list ─────────────────────────────────────────────── */
+function updateRankList() {
+  const rankList = document.getElementById('rankList');
+  if (!rankList) return;
+
+  const top = [...allSubscribers].sort((a, b) => b.totalCost - a.totalCost).slice(0, 5);
+  if (!top.length) { rankList.innerHTML = '<div class="empty">нет данных</div>'; return; }
+
+  rankList.innerHTML = top.map((sub, i) =>
+    `<div class="rank-item" data-goto="${sub.number}"><div class="rank-pos">${i + 1}</div><div class="rank-name">${escapeHtml(sub.name || sub.number)}</div><div class="rank-val">${money(sub.totalCost)}</div></div>`
+  ).join('');
+
+  rankList.querySelectorAll('[data-goto]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const card = document.querySelector(`.user-card[data-phone="${el.dataset.goto}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('flash');
+        setTimeout(() => card.classList.remove('flash'), 1200);
+      }
+    });
+  });
+}
+
+/* ── Render users ──────────────────────────────────────────── */
+function renderUsers() {
+  const usersGrid = document.getElementById('usersGrid');
+  const searchTerm = document.getElementById('searchInput') ?
+    document.getElementById('searchInput').value.trim().toLowerCase() : '';
+
+  let filtered = allSubscribers.filter((sub) => {
+    if (searchTerm && !(sub.number.includes(searchTerm) || sub.name.toLowerCase().includes(searchTerm))) return false;
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'overpay') return sub.overpayment > 100;
+    if (currentFilter === 'growing') return sub.overpayment > 0;
+    return sub.status === currentFilter;
+  });
+
+  const dir = sortDirection === 'desc' ? -1 : 1;
+  const keys = {
+    overpay: (a, b) => a.overpayment - b.overpayment,
+    cost: (a, b) => a.totalCost - b.totalCost,
+    risk: (a, b) => a.riskScore - b.riskScore,
+    number: (a, b) => a.number.localeCompare(b.number),
+  };
+
+  filtered.sort((a, b) => dir * (keys[currentSort] || keys.overpay)(a, b));
+  renderedSubscribers = filtered;
+
+  if (!filtered.length) {
+    usersGrid.innerHTML = '<div class="empty-state">Нет данных для отображения</div>';
+    return;
+  }
+
+  usersGrid.innerHTML = filtered.map((sub) => renderCard(sub)).join('');
+
+  const resultCount = document.getElementById('resultCount');
+  if (resultCount) resultCount.innerText = `${filtered.length} из ${allSubscribers.length}`;
+}
+
+function renderCard(sub) {
+  const riskText = sub.status === 'danger' ? 'Критично' : (sub.status === 'warning' ? 'Внимание' : 'Норма');
+  const trendClass = sub.trend > 0.5 ? 'up' : (sub.trend < -0.5 ? 'down' : 'flat');
+  const trendArrow = trendClass === 'up' ? '↗' : (trendClass === 'down' ? '↘' : '→');
+  const title = sub.name ? escapeHtml(sub.name) : `Абонент ${sub.number}`;
+
+  return `<div class="user-card" data-phone="${sub.number}">
+  <div class="card-header">
+    <div>
+      <div class="user-name">${title}</div>
+      <div class="user-sub">${sub.name ? sub.number + ' · ' : ''}${escapeHtml(sub.planName)}</div>
+    </div>
+    <span class="badge badge-${sub.status === 'danger' ? 'danger' : sub.status === 'warning' ? 'warning' : 'normal'}">${riskText}</span>
+  </div>
+  <div class="cost-row">
+    <div>
+      <div class="cost-main">${money(sub.totalCost)}</div>
+      <div class="cost-sub">Абонплата ${money(sub.planFee)} · переплата <strong class="${sub.overpayment > 0 ? 'txt-danger' : 'txt-good'}">${money(sub.overpayment)}</strong></div>
+    </div>
+    <span class="trend trend-${trendClass}">${trendArrow} ${sub.trend > 0 ? '+' : ''}${sub.trend.toFixed(0)}%</span>
+  </div>
+  <div class="cat-chips">${sub.categories.map((c) => catChip(c)).join('')}</div>
+  <div class="spark-wrap">${sparkline(sub)}</div>
+  <div class="card-actions">
+    <button class="act" data-act="details">Подробнее ▾</button>
+    <button class="act" data-act="limits">Детально по лимитам ▾</button>
+  </div>
+  <div class="panel panel-details">
+    <div class="panel-section">
+      <div class="panel-title">Рекомендация</div>
+      <ul class="rec-list">${sub.recommendation.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+      <div class="econo">Потенциал экономии: <b>${money(sub.overpayment * 0.7)}/мес</b> · прогноз след. месяца ${money(sub.avg * 1.05)}</div>
+    </div>
+    <div class="panel-section">
+      <div class="panel-title">Динамика по месяцам</div>
+      <div class="months">${monthsHistory(sub)}</div>
+    </div>
+  </div>
+  <div class="panel panel-limits">
+    <div class="panel-section">
+      <div class="panel-title">Использование пакетов</div>
+      <div class="limits-grid">${sub.categories.map((c) => limitRow(c)).join('')}</div>
+      <div class="panel-hint">Пакеты берутся из тарифа «${escapeHtml(sub.planName)}».</div>
+    </div>
+  </div>
+</div>`;
+}
+
+function catChip(c) {
+  const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
+  const pct = c.limit ? Math.min(100, Math.round(c.ratio * 100)) : 0;
+  return `<div class="chip chip-${level}"><span class="chip-ico">${c.icon}</span><span>${c.label}</span><span>${pct}%</span></div>`;
+}
+
+function limitRow(c) {
+  const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
+  const pct = c.limit ? Math.min(100, c.ratio * 100) : 0;
+  const adviceCls = c.advice.type === 'raise' ? 'pill-danger' : (c.advice.type === 'lower' ? 'pill-accent' : 'pill-good');
+  const adviceLbl = c.advice.type === 'raise' ? '↑ повысить' : (c.advice.type === 'lower' ? '↓ понизить' : '✓ ок');
+  const usedStr = c.cat === 'internet' ? fmtUsed(c) : Math.round(c.used);
+  return `<div class="limit-row">
+  <div class="limit-head">
+    <span>${c.icon}</span>
+    <span class="limit-name">${c.label}</span>
+    <span class="limit-val">${usedStr} / ${c.limit} ${c.unit}</span>
+    <span class="pill ${adviceCls}">${adviceLbl}</span>
+  </div>
+  <div class="bar bar-lg${pct > 100 ? ' bar-over' : ''}"><div class="bar-fill fill-${level}" style="width:${Math.min(100, pct)}%"></div></div>
+  <div class="limit-advice">${escapeHtml(c.advice.text)}</div>
+</div>`;
+}
+
+function monthsHistory(sub) {
+  const labels = getRecentMonthLabels(HISTORY_MONTHS);
+  return sub.monthly.map((v, i) => {
+    const real = i === sub.monthly.length - 1;
+    return `<span class="m-item${real ? ' m-real' : ''}"><b>${money(v)}</b> <em>${labels[i]}</em></span>`;
+  }).join('');
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.act');
+  if (!btn) return;
+
+  const card = btn.closest('.user-card');
+  const which = btn.dataset.act === 'limits' ? 'panel-limits' : 'panel-details';
+  const open = card.classList.toggle(`open-${btn.dataset.act}`);
+  const panel = card.querySelector(`.${which}`);
+  if (panel) panel.classList.toggle('show', open);
+  btn.textContent = btn.textContent.replace(open ? '▾' : '▴', open ? '▴' : '▾');
+});
+
+function sparkline(sub) {
+  const data = sub.monthly;
+  const W = 300, H = 84, padL = 6, padR = 6, padT = 12, padB = 16;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const maxVal = Math.max(...data, sub.planFee, 1) * 1.18;
+  const x = (i) => padL + (i / (data.length - 1)) * chartW;
+  const y = (v) => padT + chartH - (v / maxVal) * chartH;
+  const labels = getRecentMonthLabels(data.length);
+  const linePts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const areaD = `M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${linePts.join(' L')} L${x(data.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
+  const limitY = y(sub.planFee).toFixed(1);
+  const dots = data.map((v, i) => {
+    const real = i === data.length - 1;
+    return `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${real ? 3 : 2}" class="${real ? 'spark-dot-real' : 'spark-dot'}"/>`;
+  }).join('');
+  const xlabels = labels.map((l, i) =>
+    `<text x="${x(i).toFixed(1)}" y="${H - 4}" class="spark-xlabel">${l}</text>`
+  ).join('');
+
+  return `<svg width="${W}" height="${H}" class="spark">
+  <path d="${areaD}" class="spark-area"/>
+  <polyline points="${linePts.join(' ')}" class="spark-line"/>
+  ${sub.planFee > 0 ? `<line x1="${padL}" y1="${limitY}" x2="${W - padR}" y2="${limitY}" class="spark-limit"/>` : ''}
+  ${dots}${xlabels}
+</svg>`;
+}
+
+function donutSvg(score, cls) {
+  const r = 34, c = 2 * Math.PI * r;
+  const off = c * (1 - score / 100);
+  return `<svg width="80" height="80" class="donut donut-${cls}">
+  <circle cx="40" cy="40" r="${r}" class="donut-track"/>
+  <circle cx="40" cy="40" r="${r}" class="donut-val" stroke-dasharray="${c}" stroke-dashoffset="${off}"/>
+  <text x="40" y="46" text-anchor="middle" class="donut-text">${score}</text>
+</svg>`;
+}
+
+function drawBigChart() {
+  const host = document.getElementById('bigChart');
+  if (!host || !renderedSubscribers.length) {
+    if (host) host.innerHTML = '<div class="empty">Нет данных</div>';
+    return;
+  }
+
+  const months = getRecentMonthLabels(HISTORY_MONTHS);
+  const totals = new Array(HISTORY_MONTHS).fill(0);
+  renderedSubscribers.forEach((s) => s.monthly.forEach((v, i) => { totals[i] += v; }));
+
+  const W = 720, H = 260, padL = 64, padR = 20, padT = 20, padB = 34;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const maxVal = Math.max(...totals, 1) * 1.12;
+  const x = (i) => padL + (i / (totals.length - 1)) * chartW;
+  const y = (v) => padT + chartH - (v / maxVal) * chartH;
+
+  const grid = [];
+  for (let i = 0; i <= 4; i++) {
+    const gy = padT + (i / 4) * chartH;
+    const val = maxVal * (1 - i / 4);
+    grid.push(`<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" class="grid"/>`);
+    grid.push(`<text x="${padL - 8}" y="${gy + 4}" text-anchor="end" class="axis-label">${Math.round(val)}</text>`);
+  }
+  const linePts = totals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const areaD = `M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${linePts.join(' L')} L${x(totals.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
+  const dots = totals.map((v, i) =>
+    `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4" class="big-dot"/>`
+  ).join('');
+  const xlabels = months.map((m, i) =>
+    `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" class="axis-label">${m}</text>`
+  ).join('');
+  const valLabels = totals.map((v, i) =>
+    `<text x="${x(i).toFixed(1)}" y="${y(v) - 8}" text-anchor="middle" class="big-vlabel">${money(v)}</text>`
+  ).join('');
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="big-svg">
+  ${grid.join('')}
+  <path d="${areaD}" class="big-area"/>
+  <polyline points="${linePts.join(' ')}" class="big-line"/>
+  ${dots}${valLabels}${xlabels}
+</svg>`;
+}
+
+/* ── Helpers ───────────────────────────────────────────────── */
+function money(v) { return (Math.round(v) || 0).toLocaleString('ru-RU') + ' ₽'; }
+function fmtUsed(c) {
+  if (c.cat === 'internet') return c.used.toFixed(c.used < 10 ? 1 : 0);
+  return Math.round(c.used);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+function getRecentMonthLabels(count) {
+  const now = new Date();
+  const labels = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    labels.push(MONTH_NAMES[d.getMonth()]);
+  }
+  return labels;
+}
+
+function showLoading(text, pct) {
+  const loading = document.getElementById('loading');
+  if (loading) loading.style.display = 'flex';
+  const loadingText = document.getElementById('loadingText');
+  if (loadingText) loadingText.innerText = text;
+  const progressFill = document.getElementById('progressFill');
+  if (progressFill) progressFill.style.width = `${pct}%`;
+}
+
+function hideLoading() {
+  const loading = document.getElementById('loading');
+  if (loading) loading.style.display = 'none';
+}
+
+function flashHint(text) {
+  const hint = document.getElementById('hint');
+  if (hint) {
+    hint.innerText = text;
+    hint.classList.add('show');
+    setTimeout(() => hint.classList.remove('show'), 3200);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DEMO DATA
+   ═══════════════════════════════════════════════════════════════ */
+
+const DEMO_PLANS = [
+  { fee: 140, name: 'Интернет. Без Переплат 04.23', minutes: 700, sms: 300, internet_mb: 15000 },
+  { fee: 230, name: 'Управляй! Специалист +', minutes: 1500, sms: 500, internet_mb: 25000 },
+  { fee: 400, name: 'Федеральный Специальный B2B', minutes: 4000, sms: 1000, internet_mb: 70000 },
+];
+
+function loadDemoData() {
+  showLoading('Генерация демо-данных…', 30);
+  const reportData = {};
+
+  for (let i = 0; i < 50; i++) {
+    const phone = generatePhone();
+    const plan = DEMO_PLANS[Math.floor(Math.random() * DEMO_PLANS.length)];
+    const data = { items: [], planFee: plan.fee, planName: plan.name };
+
+    const outMin = Math.floor(Math.random() * 500);
+    if (outMin > 0) data.items.push({ key: 'home_outgoing_calls', category: 'voice', rawVolume: `${outMin} мин`, volume: outMin, unit: 'мин', withDiscount: 0 });
+    const inMin = Math.floor(Math.random() * 600) + 50;
+    data.items.push({ key: 'home_incoming_calls', category: 'voice', rawVolume: `${inMin} мин`, volume: inMin, unit: 'мин', withDiscount: 0 });
+    const onnetMin = Math.floor(Math.random() * 300);
+    if (onnetMin > 0) data.items.push({ key: 'home_onnet_calls', category: 'voice', rawVolume: `${onnetMin} мин`, volume: onnetMin, unit: 'мин', withDiscount: 0 });
+    const otherMin = Math.floor(Math.random() * 100);
+    const otherCost = +(otherMin * 0.18).toFixed(2);
+    if (otherMin > 0) data.items.push({ key: 'home_other_operators', category: 'voice', rawVolume: `${otherMin} мин`, volume: otherMin, unit: 'мин', noDiscount: otherCost, withDiscount: otherCost });
+    const intercityMin = Math.floor(Math.random() * 80);
+    const intercityCost = +(intercityMin * 0.25).toFixed(2);
+    if (intercityMin > 0) data.items.push({ key: 'home_intercity_calls', category: 'voice', rawVolume: `${intercityMin} мин`, volume: intercityMin, unit: 'мин', noDiscount: intercityCost, withDiscount: intercityCost });
+    const internetMb = +(Math.random() * 50000).toFixed(2);
+    const internetCost = +(Math.max(0, (internetMb - 5000)) * 0.0001).toFixed(2);
+    data.items.push({ key: 'home_mobile_internet', category: 'internet', rawVolume: `${internetMb} Мбайт`, volume: internetMb, unit: 'Мбайт', noDiscount: internetCost, withDiscount: internetCost });
+    const inSms = Math.floor(Math.random() * 200);
+    if (inSms > 0) data.items.push({ key: 'home_incoming_sms', category: 'sms', rawVolume: `${inSms} шт`, volume: inSms, unit: 'шт', withDiscount: 0 });
+    const outSms = Math.floor(Math.random() * 60);
+    const smsCost = +(outSms * 0.05).toFixed(2);
+    if (outSms > 0) data.items.push({ key: 'home_sms', category: 'sms', rawVolume: `${outSms} шт`, volume: outSms, unit: 'шт', noDiscount: smsCost, withDiscount: smsCost });
+    if (Math.random() < 0.3) data.items.push({ key: 'employee_protection_fee', category: 'other', rawVolume: '1', volume: 1, unit: '', withDiscount: 90, noDiscount: 90 });
+    if (Math.random() < 0.15) {
+      const travelMin = Math.floor(Math.random() * 40) + 1;
+      const travelCost = +(travelMin * 0.18).toFixed(2);
+      data.items.push({ key: 'travel_outgoing_calls', category: 'voice', rawVolume: `${travelMin} мин`, volume: travelMin, unit: 'мин', noDiscount: travelCost, withDiscount: travelCost });
+    }
+    if (Math.random() < 0.1) {
+      const travelSms = Math.floor(Math.random() * 20) + 1;
+      const travelSmsCost = +(travelSms * 0.1).toFixed(2);
+      data.items.push({ key: 'travel_sms', category: 'sms', rawVolume: `${travelSms} шт`, volume: travelSms, unit: 'шт', noDiscount: travelSmsCost, withDiscount: travelSmsCost });
+    }
+
+    reportData[phone] = data;
+  }
+
+  currentFilter = 'all';
+  currentSort = 'overpay';
+  sortDirection = 'desc';
+  buildReportFromData(reportData);
+}
+
+function generatePhone() {
+  const prefixes = [900, 901, 902, 903, 904, 905, 906, 908, 909, 910, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 950, 951, 952, 953, 958];
+  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+  let rest = '';
+  for (let i = 0; i < 7; i++) rest += Math.floor(Math.random() * 10);
+  return prefix + rest;
+}
