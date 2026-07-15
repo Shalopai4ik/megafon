@@ -351,16 +351,32 @@ function buildSubscriberRecord(number, data) {
     other: { used: 0, cost: 0 },
   };
 
+  // Исходящий трафик — НЕ считаем входящие вызовы/сообщения
+  const outgoingKeys = new Set([
+    'home_outgoing_calls', 'home_other_operators', 'home_onnet_calls',
+    'home_intercity_calls', 'travel_outgoing_calls', 'travel_intercity_calls',
+    'travel_onnet_russia_calls', 'travel_other_operators', 'mass_calls',
+    'international_calls', 'international_roaming_russia_calls',
+    'international_roaming_local_calls', 'friend_call',
+    'calls_intl_roaming', 'outgoing_calls_intl_roaming',
+    'home_mobile_internet', 'travel_mobile_internet', 'national_roaming_internet',
+    'home_sms', 'travel_sms', 'multimedia_messages',
+    'international_roaming_sms', 'national_roaming_messages', 'voice_sms'
+  ]);
+
   data.items.forEach((it) => {
     extraCost += it.withDiscount;
     const c = cats[it.category];
     c.cost += it.withDiscount;
-    if (it.category === 'voice' && it.unit === 'мин') {
-      c.used += it.volume;
-    } else if (it.category === 'internet') {
-      c.used += it.volume;
-    } else if (it.category === 'sms' && it.unit === 'шт') {
-      c.used += it.volume;
+    // Считаем исходящий трафик ТОЛЬКО для исходящих услуг
+    if (outgoingKeys.has(it.key)) {
+      if (it.category === 'voice' && it.unit === 'мин') {
+        c.used += it.volume;
+      } else if (it.category === 'internet') {
+        c.used += it.volume;
+      } else if (it.category === 'sms' && it.unit === 'шт') {
+        c.used += it.volume;
+      }
     }
   });
 
@@ -535,6 +551,14 @@ function renderCard(sub) {
   const trendClass = sub.trend > 0.5 ? 'up' : (sub.trend < -0.5 ? 'down' : 'flat');
   const trendArrow = trendClass === 'up' ? '↗' : (trendClass === 'down' ? '↘' : '→');
   const title = sub.name ? escapeHtml(sub.name) : `Абонент ${sub.number}`;
+  const badgeCls = sub.status === 'danger' ? 'danger' : sub.status === 'warning' ? 'warning' : 'normal';
+
+  // Форматирование объёмов: минуты, ГБ/МБ, шт
+  const fmtUsage = (c) => {
+    if (c.used === 0) return '—';
+    if (c.cat === 'internet') return c.used >= 1024 ? (c.used / 1024).toFixed(1) + ' ТБ' : c.used.toFixed(0) + ' МБ';
+    return Math.round(c.used) + ' ' + c.unit;
+  };
 
   return `<div class="user-card" data-phone="${sub.number}">
   <div class="card-header">
@@ -542,7 +566,7 @@ function renderCard(sub) {
       <div class="user-name">${title}</div>
       <div class="user-sub">${sub.name ? sub.number + ' · ' : ''}${escapeHtml(sub.planName)}</div>
     </div>
-    <span class="badge badge-${sub.status === 'danger' ? 'danger' : sub.status === 'warning' ? 'warning' : 'normal'}">${riskText}</span>
+    <span class="badge badge-${badgeCls}">${riskText}</span>
   </div>
   <div class="cost-row">
     <div>
@@ -551,7 +575,7 @@ function renderCard(sub) {
     </div>
     <span class="trend trend-${trendClass}">${trendArrow} ${sub.trend > 0 ? '+' : ''}${sub.trend.toFixed(0)}%</span>
   </div>
-  <div class="cat-chips">${sub.categories.map((c) => catChip(c)).join('')}</div>
+  <div class="cat-chips">${sub.categories.map((c) => catChipWithUsage(c, fmtUsage)).join('')}</div>
   <div class="spark-wrap">${sparkline(sub)}</div>
   <div class="card-actions">
     <button class="act" data-act="details">Подробнее ▾</button>
@@ -584,6 +608,12 @@ function catChip(c) {
   return `<div class="chip chip-${level}"><span class="chip-ico">${c.icon}</span><span>${c.label}</span><span>${pct}%</span></div>`;
 }
 
+function catChipWithUsage(c, fmtUsage) {
+  const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
+  const usage = fmtUsage(c);
+  return `<div class="chip chip-${level}"><span class="chip-ico">${c.icon}</span><span>${usage}</span><span>${money(c.cost)}</span></div>`;
+}
+
 function limitRow(c) {
   const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
   const pct = c.limit ? Math.min(100, c.ratio * 100) : 0;
@@ -611,15 +641,26 @@ function monthsHistory(sub) {
 }
 
 document.addEventListener('click', (e) => {
+  // Клик по кнопке "Подробнее" / "Детально по лимитам" — раскрытие панели
   const btn = e.target.closest('.act');
-  if (!btn) return;
+  if (btn) {
+    const card = btn.closest('.user-card');
+    if (card) {
+      const which = btn.dataset.act === 'limits' ? 'panel-limits' : 'panel-details';
+      const open = card.classList.toggle(`open-${btn.dataset.act}`);
+      const panel = card.querySelector(`.${which}`);
+      if (panel) panel.classList.toggle('show', open);
+      btn.textContent = btn.textContent.replace(open ? '▾' : '▴', open ? '▴' : '▾');
+    }
+    return;
+  }
 
-  const card = btn.closest('.user-card');
-  const which = btn.dataset.act === 'limits' ? 'panel-limits' : 'panel-details';
-  const open = card.classList.toggle(`open-${btn.dataset.act}`);
-  const panel = card.querySelector(`.${which}`);
-  if (panel) panel.classList.toggle('show', open);
-  btn.textContent = btn.textContent.replace(open ? '▾' : '▴', open ? '▴' : '▾');
+  // Клик по карточке — открыть модалку с подробной инфой
+  const card = e.target.closest('.user-card');
+  if (card) {
+    const phone = card.dataset.phone;
+    if (phone) openSubModal(phone);
+  }
 });
 
 function sparkline(sub) {
@@ -657,6 +698,45 @@ function donutSvg(score, cls) {
   <circle cx="40" cy="40" r="${r}" class="donut-val" stroke-dasharray="${c}" stroke-dashoffset="${off}"/>
   <text x="40" y="46" text-anchor="middle" class="donut-text">${score}</text>
 </svg>`;
+}
+
+function makeChartSVG(data, planFee, W, H) {
+  const pL = 50, pR = 10, pT = 15, pB = 25;
+  const cW = W - pL - pR, cH = H - pT - pB;
+  let mx = 0;
+  for (let i = 0; i < data.length; i++) if (data[i] > mx) mx = data[i];
+  mx = Math.max(mx, planFee, 1) * 1.15;
+  const xFn = (i) => pL + (i / (data.length - 1)) * cW;
+  const yFn = (v) => pT + cH - (v / mx) * cH;
+  const labels = getRecentMonthLabels(data.length);
+
+  let gr = '';
+  for (let g = 0; g <= 3; g++) {
+    const gy = pT + (g / 3) * cH, val = mx * (1 - g / 3);
+    gr += `<line x1="${pL}" y1="${gy}" x2="${W - pR}" y2="${gy}" stroke="var(--grid)" stroke-width="1"/>`;
+    gr += `<text x="${pL - 6}" y="${gy + 4}" text-anchor="end" class="axis-label">${Math.round(val).toLocaleString('ru-RU')}</text>`;
+  }
+
+  const pts = data.map((v, i) => `${xFn(i).toFixed(1)},${yFn(v).toFixed(1)}`);
+  const area = `M${xFn(0).toFixed(1)},${(pT + cH).toFixed(1)} L${pts.join(' L')} L${xFn(data.length - 1).toFixed(1)},${(pT + cH).toFixed(1)} Z`;
+
+  const dots = data.map((v, i) => {
+    const real = i === data.length - 1;
+    return `<circle cx="${xFn(i).toFixed(1)}" cy="${yFn(v).toFixed(1)}" r="${real ? 4 : 2.5}" fill="${real ? 'var(--accent)' : 'var(--primary)'}" stroke="var(--surface)" stroke-width="1.5"/>`;
+  }).join('');
+
+  const xl = labels.map((l, i) =>
+    `<text x="${xFn(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="axis-label">${l}</text>`
+  ).join('');
+
+  const lim = planFee > 0 ? `<line x1="${pL}" y1="${yFn(planFee).toFixed(1)}" x2="${W - pR}" y2="${yFn(planFee).toFixed(1)}" stroke="var(--danger)" stroke-width="1" stroke-dasharray="4 4" opacity=".5"/>` : '';
+
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+    ${gr}
+    <path d="${area}" fill="rgba(31,122,92,.08)"/>
+    <polyline points="${pts.join(' ')}" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linejoin="round"/>
+    ${lim}${dots}${xl}
+  </svg>`;
 }
 
 function drawBigChart() {
@@ -745,6 +825,112 @@ function flashHint(text) {
     hint.classList.add('show');
     setTimeout(() => hint.classList.remove('show'), 3200);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MODAL — подробная информация по абоненту
+// ═══════════════════════════════════════════════════════════════
+
+function openSubModal(phone) {
+  const sub = allSubscribers.find(s => s.number === phone);
+  if (!sub) return;
+
+  const el = document.getElementById('subModalContent');
+  const title = sub.name ? escapeHtml(sub.name) : `Абонент ${sub.number}`;
+  const badgeCls = sub.status === 'danger' ? 'danger' : sub.status === 'warning' ? 'warning' : 'normal';
+  const badgeText = sub.status === 'danger' ? 'Повысить лимит' : sub.status === 'warning' ? 'В зоне риска' : 'Лимит ок';
+
+  const fmtUsage = (c) => {
+    if (c.used === 0) return '—';
+    if (c.cat === 'internet') return c.used >= 1024 ? (c.used / 1024).toFixed(1) + ' ТБ' : c.used.toFixed(0) + ' МБ';
+    return Math.round(c.used) + ' ' + c.unit;
+  };
+
+  let h = '';
+
+  // Шапка
+  h += `<div class="sm-header">
+    <div>
+      <div class="sm-name">${title}</div>
+      <div class="sm-sub">${sub.name ? sub.number + ' · ' : ''}${escapeHtml(sub.planName)}</div>
+    </div>
+    <div style="text-align:right">
+      <div class="sm-cost-big">${money(sub.totalCost)}</div>
+      <div class="sm-cost-sub">Абонплата ${money(sub.planFee)} · переплата ${money(sub.overpayment)}</div>
+      <span class="badge badge-${badgeCls}" style="margin-top:4px">${badgeText}</span>
+    </div>
+  </div>`;
+
+  // Контейнеры: Минуты, Интернет, SMS
+  h += '<div class="sm-cats">';
+  sub.categories.forEach(c => {
+    h += `<div class="sm-cat">
+      <div class="sm-cat-icon">${c.icon}</div>
+      <div class="sm-cat-val">${fmtUsage(c)}</div>
+      <div class="sm-cat-lbl">${c.label}</div>
+      <div class="sm-cat-cost">${money(c.cost)}</div>
+    </div>`;
+  });
+  h += '</div>';
+
+  // Рекомендации
+  h += '<div class="sm-section"><div class="sm-title">Рекомендации</div><div class="sm-rec">';
+  sub.recommendation.forEach(r => { h += `<div>• ${escapeHtml(r)}</div>`; });
+  h += '</div></div>';
+
+  // Динамика расходов — график
+  h += '<div class="sm-section"><div class="sm-title">Динамика расходов</div>';
+  h += `<div class="sm-chart" title="Нажмите для увеличения">${makeChartSVG(sub.monthly, sub.planFee, 400, 160)}</div>`;
+  h += '<div class="months" style="margin-top:6px">' + monthsHistory(sub) + '</div>';
+  h += '</div>';
+
+  // Графики по каждой категории
+  h += '<div class="sm-section"><div class="sm-title">Расходы по категориям</div>';
+  h += '<div class="sm-chart-row">';
+  sub.categories.forEach(c => {
+    const catData = generateCatHistory(c);
+    h += `<div class="sm-chart-item">
+      <div class="sm-chart-item-title">${c.icon} ${c.label}</div>
+      ${makeChartSVG(catData, c.limit, 200, 100)}
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${money(c.cost)} / лимит ${money(c.limit)}</div>
+    </div>`;
+  });
+  h += '</div></div>';
+
+  // Все услуги
+  h += '<div class="sm-section"><div class="sm-title">Все услуги</div><div class="sm-services">';
+  if (sub.items && sub.items.length) {
+    sub.items.sort((a, b) => b.withDiscount - a.withDiscount).forEach(it => {
+      h += `<div class="sm-svc">
+        <span class="sm-svc-name">${escapeHtml(it.serviceName)}</span>
+        <span class="sm-svc-vol">${it.rawVolume}</span>
+        <span class="sm-svc-amt">${money(it.withDiscount)}</span>
+      </div>`;
+    });
+  }
+  h += '</div></div>';
+
+  // Прогноз
+  h += '<div class="sm-section"><div class="sm-title">Прогноз</div><div class="sm-rec">';
+  h += `<div>Потенциал экономии: <b>${money(sub.overpayment * 0.7)}/мес</b></div>`;
+  h += `<div>Прогноз следующего месяца: <b>${money(sub.avg * 1.05)}</b></div>`;
+  h += '</div></div>';
+
+  el.innerHTML = h;
+  document.getElementById('subModal').style.display = 'flex';
+}
+
+function closeSubModal() {
+  document.getElementById('subModal').style.display = 'none';
+}
+
+function generateCatHistory(cat) {
+  const base = cat.cost;
+  const rnd = seededRandom(cat.label);
+  const history = [];
+  for (let i = 0; i < 5; i++) history.push(base * (0.7 + rnd() * 0.6));
+  history.push(base);
+  return history;
 }
 
 /* ═══════════════════════════════════════════════════════════════
