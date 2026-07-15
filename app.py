@@ -193,7 +193,7 @@ def _parse_csv_text(text):
             continue
 
         if "тарифный план" in lower:
-            quote = re.search(r"«"([^»"]+)»"", cleaned)
+            quote = re.search(r'\u00ab"([^"]+)\u00bb', cleaned)
             if quote and current_number:
                 subscribers[current_number]["planName"] = quote.group(1)
             continue
