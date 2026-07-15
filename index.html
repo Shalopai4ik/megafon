@@ -100,6 +100,19 @@
     <span id="resultCount" class="result-count"></span>
   </section>
 
+  <section id="welcomeSection" class="empty-state" style="display:block">
+    <div style="margin-bottom:20px;font-size:48px">📊</div>
+    <h2 style="margin:0 0 8px;font-size:20px">Анализ расходов на связь</h2>
+    <p style="color:var(--text-muted);max-width:480px;margin:0 auto 24px">
+      Загрузите файл-счет в формате CSV для анализа расходов абонентов,
+      или нажмите <strong>Демо-данные</strong> для просмотра работы системы.
+    </p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="document.getElementById('billsFile').click()">Загрузить CSV</button>
+      <button class="btn btn-outline" style="color:var(--primary);border-color:var(--primary)" onclick="document.getElementById('demoBtn').click()">Демо-данные</button>
+    </div>
+  </section>
+
   <section id="usersGrid" class="users-grid"></section>
 
 </main>

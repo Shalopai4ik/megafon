@@ -344,7 +344,9 @@ function buildReportFromData(reportData) {
   const kpiPanel = document.getElementById('kpiPanel');
   const analyticsPanel = document.getElementById('analyticsPanel');
   const filtersPanel = document.getElementById('filtersPanel');
+  const welcomeSection = document.getElementById('welcomeSection');
 
+  if (welcomeSection) welcomeSection.style.display = 'none';
   if (kpiPanel) kpiPanel.style.display = 'grid';
   if (analyticsPanel) analyticsPanel.style.display = 'flex';
   if (filtersPanel) filtersPanel.style.display = 'flex';
