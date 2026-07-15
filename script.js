@@ -1,5 +1,6 @@
 'use strict';
 
+/* ── Service mapping: CSV service name → internal key ─────────── */
 const SERVICE_MAP = {
   'абонентский номер': 'subscriber_number',
   'тарифный план': 'tariff_plan',
@@ -43,6 +44,21 @@ const SERVICE_MAP = {
   'исходящие вызовы на номера страны пребывания в международном роуминге': 'international_roaming_local_calls',
   'прочие начисления': 'misc_charges',
   'ми.детализация счета': 'mi_detailing',
+  'входящие sms в международном роуминге': 'incoming_sms_intl_roaming',
+  'вызовы в международном роуминге': 'calls_intl_roaming',
+  'исходящие вызовы в международном роуминге': 'outgoing_calls_intl_roaming',
+  'услуги национального роуминга': 'national_roaming_services',
+  'услуги международного роуминга': 'intl_roaming_services',
+  'начисления за голосовые услуги в национальном роуминге': 'national_roaming_voice',
+  'абонентская плата m2m': 'm2m_fee',
+  'абонентская плата m2m флекс': 'm2m_flex_fee',
+  'виртуальная атс': 'virtual_pbx',
+  'видеостриминг': 'video_streaming',
+  'замена sim-карты': 'sim_replacement',
+  'запрет развлекательного контента': 'ban_content',
+  'дополнительный городской номер': 'extra_city_number',
+  'дополнительный номер': 'extra_number',
+  'mi.': 'mi_service',
 };
 
 const META_KEYS = new Set(['subscriber_number', 'tariff_plan', 'total_charged', 'vat_included']);
@@ -55,12 +71,14 @@ const CATEGORY_OF = {
   international_calls: 'voice', international_roaming_russia_calls: 'voice',
   international_roaming_local_calls: 'voice', friend_call: 'voice',
   voicemail: 'voice', auto_answer: 'voice', call_hold: 'voice',
+  calls_intl_roaming: 'voice', outgoing_calls_intl_roaming: 'voice',
   home_mobile_internet: 'internet', travel_mobile_internet: 'internet',
   national_roaming_internet: 'internet',
   home_sms: 'sms', home_incoming_sms: 'sms',
   travel_sms: 'sms', travel_incoming_sms: 'sms',
   multimedia_messages: 'sms', international_roaming_sms: 'sms',
   national_roaming_messages: 'sms', voice_sms: 'sms',
+  incoming_sms_intl_roaming: 'sms',
 };
 
 const TARIFFS = {
@@ -102,7 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $('billsBtn').addEventListener('click', () => $('billsFile').click());
     $('billsFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
-      if (file) processFile(file);
+      if (file) uploadCSV(file);
     });
   }
 
@@ -167,6 +185,85 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+/* ── Upload CSV to Python backend ──────────────────────────── */
+function uploadCSV(file) {
+  showLoading('Отправка файла на сервер…', 10);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  fetch('/api/upload-csv', {
+    method: 'POST',
+    body: formData,
+  })
+    .then((r) => {
+      if (!r.ok) return r.json().then((e) => { throw new Error(e.error || 'Ошибка сервера'); });
+      return r.json();
+    })
+    .then((data) => {
+      showLoading('Анализ данных…', 60);
+      currentFilter = 'all';
+      currentSort = 'overpay';
+      sortDirection = 'desc';
+      processServerData(data);
+    })
+    .catch((err) => {
+      showLoading(`Ошибка: ${err.message}`, 100);
+      setTimeout(hideLoading, 3000);
+    });
+}
+
+function processServerData(data) {
+  showLoading('Построение отчёта…', 80);
+  const reportData = {};
+
+  for (const [number, sub] of Object.entries(data.subscribers)) {
+    const items = [];
+    let planFee = sub.planFee || 0;
+
+    for (const item of sub.items) {
+      const key = matchServiceKey(item.serviceName);
+      if (!key) continue;
+
+      if (key === 'plan_fee') {
+        planFee += item.withDiscount;
+        continue;
+      }
+      if (META_KEYS.has(key)) continue;
+
+      items.push({
+        key,
+        category: CATEGORY_OF[key] || 'other',
+        rawVolume: item.rawVolume,
+        volume: item.volume,
+        unit: item.unit,
+        noDiscount: item.noDiscount,
+        discount: item.discount,
+        withDiscount: item.withDiscount,
+        serviceName: item.serviceName,
+        allColumns: item.allColumns,
+      });
+    }
+
+    reportData[number] = {
+      items,
+      planFee,
+      planName: sub.planName || `Тариф ${Math.round(planFee)}₽`,
+    };
+  }
+
+  buildReportFromData(reportData);
+}
+
+function matchServiceKey(serviceName) {
+  const lower = serviceName.toLowerCase();
+  for (const [pattern, key] of Object.entries(SERVICE_MAP)) {
+    if (lower.includes(pattern)) return key;
+  }
+  return null;
+}
+
+/* ── View toggles ──────────────────────────────────────────── */
 function setView(mode) {
   const grid = document.getElementById('usersGrid');
   document.querySelectorAll('.view').forEach((b) => b.classList.remove('active'));
@@ -187,6 +284,7 @@ function toggleTheme() {
   if (panel && panel.classList.contains('open')) drawBigChart();
 }
 
+/* ── Workers file ──────────────────────────────────────────── */
 function loadWorkers(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -213,125 +311,7 @@ function parseWorkers(text) {
   return map;
 }
 
-function processFile(file) {
-  showLoading('Чтение файла…', 20);
-  const reader = new FileReader();
-
-  reader.onload = (e) => {
-    try {
-      const reportData = processFileContent(e.target.result);
-      currentFilter = 'all';
-      currentSort = 'overpay';
-      sortDirection = 'desc';
-      buildReportFromData(reportData);
-    } catch (error) {
-      showLoading(`Ошибка: ${error.message}`, 100);
-      setTimeout(hideLoading, 3000);
-    }
-  };
-
-  reader.onerror = () => {
-    showLoading('Ошибка чтения файла', 100);
-    setTimeout(hideLoading, 2000);
-  };
-
-  reader.readAsText(file, 'windows-1251');
-}
-
-function cleanLine(line) {
-  return line.replace(/\r$/, '').replace(/^;+/, '').replace(/;{2,}/g, ';').replace(/;$/, '');
-}
-
-function parseServiceLine(line) {
-  const parts = line.split(';').map((p) => p.trim()).filter((p) => p !== '');
-  if (parts.length < 2) return null;
-
-  const serviceName = parts[0].trim().toLowerCase();
-  let rawVolume = '';
-  let volume = 0;
-  let unit = '';
-  let noDiscount = 0;
-  let discount = 0;
-  let withDiscount = 0;
-
-  if (parts.length >= 2) {
-    rawVolume = parts[1];
-    const volumeMatch = rawVolume.match(/^([\d.,]+)\s*(шт|мин|Мбайт|Мб|Гб|Гбайт|б)?/i);
-    if (volumeMatch) {
-      volume = parseFloat(volumeMatch[1].replace(',', '.')) || 0;
-      unit = (volumeMatch[2] || '').toLowerCase().trim();
-    } else {
-      volume = parseFloat(rawVolume.replace(',', '.')) || 0;
-    }
-  }
-
-  if (parts.length >= 3) noDiscount = parseFloat(parts[2].replace(',', '.')) || 0;
-  if (parts.length >= 4) discount = parseFloat(parts[3].replace(',', '.')) || 0;
-  if (parts.length >= 5) withDiscount = parseFloat(parts[4].replace(',', '.')) || 0;
-
-  return { serviceName, rawVolume, volume, unit, noDiscount, discount, withDiscount };
-}
-
-function processFileContent(text) {
-  const subscribers = {};
-  let currentNumber = null;
-
-  text.split('\n').forEach((line) => {
-    const cleaned = cleanLine(line);
-    if (!cleaned) return;
-
-    const lowerLine = cleaned.toLowerCase();
-
-    if (lowerLine.includes('абонентский номер')) {
-      const match = cleaned.match(/(\d{10,})/);
-      if (match) {
-        currentNumber = match[1].slice(-10);
-        if (!subscribers[currentNumber]) {
-          subscribers[currentNumber] = { items: [], planFee: 0, planName: '' };
-        }
-      }
-      return;
-    }
-
-    if (lowerLine.includes('тарифный план')) {
-      const quoteMatch = cleaned.match(/«"([^»"]+)»"/);
-      if (quoteMatch && currentNumber) {
-        subscribers[currentNumber].planName = quoteMatch[1];
-      }
-      return;
-    }
-
-    if (currentNumber) {
-      const svc = parseServiceLine(cleaned);
-      if (!svc) return;
-
-      const key = SERVICE_MAP[svc.serviceName];
-      if (!key) return;
-
-      if (key === 'plan_fee') {
-        subscribers[currentNumber].planFee += svc.withDiscount;
-        return;
-      }
-
-      if (META_KEYS.has(key)) return;
-
-      subscribers[currentNumber].items.push({
-        key,
-        category: CATEGORY_OF[key] || 'other',
-        rawVolume: svc.rawVolume,
-        volume: svc.volume,
-        unit: svc.unit,
-        noDiscount: svc.noDiscount,
-        discount: svc.discount,
-        withDiscount: svc.withDiscount,
-        serviceName: svc.serviceName
-      });
-    }
-  });
-
-  return subscribers;
-}
-
+/* ── Build report ──────────────────────────────────────────── */
 function buildReportFromData(reportData) {
   showLoading('Анализ и построение отчёта…', 70);
   allSubscribers = Object.entries(reportData).map(([number, data]) =>
@@ -463,33 +443,34 @@ function seededRandom(str) {
   };
 }
 
+/* ── KPIs ──────────────────────────────────────────────────── */
 function updateKpis() {
   const totalCost = allSubscribers.reduce((s, x) => s + x.totalCost, 0);
   const totalOverpay = allSubscribers.reduce((s, x) => s + x.overpayment, 0);
   const totalCritical = allSubscribers.filter((x) => x.status === 'danger').length;
+
+  setText('totalCount', allSubscribers.length);
+  setText('totalCost', money(totalCost));
+  setText('totalOverpay', money(totalOverpay));
+  setText('totalEconomy', money(totalOverpay * 0.7));
+  setText('criticalCount', totalCritical);
+
   const riskScore = allSubscribers.length ? Math.round((totalCritical / allSubscribers.length) * 100) : 0;
-
-  const totalCountEl = document.getElementById('totalCount');
-  const totalCostEl = document.getElementById('totalCost');
-  const totalOverpayEl = document.getElementById('totalOverpay');
-  const totalEconomyEl = document.getElementById('totalEconomy');
-  const criticalCountEl = document.getElementById('criticalCount');
-  const riskDonutEl = document.getElementById('riskDonut');
-  const riskNoteEl = document.getElementById('riskNote');
-
-  if (totalCountEl) totalCountEl.innerText = allSubscribers.length;
-  if (totalCostEl) totalCostEl.innerText = money(totalCost);
-  if (totalOverpayEl) totalOverpayEl.innerText = money(totalOverpay);
-  if (totalEconomyEl) totalEconomyEl.innerText = money(totalOverpay * 0.7);
-  if (criticalCountEl) criticalCountEl.innerText = totalCritical;
-
   const note = riskScore >= 60 ? 'высокий риск' : (riskScore >= 30 ? 'средний риск' : 'низкий риск');
   const cls = riskScore >= 60 ? 'danger' : (riskScore >= 30 ? 'warning' : 'good');
 
+  const riskDonutEl = document.getElementById('riskDonut');
+  const riskNoteEl = document.getElementById('riskNote');
   if (riskDonutEl) riskDonutEl.innerHTML = donutSvg(riskScore, cls);
   if (riskNoteEl) riskNoteEl.innerText = note;
 }
 
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.innerText = val;
+}
+
+/* ── Rank list ─────────────────────────────────────────────── */
 function updateRankList() {
   const rankList = document.getElementById('rankList');
   if (!rankList) return;
@@ -513,6 +494,7 @@ function updateRankList() {
   });
 }
 
+/* ── Render users ──────────────────────────────────────────── */
 function renderUsers() {
   const usersGrid = document.getElementById('usersGrid');
   const searchTerm = document.getElementById('searchInput') ?
@@ -721,6 +703,7 @@ function drawBigChart() {
 </svg>`;
 }
 
+/* ── Helpers ───────────────────────────────────────────────── */
 function money(v) { return (Math.round(v) || 0).toLocaleString('ru-RU') + ' ₽'; }
 function fmtUsed(c) {
   if (c.cat === 'internet') return c.used.toFixed(c.used < 10 ? 1 : 0);
@@ -728,11 +711,7 @@ function fmtUsed(c) {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[ch]));
 }
 function getRecentMonthLabels(count) {
@@ -768,25 +747,9 @@ function flashHint(text) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  DEMO DATA — генерация фиктивных данных на стороне клиента
-// ═══════════════════════════════════════════════════════════════
-
-const DEMO_NAMES = [
-  'Иванов Алексей', 'Петрова Мария', 'Сидоров Дмитрий', 'Козлова Елена',
-  'Новиков Сергей', 'Морозова Ольга', 'Попов Андрей', 'Волкова Ирина',
-  'Соколов Павел', 'Лебедева Наталья', 'Кузнецов Артём', 'Зайцева Светлана',
-  'Смирнов Виктор', 'Васильева Татьяна', 'Борисов Максим', 'Яковлева Анна',
-  'Григорьев Игорь', 'Романова Екатерина', 'Давыдов Леонид', 'Белова Вера',
-  'Комаров Роман', 'Осипова Галина', 'Савельев Николай', 'Тимофеев Олег',
-  'Андреев Владимир', 'Владимирова Зинаида', 'Макаров Борис', 'Захарова Лариса',
-  'Зимин Фёдор', 'Куликова Людмила', 'Сорокин Валерий', 'Краснова Юлия',
-  'Шестаков Тарас', 'Кочеткова Валентина', 'Богданов Станислав', 'Воробьёва Геннадий',
-  'Медведев Алексей', 'Ершова Дарья', 'Никитин Кирилл', 'Гусева Анастасия',
-  'Рыбаков Константин', 'Абрамова Полина', 'Калугина Ирина', 'Фёдоров Артём',
-  'Шевченко Марина', 'Кудрявцев Евгений', 'Антонова Виктория', 'Крылов Алексей',
-  'Суханова Надежда', 'Лазарев Михаил'
-];
+/* ═══════════════════════════════════════════════════════════════
+   DEMO DATA
+   ═══════════════════════════════════════════════════════════════ */
 
 const DEMO_PLANS = [
   { fee: 140, name: 'Интернет. Без Переплат 04.23', minutes: 700, sms: 300, internet_mb: 15000 },
@@ -815,27 +778,20 @@ function loadDemoData() {
     const intercityMin = Math.floor(Math.random() * 80);
     const intercityCost = +(intercityMin * 0.25).toFixed(2);
     if (intercityMin > 0) data.items.push({ key: 'home_intercity_calls', category: 'voice', rawVolume: `${intercityMin} мин`, volume: intercityMin, unit: 'мин', noDiscount: intercityCost, withDiscount: intercityCost });
-
     const internetMb = +(Math.random() * 50000).toFixed(2);
     const internetCost = +(Math.max(0, (internetMb - 5000)) * 0.0001).toFixed(2);
     data.items.push({ key: 'home_mobile_internet', category: 'internet', rawVolume: `${internetMb} Мбайт`, volume: internetMb, unit: 'Мбайт', noDiscount: internetCost, withDiscount: internetCost });
-
     const inSms = Math.floor(Math.random() * 200);
     if (inSms > 0) data.items.push({ key: 'home_incoming_sms', category: 'sms', rawVolume: `${inSms} шт`, volume: inSms, unit: 'шт', withDiscount: 0 });
     const outSms = Math.floor(Math.random() * 60);
     const smsCost = +(outSms * 0.05).toFixed(2);
     if (outSms > 0) data.items.push({ key: 'home_sms', category: 'sms', rawVolume: `${outSms} шт`, volume: outSms, unit: 'шт', noDiscount: smsCost, withDiscount: smsCost });
-
-    if (Math.random() < 0.3) {
-      data.items.push({ key: 'employee_protection_fee', category: 'other', rawVolume: '1', volume: 1, unit: '', withDiscount: 90, noDiscount: 90 });
-    }
-
+    if (Math.random() < 0.3) data.items.push({ key: 'employee_protection_fee', category: 'other', rawVolume: '1', volume: 1, unit: '', withDiscount: 90, noDiscount: 90 });
     if (Math.random() < 0.15) {
       const travelMin = Math.floor(Math.random() * 40) + 1;
       const travelCost = +(travelMin * 0.18).toFixed(2);
       data.items.push({ key: 'travel_outgoing_calls', category: 'voice', rawVolume: `${travelMin} мин`, volume: travelMin, unit: 'мин', noDiscount: travelCost, withDiscount: travelCost });
     }
-
     if (Math.random() < 0.1) {
       const travelSms = Math.floor(Math.random() * 20) + 1;
       const travelSmsCost = +(travelSms * 0.1).toFixed(2);
