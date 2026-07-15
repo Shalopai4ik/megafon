@@ -122,7 +122,19 @@ body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg)
 .chip-d{color:var(--red);border-color:var(--red);background:var(--red-l)}
 .chip-ico{font-size:11px}
 
-.u-spark{margin-bottom:8px}
+/* Рекомендация под контейнерами */
+.u-rec{margin-bottom:8px;padding:8px 10px;background:var(--primary-l);border-radius:var(--rs);border-left:3px solid var(--primary)}
+.u-rec-item{font-size:11px;color:var(--primary-dk);line-height:1.4;margin-bottom:2px}
+.u-rec-item:last-child{margin-bottom:0}
+
+/* Крупнейшие начисления */
+.charges-list{margin-bottom:4px}
+.charge-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11.5px;border-bottom:1px solid var(--bdr)}
+.charge-row:last-child{border-bottom:none}
+.charge-amt{font-weight:700;color:var(--txt)}
+
+.u-spark{margin-bottom:8px;cursor:pointer}
+.u-spark:hover{opacity:.85}
 .spark{width:100%;height:auto;display:block}
 .spark-area{fill:rgba(25,135,84,.1);stroke:none}
 .spark-line{fill:none;stroke:var(--primary);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}

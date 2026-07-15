@@ -398,45 +398,91 @@ function renderUsers() {
 }
 
 function renderCard(s) {
-  var rt = s.status === 'danger' ? '\u041F\u043E\u0432\u044B\u0441\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442' : s.status === 'warning' ? '\u0412 \u0437\u043E\u043D\u0435 \u0440\u0438\u0441\u043A\u0430' : '\u041B\u0438\u043C\u0438\u0442 \u043E\u043A';
-  var tc2 = s.trend > 0.5 ? 'up' : s.trend < -0.5 ? 'down' : 'flat';
-  var ta = tc2 === 'up' ? '\u2197' : tc2 === 'down' ? '\u2198' : '\u2192';
   var t = s.name ? esc(s.name) : '\u0410\u0431\u043E\u043D\u0435\u043D\u0442 ' + s.number;
   var nm = s.name ? s.number + ' \u00B7 ' : '';
 
   var h = '<div class="ucard s-' + s.status + '" data-phone="' + s.number + '">';
-  h += '<div class="u-top"><div><div class="u-name">' + t + '</div><div class="u-sub">' + nm + esc(s.planName) + '</div></div>';
-  h += '<span class="badge badge-' + s.status + '">' + rt + '</span></div>';
 
-  // Стоимость
+  // Шапка: стоимость + статус
   h += '<div class="u-cost"><div><div class="u-main">' + mny(s.totalCost) + '</div>';
-  h += '<div class="u-sub2">\u0410\u0431\u043E\u043D\u043F\u043B\u0430\u0442\u0430 ' + mny(s.planFee) + ' \u00B7 \u043F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 <span class="over ' + (s.overpayment > 0 ? 'neg' : 'pos') + '">' + mny(s.overpayment) + '</span></div></div>';
-  h += '<span class="u-trend ' + tc2 + '">' + ta + ' ' + (s.trend > 0 ? '+' : '') + s.trend.toFixed(0) + '%</span></div>';
+  h += '<div class="u-sub2">\u0410\u0431\u043E\u043D\u043F\u043B\u0430\u0442\u0430 ' + mny(s.planFee) + ' \u2014 \u043F\u0435\u0440\u0435\u043F\u043B\u0430\u0442\u0430 <span class="over ' + (s.overpayment > 0 ? 'neg' : 'pos') + '">' + mny(s.overpayment) + '</span></div></div>';
+  var badge = s.status === 'danger' ? '\u041F\u043E\u0432\u044B\u0441\u0438\u0442\u044C \u043B\u0438\u043C\u0438\u0442' : s.status === 'warning' ? '\u0412 \u0437\u043E\u043D\u0435 \u0440\u0438\u0441\u043A\u0430' : '\u041B\u0438\u043C\u0438\u0442 \u043E\u043A';
+  h += '<span class="badge badge-' + s.status + '">' + badge + '</span></div>';
 
-  // Категории: показываем и стоимость, и исходящий объём
+  // Имя и тариф
+  h += '<div style="margin-bottom:8px"><div class="u-name">' + t + '</div><div class="u-sub">' + nm + esc(s.planName) + '</div></div>';
+
+  // Контейнеры: Минуты, Интернет, SMS (исходящий трафик + стоимость)
   h += '<div class="u-cats">';
   for (var i=0; i<s.categories.length; i++) {
     var c = s.categories[i];
     var cl = c.cost > c.limit * 0.8 ? 'd' : c.cost > c.limit * 0.5 ? 'w' : 'g';
     var volStr = fmtVol(c);
-    h += '<div class="chip chip-' + cl + '"><span class="chip-ico">' + c.icon + '</span><span>' + volStr + '</span><span>' + mny(c.cost) + '</span></div>';
+    h += '<div class="chip chip-' + cl + '">';
+    h += '<span class="chip-ico">' + c.icon + '</span>';
+    h += '<span>' + volStr + '</span>';
+    h += '<span>' + mny(c.cost) + '</span>';
+    h += '</div>';
   }
   h += '</div>';
 
-  h += '<div class="u-spark">' + sparkline(s) + '</div>';
-  h += '<div class="u-acts"><button class="act" data-act="details">\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435 \u25BE</button>';
-  h += '<button class="act" data-act="limits">\u041B\u0438\u043C\u0438\u0442\u044B \u25BE</button></div>';
+  // Рекомендация (сразу под контейнерами, как на screen2)
+  h += '<div class="u-rec">';
+  for (var j=0; j<s.recommendation.length; j++) h += '<div class="u-rec-item">' + esc(s.recommendation[j]) + '</div>';
+  h += '</div>';
 
-  // Подробнее
-  h += '<div class="panel panel-details"><div class="p-title">\u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u044F</div><ul class="rec-list">';
-  for (var j=0; j<s.recommendation.length; j++) h += '<li>' + esc(s.recommendation[j]) + '</li>';
-  h += '</ul><div class="econo">\u042D\u043A\u043E\u043D\u043E\u043C\u0438\u044F: <b>' + mny(s.overpayment * 0.7) + '/\u043C\u0435\u0441</b> \u00B7 \u043F\u0440\u043E\u0433\u043D\u043E\u0437 ' + mny(s.avg * 1.05) + '</div>';
-  h += '<div class="p-title" style="margin-top:8px">\u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430</div><div class="months">' + moH(s) + '</div></div>';
+  // Кнопки раскрытия
+  h += '<div class="u-acts">';
+  h += '<button class="act" data-act="details">\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435 \u25BE</button>';
+  h += '<button class="act" data-act="limits">\u0414\u0435\u0442\u0430\u043B\u044C\u043D\u043E \u043F\u043E \u043B\u0438\u043C\u0438\u0442\u0430\u043C \u25BE</button>';
+  h += '</div>';
 
-  // Лимиты
-  h += '<div class="panel panel-limits"><div class="p-title">\u041A\u0443\u0434\u0430 \u0443\u0445\u043E\u0434\u044F\u0442 \u0434\u0435\u043D\u044C\u0433\u0438</div>';
-  for (var k=0; k<s.categories.length; k++) h += limitRow(s.categories[k]);
-  h += '<div class="lhint">\u0422\u0430\u0440\u0438\u0444 \u00AB' + esc(s.planName) + '\u00BB</div></div>';
+  // Панель "Подробнее": крупнейшие начисления + динамика
+  h += '<div class="panel panel-details">';
+
+  // Крупнейшие начисления
+  h += '<div class="p-title">\u041A\u0440\u0443\u043F\u043D\u0435\u0439\u0448\u0438\u0435 \u043D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u0438\u044F</div>';
+  h += '<div class="charges-list">';
+  // Сортируем категории по убыванию стоимости
+  var sortedCats = s.categories.slice().sort(function(a,b){return b.cost - a.cost;});
+  for (var k=0; k<sortedCats.length; k++) {
+    var cc = sortedCats[k];
+    if (cc.cost <= 0) continue;
+    h += '<div class="charge-row">';
+    h += '<span>' + cc.icon + ' ' + cc.label + '</span>';
+    h += '<span class="charge-amt">' + mny(cc.cost) + '</span>';
+    h += '</div>';
+  }
+  h += '</div>';
+
+  // Динамика расхода ( мини-график )
+  h += '<div class="p-title" style="margin-top:10px">\u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0440\u0430\u0441\u0445\u043E\u0434\u043E\u0432</div>';
+  h += '<div class="months">' + moH(s) + '</div>';
+
+  // Прогноз
+  h += '<div class="econo" style="margin-top:6px">\u042D\u043A\u043E\u043D\u043E\u043C\u0438\u044F: <b>' + mny(s.overpayment * 0.7) + '/\u043C\u0435\u0441</b> \u00B7 \u043F\u0440\u043E\u0433\u043D\u043E\u0437 \u0441\u043B\u0435\u0434. \u043C\u0435\u0441. ' + mny(s.avg * 1.05) + '</div>';
+  h += '</div>';
+
+  // Панель "Детально по лимитам"
+  h += '<div class="panel panel-limits">';
+  h += '<div class="p-title">\u0420\u0430\u0441\u0445\u043E\u0434\u044B \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u043E \u043B\u0438\u043C\u0438\u0442\u0430</div>';
+
+  // Общий прогресс-бар
+  var totalLimit = 0, totalCost2 = 0;
+  for (var m=0; m<s.categories.length; m++) { totalLimit += s.categories[m].limit; totalCost2 += s.categories[m].cost; }
+  var totalPct = totalLimit > 0 ? Math.min(100, (totalCost2 / totalLimit) * 100) : 0;
+  var totalCl = totalCost2 > totalLimit * 0.8 ? 'd' : totalCost2 > totalLimit * 0.5 ? 'w' : 'g';
+  h += '<div style="margin-bottom:10px">';
+  h += '<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px"><span>\u041D\u0430\u0447\u0438\u0441\u043B\u0435\u043D\u043E <b>' + mny(totalCost2) + '</b></span>';
+  h += '<span>\u041B\u0438\u043C\u0438\u0442 ' + mny(totalLimit) + '</span></div>';
+  h += '<div class="bar bar-lg' + (totalPct > 100 ? ' bar-over' : '') + '"><div class="bar-fill fill-' + totalCl + '" style="width:' + Math.min(100, totalPct) + '%"></div></div>';
+  h += '</div>';
+
+  // Детально по каждой категории
+  for (var n=0; n<s.categories.length; n++) h += limitRow(s.categories[n]);
+  h += '<div class="lhint">\u0422\u0430\u0440\u0438\u0444 \u00AB' + esc(s.planName) + '\u00BB</div>';
+  h += '</div>';
+
   h += '</div>';
   return h;
 }
@@ -474,6 +520,50 @@ function limitRow(c) {
 }
 
 document.addEventListener('click', function(e) {
+  // Клик по спарклайну → открыть график в модальном окне
+  var sparkEl = e.target.closest('.u-spark');
+  if (sparkEl) {
+    var card = sparkEl.closest('.ucard');
+    if (card) {
+      var phone = card.getAttribute('data-phone');
+      var sub = null;
+      for (var i=0; i<allSubs.length; i++) { if (allSubs[i].number === phone) { sub = allSubs[i]; break; } }
+      if (sub) {
+        var mc = document.getElementById('modalChart');
+        if (mc) {
+          // Рисуем увеличенный график
+          var lb = getMoLb(HIST);
+          var d = sub.monthly;
+          var W = 700, H = 300, pL = 70, pR = 20, pT = 30, pB = 40;
+          var cW = W - pL - pR, cH = H - pT - pB;
+          var mx = 0; for (var j=0; j<d.length; j++) if (d[j]>mx) mx=d[j];
+          mx = Math.max(mx, sub.planFee, 1) * 1.18;
+          var xFn = function(i2) { return pL + (i2 / (d.length - 1)) * cW; };
+          var yFn = function(v) { return pT + cH - (v / mx) * cH; };
+          var gr = '';
+          for (var g = 0; g <= 4; g++) {
+            var gy = pT + (g / 4) * cH, val = mx * (1 - g / 4);
+            gr += '<line x1="'+pL+'" y1="'+gy+'" x2="'+(W-pR)+'" y2="'+gy+'" stroke="var(--bdr)" stroke-width="1"/>';
+            gr += '<text x="'+(pL-10)+'" y="'+(gy+4)+'" text-anchor="end" fill="var(--light)" font-size="11">'+Math.round(val).toLocaleString('ru-RU')+'\u20BD</text>';
+          }
+          var pts = []; for (var p2=0; p2<d.length; p2++) pts.push(xFn(p2).toFixed(1)+','+yFn(d[p2]).toFixed(1));
+          var ar = 'M'+xFn(0).toFixed(1)+','+(pT+cH).toFixed(1)+' L'+pts.join(' L')+' L'+xFn(d.length-1).toFixed(1)+','+(pT+cH).toFixed(1)+' Z';
+          var dots = ''; for (var d2=0; d2<d.length; d2++) { var rl2 = d2===d.length-1; dots += '<circle cx="'+xFn(d2).toFixed(1)+'" cy="'+yFn(d[d2]).toFixed(1)+'" r="'+(rl2?5:3)+'" fill="'+(rl2?'var(--orange)':'var(--primary)')+'" stroke="var(--surf)" stroke-width="2"/>'; }
+          var xl = ''; for (var x=0; x<lb.length; x++) xl += '<text x="'+xFn(x).toFixed(1)+'" y="'+(H-10)+'" text-anchor="middle" fill="var(--light)" font-size="12">'+lb[x]+'</text>';
+          var vl = ''; for (var v=0; v<d.length; v++) vl += '<text x="'+xFn(v).toFixed(1)+'" y="'+(yFn(d[v])-10)+'" text-anchor="middle" fill="var(--primary-d)" font-size="12" font-weight="600">'+mny(d[v])+'</text>';
+          var lim = sub.planFee > 0 ? '<line x1="'+pL+'" y1="'+yFn(sub.planFee).toFixed(1)+'" x2="'+(W-pR)+'" y2="'+yFn(sub.planFee).toFixed(1)+'" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="5 5" opacity=".6"/>' : '';
+
+          mc.innerHTML = '<div style="text-align:center;margin-bottom:12px;font-size:14px;font-weight:600">\u0414\u0438\u043D\u0430\u043C\u0438\u043A\u0430 \u0440\u0430\u0441\u0445\u043E\u0434\u043E\u0432 \u2014 ' + esc(sub.name || sub.number) + '</div>' +
+            '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto">' + gr + '<path d="'+ar+'" fill="rgba(25,135,84,.08)"/><polyline points="'+pts.join(' ')+'" fill="none" stroke="var(--primary)" stroke-width="2.5" stroke-linejoin="round"/>'+lim+dots+vl+xl+'</svg>' +
+            '<div style="text-align:center;margin-top:8px;font-size:11px;color:var(--muted)">\u0410\u0431\u043E\u043D\u043F\u043B\u0430\u0442\u0430: '+mny(sub.planFee)+' \u00B7 \u0418\u0442\u043E\u0433\u043E: '+mny(sub.totalCost)+'</div>';
+          openModal();
+        }
+      }
+    }
+    return;
+  }
+
+  // Кнопки раскрытия панелей
   var btn = e.target.closest('.act');
   if (!btn) return;
   var c = btn.closest('.ucard');
