@@ -279,7 +279,7 @@ function buildRec(num, data) {
     name: names[num] || '',
     planName: data.planName || '\u0422\u0430\u0440\u0438\u0444 ' + pfi + '\u20BD',
     totalCost: tc, planFee: pf, overpayment: op,
-    categories: cats2, overuse: ou, status: st, riskScore: rs,
+    categories: cats2, items: data.items, overuse: ou, status: st, riskScore: rs,
     recommendation: buildRec2(st, op, cats2),
     monthly: mo, avg: avg, trend: tr2, tariffName: tr.name
   };
