@@ -4,11 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Анализ расходов — МегаФон</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header class="hdr">
-  <div class="brand"><svg viewBox="0 0 26 26" width="26" height="26"><circle cx="13" cy="13" r="12" fill="rgba(255,255,255,.2)"/><text x="13" y="18" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">₽</text></svg><div><h1>Анализ расходов</h1><span class="sub">МегаФон · B2B</span></div></div>
+  <div class="brand">
+    <svg viewBox="0 0 26 26" width="26" height="26"><circle cx="13" cy="13" r="12" fill="rgba(255,255,255,.2)"/><text x="13" y="18" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">₽</text></svg>
+    <div><h1>Анализ расходов</h1><span class="sub">МегаФон · B2B</span></div>
+  </div>
   <div class="hdr-btns">
     <button id="workersBtn" class="btn btn-ghost">Сотрудники</button>
     <input type="file" id="workersFile" accept=".csv,.txt" hidden>
@@ -21,7 +24,6 @@
 <div id="hint" class="hint"></div>
 <div id="loading" class="load-overlay" style="display:none"><div class="load-box"><div class="spinner"></div><div id="loadText" class="load-text">Обработка…</div><div class="prog-track"><div id="progFill" class="prog-fill"></div></div></div></div>
 <main class="main">
-  <!-- KPI + Risk + Top — всё в одну линию -->
   <section id="dashTop" class="dash-top" style="display:none">
     <div class="kpi-row" id="kpiRow"></div>
     <div class="dash-mid">
@@ -29,9 +31,8 @@
       <div class="top-card"><div class="top-head"><span class="top-title">Топ по расходам</span><span class="top-badge" id="topCount">0</span></div><div id="topList" class="top-list"></div></div>
     </div>
     <button id="dynBtn" class="dyn-btn" style="display:none"><span>Динамика и расходы на связь</span><span class="chev">▸</span></button>
-    <div id="dynPanel" class="dyn-panel" style="display:none"><div id="bigChart" class="big-chart"></div></div>
+    <div id="dynPanel" class="dyn-panel"><div id="bigChart" class="big-chart"></div></div>
   </section>
-  <!-- Фильтры -->
   <section id="filtersPanel" class="filters" style="display:none">
     <div class="fg"><button class="f active" data-filter="all">Все</button><button class="f" data-filter="normal">Норма</button><button class="f" data-filter="warning">Внимание</button><button class="f" data-filter="danger">Критично</button><button class="f" data-filter="growing">С переплатой</button><button class="f" data-filter="overpay">&gt;100 ₽</button></div>
     <div class="spacer"></div>
@@ -40,14 +41,25 @@
     <input type="text" id="searchInput" class="search" placeholder="Поиск…">
     <span id="resultCount" class="rc"></span>
   </section>
-  <!-- Welcome -->
-  <section id="welcomeSection" class="welcome"><div class="wcard"><div class="wicon"><svg viewBox="0 0 48 48" width="48" height="48"><circle cx="24" cy="24" r="22" fill="#68B944" opacity=".12"/><circle cx="24" cy="24" r="14" fill="#68B944" opacity=".18"/><circle cx="24" cy="24" r="8" fill="#68B944"/><text x="24" y="28" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">₽</text></svg></div><h2>Анализ расходов на связь</h2><p>Загрузите CSV-файл счёта МегаФон.</p><div class="wactions"><button class="btn btn-accent" onclick="document.getElementById('billsFile').click()">Загрузить CSV</button><button class="btn btn-outline-dark" onclick="document.getElementById('demoBtn').click()">Демо-данные</button></div></div></section>
-  <!-- Карточки абонентов -->
+  <section id="welcomeSection" class="welcome"><div class="wcard"><div class="wicon"><svg viewBox="0 0 48 48" width="48" height="48"><circle cx="24" cy="24" r="22" fill="#198754" opacity=".12"/><circle cx="24" cy="24" r="14" fill="#198754" opacity=".18"/><circle cx="24" cy="24" r="8" fill="#198754"/><text x="24" y="28" text-anchor="middle" fill="#fff" font-size="11" font-weight="700">₽</text></svg></div><h2>Анализ расходов на связь</h2><p>Загрузите CSV-файл счёта МегаФон.</p><div class="wactions"><button class="btn btn-accent" onclick="document.getElementById('billsFile').click()">Загрузить CSV</button><button class="btn btn-outline-dark" onclick="document.getElementById('demoBtn').click()">Демо-данные</button></div></div></section>
   <section id="usersGrid" class="ugrid"></section>
 </main>
-<!-- Модальное окно графика -->
-<div id="chartModal" class="modal" style="display:none"><div class="modal-backdrop" onclick="closeModal()"></div><div class="modal-body"><button class="modal-close" onclick="closeModal()">✕</button><div id="modalChart" class="modal-chart"></div></div></div>
-<!-- Настройки -->
+<!-- Модалка абонента -->
+<div id="subModal" class="modal" style="display:none">
+  <div class="modal-backdrop" onclick="closeSubModal()"></div>
+  <div class="modal-body modal-lg">
+    <button class="modal-close" onclick="closeSubModal()">✕</button>
+    <div id="subModalContent"></div>
+  </div>
+</div>
+<!-- Модалка графика (увеличение) -->
+<div id="chartModal" class="modal" style="display:none">
+  <div class="modal-backdrop" onclick="closeChartModal()"></div>
+  <div class="modal-body">
+    <button class="modal-close" onclick="closeChartModal()">✕</button>
+    <div id="modalChart"></div>
+  </div>
+</div>
 <button id="settingsBtn" class="stoggle" title="Настройки">⚙</button>
 <div id="settingsPanel" class="spanel"><h4>Панели</h4>
   <label><input type="checkbox" id="togKpi" checked> KPI</label>
@@ -56,6 +68,6 @@
   <label><input type="checkbox" id="togDyn" checked> Динамика</label>
   <label><input type="checkbox" id="togCards" checked> Карточки</label>
 </div>
-<script src="script.js?v=3"></script>
+<script src="script.js?v=4"></script>
 </body>
 </html>
