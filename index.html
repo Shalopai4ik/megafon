@@ -3,28 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Анализ расходов на связь — МегаФон</title>
+<title>Анализ расходов — МегаФон</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <header class="app-header">
   <div class="brand">
-    <div class="brand-logo">
-      <svg viewBox="0 0 32 32" width="32" height="32"><circle cx="16" cy="16" r="14" fill="#68B944"/><text x="16" y="21" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">₽</text></svg>
-    </div>
-    <div>
-      <h1>Анализ расходов на связь</h1>
-      <span class="brand-sub">МегаФон · Корпоративный портал</span>
-    </div>
+    <svg viewBox="0 0 28 28" width="28" height="28"><circle cx="14" cy="14" r="13" fill="#fff" opacity=".2"/><circle cx="14" cy="14" r="9" fill="#fff" opacity=".3"/><text x="14" y="19" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">₽</text></svg>
+    <div><h1>Анализ расходов на связь</h1><span class="brand-sub">МегаФон · B2B</span></div>
   </div>
   <div class="upload-controls">
-    <button id="workersBtn" class="btn btn-ghost">Список сотрудников</button>
+    <button id="workersBtn" class="btn btn-ghost">Сотрудники</button>
     <input type="file" id="workersFile" accept=".csv,.txt" hidden>
-    <button id="billsBtn" class="btn btn-accent">Загрузить счета</button>
+    <button id="billsBtn" class="btn btn-accent">Загрузить CSV</button>
     <input type="file" id="billsFile" accept=".csv,.txt" hidden>
-    <button id="demoBtn" class="btn btn-outline">Демо-данные</button>
-    <button id="themeBtn" class="btn btn-icon" title="Светлая / тёмная тема">◐</button>
+    <button id="demoBtn" class="btn btn-outline">Демо</button>
+    <button id="themeBtn" class="btn btn-icon" title="Тема">◐</button>
   </div>
 </header>
 
@@ -33,102 +28,28 @@
 <div id="loading" class="loading-overlay" style="display:none">
   <div class="loading-box">
     <div class="loading-spinner"></div>
-    <div id="loadingText" class="loading-text">Обработка файла…</div>
+    <div id="loadingText" class="loading-text">Обработка…</div>
     <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
   </div>
 </div>
 
 <main class="app-main">
-
-  <!-- KPI-карточки -->
   <section id="kpiPanel" class="kpi-panel" style="display:none">
-    <div class="kpi-card kpi-green">
-      <div class="kpi-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
-      <div class="kpi-data">
-        <div class="kpi-label">Абонентов</div>
-        <div id="totalCount" class="kpi-value">0</div>
-      </div>
-    </div>
-    <div class="kpi-card kpi-blue">
-      <div class="kpi-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20"/></svg></div>
-      <div class="kpi-data">
-        <div class="kpi-label">Итого начислено</div>
-        <div id="totalCost" class="kpi-value">0 ₽</div>
-      </div>
-    </div>
-    <div class="kpi-card kpi-orange">
-      <div class="kpi-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
-      <div class="kpi-data">
-        <div class="kpi-label">Переплата</div>
-        <div id="totalOverpay" class="kpi-value">0 ₽</div>
-      </div>
-    </div>
-    <div class="kpi-card kpi-green-light">
-      <div class="kpi-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
-      <div class="kpi-data">
-        <div class="kpi-label">Потенциал экономии</div>
-        <div id="totalEconomy" class="kpi-value">0 ₽</div>
-      </div>
-    </div>
-    <div class="kpi-card kpi-red">
-      <div class="kpi-icon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
-      <div class="kpi-data">
-        <div class="kpi-label">Критичных</div>
-        <div id="criticalCount" class="kpi-value">0</div>
-      </div>
-    </div>
+    <div class="kpi-card kpi-green"><div class="kpi-icon"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 17v-2a3 3 0 00-3-3H5a3 3 0 00-3 3v2"/><circle cx="7.5" cy="5.5" r="2.5"/><path d="M19 17v-2a3 3 0 00-2.5-3"/><path d="M13 3.5a3 3 0 010 5.5"/></svg></div><div><div class="kpi-label">Абонентов</div><div id="totalCount" class="kpi-value">0</div></div></div>
+    <div class="kpi-card kpi-blue"><div class="kpi-icon"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="16" height="12" rx="2"/><path d="M2 8h16"/></svg></div><div><div class="kpi-label">Итого</div><div id="totalCost" class="kpi-value">0 ₽</div></div></div>
+    <div class="kpi-card kpi-orange"><div class="kpi-icon"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="19 5 11 13 7 9 1 15"/><polyline points="14 5 19 5 19 10"/></svg></div><div><div class="kpi-label">Переплата</div><div id="totalOverpay" class="kpi-value">0 ₽</div></div></div>
+    <div class="kpi-card kpi-green"><div class="kpi-icon"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2v16M14 5H7a3 3 0 000 6h6a3 3 0 010 6H4"/></svg></div><div><div class="kpi-label">Экономия</div><div id="totalEconomy" class="kpi-value">0 ₽</div></div></div>
+    <div class="kpi-card kpi-red"><div class="kpi-icon"><svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8.5 3.5L2 17h16l-6.5-13.5a1 1 0 00-1.8 0z"/><line x1="10" y1="10" x2="10" y2="13"/><circle cx="10" cy="15.5" r=".5" fill="currentColor"/></svg></div><div><div class="kpi-label">Критичных</div><div id="criticalCount" class="kpi-value">0</div></div></div>
   </section>
 
-  <!-- Аналитика -->
   <section id="analyticsPanel" class="analytics-panel" style="display:none">
-
-    <!-- Распределение статусов -->
-    <div class="card stat-card">
-      <div class="card-head">
-        <div class="card-title">Статус абонентов</div>
-      </div>
-      <div id="statusChart" class="status-chart"></div>
-    </div>
-
-    <!-- Топ по расходам -->
-    <div class="card rank-card">
-      <div class="card-head">
-        <div class="card-title">Топ по расходам</div>
-        <span class="card-badge" id="rankCount">0</span>
-      </div>
-      <div id="rankList" class="rank-list"></div>
-    </div>
-
-    <!-- Расходы по категориям -->
-    <div class="card cat-card">
-      <div class="card-head">
-        <div class="card-title">Расходы по категориям</div>
-      </div>
-      <div id="categoryChart" class="category-chart"></div>
-    </div>
-
-    <!-- Распределение тарифов -->
-    <div class="card tariff-card">
-      <div class="card-head">
-        <div class="card-title">Тарифные планы</div>
-      </div>
-      <div id="tariffChart" class="tariff-chart"></div>
-    </div>
-
-    <!-- Динамика по месяцам -->
-    <div class="card chart-card">
-      <div class="card-head">
-        <div class="card-title">Динамика по месяцам</div>
-        <button id="toggleChartBtn" class="card-toggle" aria-expanded="false">▾</button>
-      </div>
-      <div id="chartPanel" class="chart-panel">
-        <div id="bigChart" class="big-chart"></div>
-      </div>
-    </div>
-
+    <div class="card stat-card"><div class="card-head"><div class="card-title">Статус</div></div><div id="statusChart" class="status-chart"></div></div>
+    <div class="card rank-card"><div class="card-head"><div class="card-title">Топ расходы</div><span class="card-badge" id="rankCount">0</span></div><div id="rankList" class="rank-list"></div></div>
+    <div class="card cat-card"><div class="card-head"><div class="card-title">Категории</div></div><div id="categoryChart" class="category-chart"></div></div>
+    <div class="card tariff-card"><div class="card-head"><div class="card-title">Тарифы</div></div><div id="tariffChart" class="tariff-chart"></div></div>
+    <div class="card chart-card"><div class="card-head"><div class="card-title">Динамика</div><button id="toggleChartBtn" class="card-toggle">▾</button></div><div id="chartPanel" class="chart-panel"><div id="bigChart" class="big-chart"></div></div></div>
   </section>
 
-  <!-- Фильтры -->
   <section id="filtersPanel" class="filters-panel" style="display:none">
     <div class="filters-group">
       <button class="filter active" data-filter="all">Все</button>
@@ -136,7 +57,7 @@
       <button class="filter" data-filter="warning">Внимание</button>
       <button class="filter" data-filter="danger">Критично</button>
       <button class="filter" data-filter="growing">С переплатой</button>
-      <button class="filter" data-filter="overpay">Переплата > 100 ₽</button>
+      <button class="filter" data-filter="overpay">&gt;100 ₽</button>
     </div>
     <div class="spacer"></div>
     <div class="sort-group">
@@ -150,18 +71,15 @@
       <button id="gridView" class="view active" title="Плитки">▦</button>
       <button id="tableView" class="view" title="Список">☰</button>
     </div>
-    <input type="text" id="searchInput" class="search-input" placeholder="Поиск по номеру или имени…">
+    <input type="text" id="searchInput" class="search-input" placeholder="Поиск…">
     <span id="resultCount" class="result-count"></span>
   </section>
 
-  <!-- Приветствие -->
   <section id="welcomeSection" class="welcome-section">
     <div class="welcome-card">
-      <div class="welcome-icon">
-        <svg viewBox="0 0 64 64" width="64" height="64"><circle cx="32" cy="32" r="30" fill="#68B944" opacity=".12"/><circle cx="32" cy="32" r="20" fill="#68B944" opacity=".2"/><circle cx="32" cy="32" r="10" fill="#68B944"/><text x="32" y="37" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">₽</text></svg>
-      </div>
+      <div class="welcome-icon"><svg viewBox="0 0 56 56" width="56" height="56"><circle cx="28" cy="28" r="26" fill="#68B944" opacity=".1"/><circle cx="28" cy="28" r="18" fill="#68B944" opacity=".15"/><circle cx="28" cy="28" r="10" fill="#68B944"/><text x="28" y="33" text-anchor="middle" fill="#fff" font-size="13" font-weight="700">₽</text></svg></div>
       <h2>Анализ расходов на связь</h2>
-      <p>Загрузите CSV-файл счёта МегаФон для анализа расходов абонентов, оптимизации тарифов и выявления переплат.</p>
+      <p>Загрузите CSV-файл счёта МегаФон для анализа, оптимизации тарифов и выявления переплат.</p>
       <div class="welcome-actions">
         <button class="btn btn-accent btn-lg" onclick="document.getElementById('billsFile').click()">Загрузить CSV</button>
         <button class="btn btn-outline-dark btn-lg" onclick="document.getElementById('demoBtn').click()">Демо-данные</button>
@@ -169,10 +87,21 @@
     </div>
   </section>
 
-  <!-- Карточки абонентов -->
   <section id="usersGrid" class="users-grid"></section>
-
 </main>
+
+<!-- Кнопка настроек -->
+<button id="settingsBtn" class="settings-toggle" title="Настройки дашборда">⚙</button>
+<div id="settingsPanel" class="settings-panel">
+  <h4>Панели дашборда</h4>
+  <div class="settings-row"><input type="checkbox" id="togKpi" checked><label for="togKpi">KPI-карточки</label></div>
+  <div class="settings-row"><input type="checkbox" id="togStatus" checked><label for="togStatus">Статус абонентов</label></div>
+  <div class="settings-row"><input type="checkbox" id="togRank" checked><label for="togRank">Топ по расходам</label></div>
+  <div class="settings-row"><input type="checkbox" id="togCat" checked><label for="togCat">Категории</label></div>
+  <div class="settings-row"><input type="checkbox" id="togTariff" checked><label for="togTariff">Тарифы</label></div>
+  <div class="settings-row"><input type="checkbox" id="togChart" checked><label for="togChart">Динамика</label></div>
+  <div class="settings-row"><input type="checkbox" id="togCards" checked><label for="togCards">Карточки абонентов</label></div>
+</div>
 
 <script src="script.js"></script>
 </body>
