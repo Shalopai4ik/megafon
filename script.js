@@ -1,6 +1,8 @@
 'use strict';
 
-/* ── Service mapping: CSV service name → internal key ─────────── */
+/* ═══════════════════════════════════════════════════════════════
+   SERVICE MAP — маппинг услуг из CSV → внутренние ключи
+   ═══════════════════════════════════════════════════════════════ */
 const SERVICE_MAP = {
   'абонентский номер': 'subscriber_number',
   'тарифный план': 'tariff_plan',
@@ -52,13 +54,6 @@ const SERVICE_MAP = {
   'начисления за голосовые услуги в национальном роуминге': 'national_roaming_voice',
   'абонентская плата m2m': 'm2m_fee',
   'абонентская плата m2m флекс': 'm2m_flex_fee',
-  'виртуальная атс': 'virtual_pbx',
-  'видеостриминг': 'video_streaming',
-  'замена sim-карты': 'sim_replacement',
-  'запрет развлекательного контента': 'ban_content',
-  'дополнительный городской номер': 'extra_city_number',
-  'дополнительный номер': 'extra_number',
-  'mi.': 'mi_service',
 };
 
 const META_KEYS = new Set(['subscriber_number', 'tariff_plan', 'total_charged', 'vat_included']);
@@ -82,19 +77,20 @@ const CATEGORY_OF = {
 };
 
 const TARIFFS = {
-  "140": { minutes: 700, sms: 300, internet_mb: 15000 },
-  "230": { minutes: 1500, sms: 500, internet_mb: 25000 },
-  "400": { minutes: 4000, sms: 1000, internet_mb: 70000 }
+  "140": { minutes: 700, sms: 300, internet_mb: 15000, name: 'Без Переплат' },
+  "230": { minutes: 1500, sms: 500, internet_mb: 25000, name: 'Специалист' },
+  "400": { minutes: 4000, sms: 1000, internet_mb: 70000, name: 'Федеральный' },
 };
 
-const DEFAULT_TARIFF = { minutes: 500, sms: 200, internet_mb: 5000 };
+const DEFAULT_TARIFF = { minutes: 500, sms: 200, internet_mb: 5000, name: 'Другой' };
 
 const CATEGORY_META = {
-  voice: { label: 'Минуты', unit: 'мин', icon: '📞', quotaKey: 'minutes' },
-  internet: { label: 'Интернет', unit: 'МБ', icon: '🌐', quotaKey: 'internet_mb' },
-  sms: { label: 'SMS', unit: 'шт', icon: '✉️', quotaKey: 'sms' },
+  voice: { label: 'Минуты', unit: 'мин', icon: '📞', color: '#0071CE', quotaKey: 'minutes' },
+  internet: { label: 'Интернет', unit: 'МБ', icon: '🌐', color: '#68B944', quotaKey: 'internet_mb' },
+  sms: { label: 'SMS', unit: 'шт', icon: '✉️', color: '#F7941D', quotaKey: 'sms' },
 };
 
+const TARIFF_COLORS = ['#68B944', '#0071CE', '#F7941D', '#E53935', '#00897B'];
 const MONTH_NAMES = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
 const HISTORY_MONTHS = 5;
 
@@ -108,29 +104,12 @@ let sortDirection = 'desc';
 document.addEventListener('DOMContentLoaded', () => {
   const $ = (id) => document.getElementById(id);
 
-  if ($('workersBtn')) {
-    $('workersBtn').addEventListener('click', () => $('workersFile').click());
-    $('workersFile').addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (file) loadWorkers(file);
-    });
-  }
-
-  if ($('billsBtn')) {
-    $('billsBtn').addEventListener('click', () => $('billsFile').click());
-    $('billsFile').addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (file) uploadCSV(file);
-    });
-  }
-
-  if ($('demoBtn')) {
-    $('demoBtn').addEventListener('click', loadDemoData);
-  }
-
-  if ($('searchInput')) {
-    $('searchInput').addEventListener('input', renderUsers);
-  }
+  if ($('workersBtn')) $('workersBtn').addEventListener('click', () => $('workersFile').click());
+  if ($('workersFile')) $('workersFile').addEventListener('change', (e) => { if (e.target.files[0]) loadWorkers(e.target.files[0]); });
+  if ($('billsBtn')) $('billsBtn').addEventListener('click', () => $('billsFile').click());
+  if ($('billsFile')) $('billsFile').addEventListener('change', (e) => { if (e.target.files[0]) uploadCSV(e.target.files[0]); });
+  if ($('demoBtn')) $('demoBtn').addEventListener('click', loadDemoData);
+  if ($('searchInput')) $('searchInput').addEventListener('input', renderUsers);
 
   document.querySelectorAll('.filter').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -144,12 +123,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.sort').forEach((btn) => {
     if (btn.dataset.sort === currentSort) btn.classList.add('active');
     btn.addEventListener('click', () => {
-      if (currentSort === btn.dataset.sort) {
-        sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
-      } else {
-        currentSort = btn.dataset.sort;
-        sortDirection = 'desc';
-      }
+      if (currentSort === btn.dataset.sort) sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+      else { currentSort = btn.dataset.sort; sortDirection = 'desc'; }
       document.querySelectorAll('.sort').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       renderUsers();
@@ -166,133 +141,82 @@ document.addEventListener('DOMContentLoaded', () => {
       const panel = $('chartPanel');
       if (panel) {
         const open = panel.classList.toggle('open');
-        if ($('toggleChartBtn')) $('toggleChartBtn').setAttribute('aria-expanded', String(open));
+        $('toggleChartBtn').setAttribute('aria-expanded', String(open));
+        $('toggleChartBtn').textContent = open ? '▴' : '▾';
         if (open) drawBigChart();
       }
     });
   }
 
-  const themeBtn = $('themeBtn');
-  if (themeBtn) {
-    themeBtn.addEventListener('click', toggleTheme);
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+  if ($('themeBtn')) {
+    $('themeBtn').addEventListener('click', toggleTheme);
+    const saved = localStorage.getItem('theme');
+    if (saved) document.documentElement.setAttribute('data-theme', saved);
   }
 
   window.addEventListener('resize', () => {
-    const panel = $('chartPanel');
-    if (panel && panel.classList.contains('open')) drawBigChart();
+    if ($('chartPanel') && $('chartPanel').classList.contains('open')) drawBigChart();
   });
 });
 
-/* ── Upload CSV to Python backend ──────────────────────────── */
+/* ── CSV загрузка ──────────────────────────────────────────── */
 function uploadCSV(file) {
   showLoading('Отправка файла на сервер…', 10);
-
-  const formData = new FormData();
-  formData.append('file', file);
-
-  fetch('/api/upload-csv', {
-    method: 'POST',
-    body: formData,
-  })
-    .then((r) => {
-      if (!r.ok) return r.json().then((e) => { throw new Error(e.error || 'Ошибка сервера'); });
-      return r.json();
-    })
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch('/api/upload-csv', { method: 'POST', body: fd })
+    .then((r) => r.ok ? r.json() : r.json().then((e) => { throw new Error(e.error); }))
     .then((data) => {
       showLoading('Анализ данных…', 60);
-      currentFilter = 'all';
-      currentSort = 'overpay';
-      sortDirection = 'desc';
+      currentFilter = 'all'; currentSort = 'overpay'; sortDirection = 'desc';
       processServerData(data);
     })
-    .catch((err) => {
-      showLoading(`Ошибка: ${err.message}`, 100);
-      setTimeout(hideLoading, 3000);
-    });
+    .catch((err) => { showLoading(`Ошибка: ${err.message}`, 100); setTimeout(hideLoading, 3000); });
 }
 
 function processServerData(data) {
   showLoading('Построение отчёта…', 80);
   const reportData = {};
-
   for (const [number, sub] of Object.entries(data.subscribers)) {
     const items = [];
     let planFee = sub.planFee || 0;
-
     for (const item of sub.items) {
       const key = matchServiceKey(item.serviceName);
       if (!key) continue;
-
-      if (key === 'plan_fee') {
-        planFee += item.withDiscount;
-        continue;
-      }
+      if (key === 'plan_fee') { planFee += item.withDiscount; continue; }
       if (META_KEYS.has(key)) continue;
-
-      items.push({
-        key,
-        category: CATEGORY_OF[key] || 'other',
-        rawVolume: item.rawVolume,
-        volume: item.volume,
-        unit: item.unit,
-        noDiscount: item.noDiscount,
-        discount: item.discount,
-        withDiscount: item.withDiscount,
-        serviceName: item.serviceName,
-        allColumns: item.allColumns,
-      });
+      items.push({ key, category: CATEGORY_OF[key] || 'other', rawVolume: item.rawVolume, volume: item.volume, unit: item.unit, noDiscount: item.noDiscount, discount: item.discount, withDiscount: item.withDiscount, serviceName: item.serviceName });
     }
-
-    reportData[number] = {
-      items,
-      planFee,
-      planName: sub.planName || `Тариф ${Math.round(planFee)}₽`,
-    };
+    reportData[number] = { items, planFee, planName: sub.planName || `Тариф ${Math.round(planFee)}₽` };
   }
-
   buildReportFromData(reportData);
 }
 
-function matchServiceKey(serviceName) {
-  const lower = serviceName.toLowerCase();
-  for (const [pattern, key] of Object.entries(SERVICE_MAP)) {
-    if (lower.includes(pattern)) return key;
-  }
+function matchServiceKey(name) {
+  const lower = name.toLowerCase();
+  for (const [p, k] of Object.entries(SERVICE_MAP)) { if (lower.includes(p)) return k; }
   return null;
 }
 
-/* ── View toggles ──────────────────────────────────────────── */
 function setView(mode) {
   const grid = document.getElementById('usersGrid');
   document.querySelectorAll('.view').forEach((b) => b.classList.remove('active'));
-  const btn = document.getElementById(mode === 'table' ? 'tableView' : 'gridView');
-  if (btn) btn.classList.add('active');
+  document.getElementById(mode === 'table' ? 'tableView' : 'gridView')?.classList.add('active');
   if (grid) grid.classList.toggle('table-view', mode === 'table');
   renderUsers();
 }
 
 function toggleTheme() {
   const root = document.documentElement;
-  const isDark = root.getAttribute('data-theme') === 'dark'
-    || (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  const isDark = root.getAttribute('data-theme') === 'dark' || (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
   const next = isDark ? 'light' : 'dark';
   root.setAttribute('data-theme', next);
   localStorage.setItem('theme', next);
-  const panel = document.getElementById('chartPanel');
-  if (panel && panel.classList.contains('open')) drawBigChart();
 }
 
-/* ── Workers file ──────────────────────────────────────────── */
 function loadWorkers(file) {
   const reader = new FileReader();
-  reader.onload = (e) => {
-    nameByNumber = parseWorkers(e.target.result);
-    const n = Object.keys(nameByNumber).length;
-    flashHint(n ? `Список сотрудников загружен: ${n}` : 'Файл прочитан, имена не распознаны');
-  };
-  reader.onerror = () => flashHint('Ошибка чтения файла сотрудников');
+  reader.onload = (e) => { nameByNumber = parseWorkers(e.target.result); flashHint(`Загружено: ${Object.keys(nameByNumber).length} сотрудников`); };
   reader.readAsText(file, 'windows-1251');
 }
 
@@ -300,68 +224,52 @@ function parseWorkers(text) {
   const map = {};
   text.split(/\r?\n/).forEach((line) => {
     if (!line.trim()) return;
-    const digits = line.match(/\d{10,}/);
-    if (!digits) return;
-    const number = digits[0].slice(-10);
-    const name = line
-      .split(/[;,\t]/).map((p) => p.trim())
-      .find((p) => p && !/^\+?\d[\d\s()-]{6,}$/.test(p));
-    if (name) map[number] = name;
+    const d = line.match(/\d{10,}/);
+    if (!d) return;
+    const num = d[0].slice(-10);
+    const name = line.split(/[;,\t]/).map((p) => p.trim()).find((p) => p && !/^\+?\d[\d\s()-]{6,}$/.test(p));
+    if (name) map[num] = name;
   });
   return map;
 }
 
-/* ── Build report ──────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   ПОСТРОЕНИЕ ОТЧЁТА
+   ═══════════════════════════════════════════════════════════════ */
 function buildReportFromData(reportData) {
   showLoading('Анализ и построение отчёта…', 70);
-  allSubscribers = Object.entries(reportData).map(([number, data]) =>
-    buildSubscriberRecord(number, data)
-  );
+  allSubscribers = Object.entries(reportData).map(([num, d]) => buildSubscriberRecord(num, d));
   showLoading('Готово', 100);
+
+  document.getElementById('welcomeSection').style.display = 'none';
+  document.getElementById('kpiPanel').style.display = 'grid';
+  document.getElementById('analyticsPanel').style.display = 'grid';
+  document.getElementById('filtersPanel').style.display = 'flex';
+
   updateKpis();
+  updateStatusChart();
   updateRankList();
+  updateCategoryChart();
+  updateTariffChart();
 
-  const kpiPanel = document.getElementById('kpiPanel');
-  const analyticsPanel = document.getElementById('analyticsPanel');
-  const filtersPanel = document.getElementById('filtersPanel');
-  const welcomeSection = document.getElementById('welcomeSection');
-
-  if (welcomeSection) welcomeSection.style.display = 'none';
-  if (kpiPanel) kpiPanel.style.display = 'grid';
-  if (analyticsPanel) analyticsPanel.style.display = 'flex';
-  if (filtersPanel) filtersPanel.style.display = 'flex';
-
-  setTimeout(() => {
-    hideLoading();
-    renderUsers();
-  }, 450);
+  setTimeout(() => { hideLoading(); renderUsers(); }, 400);
 }
 
 function buildSubscriberRecord(number, data) {
   const planFee = data.planFee;
   const planFeeInt = Math.round(planFee);
-  const planFeeStr = String(planFeeInt);
-  const tariff = TARIFFS[planFeeStr] || DEFAULT_TARIFF;
+  const tariff = TARIFFS[String(planFeeInt)] || DEFAULT_TARIFF;
 
   let extraCost = 0;
-  const cats = {
-    voice: { used: 0, cost: 0 },
-    internet: { used: 0, cost: 0 },
-    sms: { used: 0, cost: 0 },
-    other: { used: 0, cost: 0 },
-  };
+  const cats = { voice: { used: 0, cost: 0 }, internet: { used: 0, cost: 0 }, sms: { used: 0, cost: 0 }, other: { used: 0, cost: 0 } };
 
   data.items.forEach((it) => {
     extraCost += it.withDiscount;
     const c = cats[it.category];
     c.cost += it.withDiscount;
-    if (it.category === 'voice' && it.unit === 'мин') {
-      c.used += it.volume;
-    } else if (it.category === 'internet') {
-      c.used += it.volume;
-    } else if (it.category === 'sms' && it.unit === 'шт') {
-      c.used += it.volume;
-    }
+    if (it.category === 'voice' && it.unit === 'мин') c.used += it.volume;
+    else if (it.category === 'internet') c.used += it.volume;
+    else if (it.category === 'sms' && it.unit === 'шт') c.used += it.volume;
   });
 
   const totalCost = planFee + extraCost;
@@ -371,69 +279,48 @@ function buildSubscriberRecord(number, data) {
     const limit = tariff[meta.quotaKey] || 0;
     const used = cats[cat].used;
     const ratio = limit > 0 ? used / limit : 0;
-    return {
-      cat, ...meta, used, limit, cost: cats[cat].cost, ratio,
-      advice: categoryAdvice(ratio, cats[cat].cost)
-    };
+    return { cat, ...meta, used, limit, cost: cats[cat].cost, ratio, advice: categoryAdvice(ratio, cats[cat].cost) };
   });
 
   const overuse = categories.filter((c) => c.ratio > 1).length;
   const overpayRatio = planFee > 0 ? overpayment / planFee : (overpayment > 0 ? 1 : 0);
-
   let status = 'normal';
   if (overpayment > 50) status = 'danger';
   else if (overpayment > 1) status = 'warning';
-
   const riskScore = Math.max(0, Math.min(100, Math.round(overpayRatio * 100 + overuse * 15)));
 
   const rnd = seededRandom(number);
   const monthly = [];
-  for (let i = 0; i < HISTORY_MONTHS - 1; i++) {
-    monthly.push(totalCost * (0.82 + rnd() * 0.36));
-  }
+  for (let i = 0; i < HISTORY_MONTHS - 1; i++) monthly.push(totalCost * (0.82 + rnd() * 0.36));
   monthly.push(totalCost);
-
   const avg = monthly.reduce((a, b) => a + b, 0) / monthly.length;
   const prevVal = monthly[monthly.length - 2];
   const trend = prevVal > 0 ? ((totalCost - prevVal) / prevVal) * 100 : 0;
 
-  return {
-    number, name: nameByNumber[number] || '',
-    planName: data.planName || `Тариф ${planFeeInt}₽`,
-    totalCost, planFee, overpayment, categories, overuse, status, riskScore,
-    recommendation: buildRecommendation(status, overpayment, categories),
-    monthly, avg, trend, historyIsDemo: true,
-  };
+  return { number, name: nameByNumber[number] || '', planName: data.planName || `Тариф ${planFeeInt}₽`, totalCost, planFee, overpayment, categories, overuse, status, riskScore, recommendation: buildRecommendation(status, overpayment, categories), monthly, avg, trend, tariffName: tariff.name };
 }
 
 function categoryAdvice(ratio, cost) {
-  if (ratio > 1) return { type: 'raise', text: `Перерасход — начислено ${money(cost)}. Выгоднее увеличить пакет.` };
-  if (ratio > 0 && ratio < 0.4) return { type: 'lower', text: 'Пакет почти не используется — можно понизить.' };
-  return { type: 'ok', text: 'Потребление в пределах пакета.' };
+  if (ratio > 1) return { type: 'raise', text: `Перерасход — ${money(cost)}. Выгоднее увеличить пакет.` };
+  if (ratio > 0 && ratio < 0.4) return { type: 'lower', text: 'Пакет недоиспользован — можно понизить.' };
+  return { type: 'ok', text: 'В пределах пакета.' };
 }
 
 function buildRecommendation(status, overpayment, categories) {
   const raise = categories.filter((c) => c.advice.type === 'raise');
   const lower = categories.filter((c) => c.advice.type === 'lower');
   const parts = [];
-
-  if (raise.length) parts.push(`Повысить лимит: ${raise.map((c) => c.label.toLowerCase()).join(', ')} — уходит в перерасход.`);
-  if (lower.length) parts.push(`Понизить лимит: ${lower.map((c) => c.label.toLowerCase()).join(', ')} — пакет недоиспользован.`);
-
-  if (status === 'danger') parts.unshift(`Критично: переплата ${money(overpayment)}. Требуется пересмотр тарифа.`);
-  else if (status === 'warning') parts.unshift(`Есть переплата ${money(overpayment)} — стоит оптимизировать.`);
-
-  if (!parts.length) parts.push('Потребление стабильное, тариф подобран корректно.');
-
+  if (raise.length) parts.push(`Повысить: ${raise.map((c) => c.label.toLowerCase()).join(', ')}`);
+  if (lower.length) parts.push(`Понизить: ${lower.map((c) => c.label.toLowerCase()).join(', ')}`);
+  if (status === 'danger') parts.unshift(`Критично: переплата ${money(overpayment)}`);
+  else if (status === 'warning') parts.unshift(`Переплата ${money(overpayment)}`);
+  if (!parts.length) parts.push('Тариф подобран корректно.');
   return parts;
 }
 
 function seededRandom(str) {
   let h = 1779033703 ^ str.length;
-  for (let i = 0; i < str.length; i++) {
-    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
-    h = (h << 13) | (h >>> 19);
-  }
+  for (let i = 0; i < str.length; i++) { h = Math.imul(h ^ str.charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19); }
   let a = h >>> 0;
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -443,163 +330,237 @@ function seededRandom(str) {
   };
 }
 
-/* ── KPIs ──────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   KPI
+   ═══════════════════════════════════════════════════════════════ */
 function updateKpis() {
   const totalCost = allSubscribers.reduce((s, x) => s + x.totalCost, 0);
   const totalOverpay = allSubscribers.reduce((s, x) => s + x.overpayment, 0);
   const totalCritical = allSubscribers.filter((x) => x.status === 'danger').length;
-
   setText('totalCount', allSubscribers.length);
   setText('totalCost', money(totalCost));
   setText('totalOverpay', money(totalOverpay));
   setText('totalEconomy', money(totalOverpay * 0.7));
   setText('criticalCount', totalCritical);
-
-  const riskScore = allSubscribers.length ? Math.round((totalCritical / allSubscribers.length) * 100) : 0;
-  const note = riskScore >= 60 ? 'высокий риск' : (riskScore >= 30 ? 'средний риск' : 'низкий риск');
-  const cls = riskScore >= 60 ? 'danger' : (riskScore >= 30 ? 'warning' : 'good');
-
-  const riskDonutEl = document.getElementById('riskDonut');
-  const riskNoteEl = document.getElementById('riskNote');
-  if (riskDonutEl) riskDonutEl.innerHTML = donutSvg(riskScore, cls);
-  if (riskNoteEl) riskNoteEl.innerText = note;
 }
 
-function setText(id, val) {
-  const el = document.getElementById(id);
-  if (el) el.innerText = val;
+/* ═══════════════════════════════════════════════════════════════
+   СТАТУС-ЧАРТ (горизонтальные полосы)
+   ═══════════════════════════════════════════════════════════════ */
+function updateStatusChart() {
+  const el = document.getElementById('statusChart');
+  if (!el) return;
+  const total = allSubscribers.length || 1;
+  const counts = { normal: 0, warning: 0, danger: 0 };
+  allSubscribers.forEach((s) => counts[s.status]++);
+
+  const statuses = [
+    { key: 'normal', label: 'Норма', color: '#68B944', bg: '#e8f5e0' },
+    { key: 'warning', label: 'Внимание', color: '#F7941D', bg: '#fff3e0' },
+    { key: 'danger', label: 'Критично', color: '#E53935', bg: '#fde8e8' },
+  ];
+
+  el.innerHTML = statuses.map((st) => {
+    const pct = Math.round((counts[st.key] / total) * 100);
+    return `<div class="status-row">
+      <div class="status-dot" style="background:${st.color}"></div>
+      <div class="status-label">${st.label}</div>
+      <div class="status-val">${counts[st.key]}</div>
+    </div>
+    <div class="status-bar"><div class="status-fill" style="width:${pct}%;background:${st.color}"></div></div>`;
+  }).join('');
 }
 
-/* ── Rank list ─────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   ТОП ПО РАСХОДАМ
+   ═══════════════════════════════════════════════════════════════ */
 function updateRankList() {
-  const rankList = document.getElementById('rankList');
-  if (!rankList) return;
+  const el = document.getElementById('rankList');
+  if (!el) return;
+  const top = [...allSubscribers].sort((a, b) => b.totalCost - a.totalCost).slice(0, 8);
+  document.getElementById('rankCount').textContent = allSubscribers.length;
+  if (!top.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Нет данных</div>'; return; }
 
-  const top = [...allSubscribers].sort((a, b) => b.totalCost - a.totalCost).slice(0, 5);
-  if (!top.length) { rankList.innerHTML = '<div class="empty">нет данных</div>'; return; }
+  el.innerHTML = top.map((sub, i) => {
+    const posClass = i < 3 ? `rank-pos-${i + 1}` : 'rank-pos-n';
+    return `<div class="rank-item" data-goto="${sub.number}">
+      <div class="rank-pos ${posClass}">${i + 1}</div>
+      <div class="rank-info">
+        <div class="rank-name">${escapeHtml(sub.name || sub.number)}</div>
+        ${sub.name ? `<div class="rank-phone">${sub.number}</div>` : ''}
+      </div>
+      <div class="rank-val">${money(sub.totalCost)}</div>
+    </div>`;
+  }).join('');
 
-  rankList.innerHTML = top.map((sub, i) =>
-    `<div class="rank-item" data-goto="${sub.number}"><div class="rank-pos">${i + 1}</div><div class="rank-name">${escapeHtml(sub.name || sub.number)}</div><div class="rank-val">${money(sub.totalCost)}</div></div>`
-  ).join('');
-
-  rankList.querySelectorAll('[data-goto]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const card = document.querySelector(`.user-card[data-phone="${el.dataset.goto}"]`);
-      if (card) {
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        card.classList.add('flash');
-        setTimeout(() => card.classList.remove('flash'), 1200);
-      }
+  el.querySelectorAll('[data-goto]').forEach((item) => {
+    item.addEventListener('click', () => {
+      const card = document.querySelector(`.user-card[data-phone="${item.dataset.goto}"]`);
+      if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); card.classList.add('flash'); setTimeout(() => card.classList.remove('flash'), 1200); }
     });
   });
 }
 
-/* ── Render users ──────────────────────────────────────────── */
-function renderUsers() {
-  const usersGrid = document.getElementById('usersGrid');
-  const searchTerm = document.getElementById('searchInput') ?
-    document.getElementById('searchInput').value.trim().toLowerCase() : '';
+/* ═══════════════════════════════════════════════════════════════
+   РАСХОДЫ ПО КАТЕГОРИЯМ
+   ═══════════════════════════════════════════════════════════════ */
+function updateCategoryChart() {
+  const el = document.getElementById('categoryChart');
+  if (!el) return;
+  const totals = { voice: 0, internet: 0, sms: 0, other: 0 };
+  allSubscribers.forEach((s) => s.categories.forEach((c) => { totals[c.cat] = (totals[c.cat] || 0) + c.cost; }));
+  // Also add "other" cost from planFee
+  const planTotal = allSubscribers.reduce((s, x) => s + x.planFee, 0);
+  const maxVal = Math.max(...Object.values(totals), planTotal, 1);
 
-  let filtered = allSubscribers.filter((sub) => {
-    if (searchTerm && !(sub.number.includes(searchTerm) || sub.name.toLowerCase().includes(searchTerm))) return false;
+  const cats = [
+    { key: 'plan', label: 'Абонплата', icon: '💳', color: '#0071CE', value: planTotal },
+    { key: 'voice', label: 'Голос', icon: '📞', color: '#0071CE', value: totals.voice },
+    { key: 'internet', label: 'Интернет', icon: '🌐', color: '#68B944', value: totals.internet },
+    { key: 'sms', label: 'SMS', icon: '✉️', color: '#F7941D', value: totals.sms },
+  ];
+
+  el.innerHTML = cats.map((c) => {
+    const pct = Math.round((c.value / maxVal) * 100);
+    return `<div class="cat-row">
+      <div class="cat-icon">${c.icon}</div>
+      <div class="cat-info">
+        <div class="cat-name">${c.label}</div>
+        <div class="cat-bar"><div class="cat-fill" style="width:${pct}%;background:${c.color}"></div></div>
+      </div>
+      <div class="cat-amount" style="color:${c.color}">${money(c.value)}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ТАРИФНЫЕ ПЛАНЫ
+   ═══════════════════════════════════════════════════════════════ */
+function updateTariffChart() {
+  const el = document.getElementById('tariffChart');
+  if (!el) return;
+  const tariffCounts = {};
+  allSubscribers.forEach((s) => {
+    const key = s.tariffName || 'Другой';
+    tariffCounts[key] = (tariffCounts[key] || 0) + 1;
+  });
+  const total = allSubscribers.length || 1;
+  const sorted = Object.entries(tariffCounts).sort((a, b) => b[1] - a[1]);
+
+  el.innerHTML = sorted.map(([name, count], i) => {
+    const pct = Math.round((count / total) * 100);
+    const color = TARIFF_COLORS[i % TARIFF_COLORS.length];
+    return `<div class="tariff-row">
+      <div class="tariff-color" style="background:${color}"></div>
+      <div class="tariff-info">
+        <div class="tariff-name">${escapeHtml(name)}</div>
+        <div class="tariff-count">${count} абонентов</div>
+        <div class="tariff-bar"><div class="tariff-fill" style="width:${pct}%;background:${color}"></div></div>
+      </div>
+      <div class="tariff-pct" style="color:${color}">${pct}%</div>
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   РЕНДЕР АБОНЕНТОВ
+   ═══════════════════════════════════════════════════════════════ */
+function renderUsers() {
+  const grid = document.getElementById('usersGrid');
+  const search = (document.getElementById('searchInput')?.value || '').trim().toLowerCase();
+
+  let filtered = allSubscribers.filter((s) => {
+    if (search && !s.number.includes(search) && !s.name.toLowerCase().includes(search)) return false;
     if (currentFilter === 'all') return true;
-    if (currentFilter === 'overpay') return sub.overpayment > 100;
-    if (currentFilter === 'growing') return sub.overpayment > 0;
-    return sub.status === currentFilter;
+    if (currentFilter === 'overpay') return s.overpayment > 100;
+    if (currentFilter === 'growing') return s.overpayment > 0;
+    return s.status === currentFilter;
   });
 
   const dir = sortDirection === 'desc' ? -1 : 1;
-  const keys = {
+  const sorters = {
     overpay: (a, b) => a.overpayment - b.overpayment,
     cost: (a, b) => a.totalCost - b.totalCost,
     risk: (a, b) => a.riskScore - b.riskScore,
     number: (a, b) => a.number.localeCompare(b.number),
   };
-
-  filtered.sort((a, b) => dir * (keys[currentSort] || keys.overpay)(a, b));
+  filtered.sort((a, b) => dir * (sorters[currentSort] || sorters.overpay)(a, b));
   renderedSubscribers = filtered;
 
-  if (!filtered.length) {
-    usersGrid.innerHTML = '<div class="empty-state">Нет данных для отображения</div>';
-    return;
-  }
-
-  usersGrid.innerHTML = filtered.map((sub) => renderCard(sub)).join('');
-
-  const resultCount = document.getElementById('resultCount');
-  if (resultCount) resultCount.innerText = `${filtered.length} из ${allSubscribers.length}`;
+  if (!filtered.length) { grid.innerHTML = '<div class="empty-state">Нет данных для отображения</div>'; return; }
+  grid.innerHTML = filtered.map(renderCard).join('');
+  document.getElementById('resultCount').textContent = `${filtered.length} из ${allSubscribers.length}`;
 }
 
 function renderCard(sub) {
-  const riskText = sub.status === 'danger' ? 'Критично' : (sub.status === 'warning' ? 'Внимание' : 'Норма');
-  const trendClass = sub.trend > 0.5 ? 'up' : (sub.trend < -0.5 ? 'down' : 'flat');
-  const trendArrow = trendClass === 'up' ? '↗' : (trendClass === 'down' ? '↘' : '→');
+  const riskText = sub.status === 'danger' ? 'Критично' : sub.status === 'warning' ? 'Внимание' : 'Норма';
+  const tc = sub.trend > 0.5 ? 'up' : sub.trend < -0.5 ? 'down' : 'flat';
+  const ta = tc === 'up' ? '↗' : tc === 'down' ? '↘' : '→';
   const title = sub.name ? escapeHtml(sub.name) : `Абонент ${sub.number}`;
 
-  return `<div class="user-card" data-phone="${sub.number}">
+  return `<div class="user-card card-${sub.status}" data-phone="${sub.number}">
   <div class="card-header">
     <div>
       <div class="user-name">${title}</div>
       <div class="user-sub">${sub.name ? sub.number + ' · ' : ''}${escapeHtml(sub.planName)}</div>
     </div>
-    <span class="badge badge-${sub.status === 'danger' ? 'danger' : sub.status === 'warning' ? 'warning' : 'normal'}">${riskText}</span>
+    <span class="badge badge-${sub.status}">${riskText}</span>
   </div>
   <div class="cost-row">
     <div>
       <div class="cost-main">${money(sub.totalCost)}</div>
-      <div class="cost-sub">Абонплата ${money(sub.planFee)} · переплата <strong class="${sub.overpayment > 0 ? 'txt-danger' : 'txt-good'}">${money(sub.overpayment)}</strong></div>
+      <div class="cost-sub">Абонплата ${money(sub.planFee)} · переплата <span class="${sub.overpayment > 0 ? 'txt-danger' : 'txt-good'}">${money(sub.overpayment)}</span></div>
     </div>
-    <span class="trend trend-${trendClass}">${trendArrow} ${sub.trend > 0 ? '+' : ''}${sub.trend.toFixed(0)}%</span>
+    <span class="trend trend-${tc}">${ta} ${sub.trend > 0 ? '+' : ''}${sub.trend.toFixed(0)}%</span>
   </div>
-  <div class="cat-chips">${sub.categories.map((c) => catChip(c)).join('')}</div>
+  <div class="cat-chips">${sub.categories.map(catChip).join('')}</div>
   <div class="spark-wrap">${sparkline(sub)}</div>
   <div class="card-actions">
     <button class="act" data-act="details">Подробнее ▾</button>
-    <button class="act" data-act="limits">Детально по лимитам ▾</button>
+    <button class="act" data-act="limits">Лимиты ▾</button>
   </div>
   <div class="panel panel-details">
     <div class="panel-section">
       <div class="panel-title">Рекомендация</div>
       <ul class="rec-list">${sub.recommendation.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
-      <div class="econo">Потенциал экономии: <b>${money(sub.overpayment * 0.7)}/мес</b> · прогноз след. месяца ${money(sub.avg * 1.05)}</div>
+      <div class="econo">Экономия: <b>${money(sub.overpayment * 0.7)}/мес</b> · прогноз ${money(sub.avg * 1.05)}</div>
     </div>
     <div class="panel-section">
-      <div class="panel-title">Динамика по месяцам</div>
+      <div class="panel-title">Динамика</div>
       <div class="months">${monthsHistory(sub)}</div>
     </div>
   </div>
   <div class="panel panel-limits">
     <div class="panel-section">
-      <div class="panel-title">Использование пакетов</div>
-      <div class="limits-grid">${sub.categories.map((c) => limitRow(c)).join('')}</div>
-      <div class="panel-hint">Пакеты берутся из тарифа «${escapeHtml(sub.planName)}».</div>
+      <div class="panel-title">Пакеты</div>
+      <div>${sub.categories.map(limitRow).join('')}</div>
+      <div class="panel-hint">Тариф «${escapeHtml(sub.planName)}».</div>
     </div>
   </div>
 </div>`;
 }
 
 function catChip(c) {
-  const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
+  const lvl = c.ratio > 1 ? 'danger' : c.ratio >= 0.8 ? 'warning' : 'good';
   const pct = c.limit ? Math.min(100, Math.round(c.ratio * 100)) : 0;
-  return `<div class="chip chip-${level}"><span class="chip-ico">${c.icon}</span><span>${c.label}</span><span>${pct}%</span></div>`;
+  return `<div class="chip chip-${lvl}"><span class="chip-ico">${c.icon}</span><span>${c.label}</span><span>${pct}%</span></div>`;
 }
 
 function limitRow(c) {
-  const level = c.ratio > 1 ? 'danger' : (c.ratio >= 0.8 ? 'warning' : 'good');
+  const lvl = c.ratio > 1 ? 'danger' : c.ratio >= 0.8 ? 'warning' : 'good';
   const pct = c.limit ? Math.min(100, c.ratio * 100) : 0;
-  const adviceCls = c.advice.type === 'raise' ? 'pill-danger' : (c.advice.type === 'lower' ? 'pill-accent' : 'pill-good');
-  const adviceLbl = c.advice.type === 'raise' ? '↑ повысить' : (c.advice.type === 'lower' ? '↓ понизить' : '✓ ок');
-  const usedStr = c.cat === 'internet' ? fmtUsed(c) : Math.round(c.used);
+  const pillCls = c.advice.type === 'raise' ? 'pill-danger' : c.advice.type === 'lower' ? 'pill-accent' : 'pill-good';
+  const pillLbl = c.advice.type === 'raise' ? '↑ повысить' : c.advice.type === 'lower' ? '↓ понизить' : '✓ ок';
+  const used = c.cat === 'internet' ? fmtUsed(c) : Math.round(c.used);
   return `<div class="limit-row">
-  <div class="limit-head">
-    <span>${c.icon}</span>
-    <span class="limit-name">${c.label}</span>
-    <span class="limit-val">${usedStr} / ${c.limit} ${c.unit}</span>
-    <span class="pill ${adviceCls}">${adviceLbl}</span>
-  </div>
-  <div class="bar bar-lg${pct > 100 ? ' bar-over' : ''}"><div class="bar-fill fill-${level}" style="width:${Math.min(100, pct)}%"></div></div>
-  <div class="limit-advice">${escapeHtml(c.advice.text)}</div>
-</div>`;
+    <div class="limit-head">
+      <span>${c.icon}</span><span class="limit-name">${c.label}</span>
+      <span class="limit-val">${used} / ${c.limit} ${c.unit}</span>
+      <span class="pill ${pillCls}">${pillLbl}</span>
+    </div>
+    <div class="bar bar-lg${pct > 100 ? ' bar-over' : ''}"><div class="bar-fill fill-${lvl}" style="width:${Math.min(100, pct)}%"></div></div>
+    <div class="limit-advice">${escapeHtml(c.advice.text)}</div>
+  </div>`;
 }
 
 function monthsHistory(sub) {
@@ -613,144 +574,99 @@ function monthsHistory(sub) {
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.act');
   if (!btn) return;
-
   const card = btn.closest('.user-card');
   const which = btn.dataset.act === 'limits' ? 'panel-limits' : 'panel-details';
   const open = card.classList.toggle(`open-${btn.dataset.act}`);
-  const panel = card.querySelector(`.${which}`);
-  if (panel) panel.classList.toggle('show', open);
+  card.querySelector(`.${which}`)?.classList.toggle('show', open);
   btn.textContent = btn.textContent.replace(open ? '▾' : '▴', open ? '▴' : '▾');
 });
 
+/* ═══════════════════════════════════════════════════════════════
+   СПАРКЛАЙН
+   ═══════════════════════════════════════════════════════════════ */
 function sparkline(sub) {
   const data = sub.monthly;
-  const W = 300, H = 84, padL = 6, padR = 6, padT = 12, padB = 16;
-  const chartW = W - padL - padR, chartH = H - padT - padB;
-  const maxVal = Math.max(...data, sub.planFee, 1) * 1.18;
-  const x = (i) => padL + (i / (data.length - 1)) * chartW;
-  const y = (v) => padT + chartH - (v / maxVal) * chartH;
+  const W = 300, H = 80, pL = 6, pR = 6, pT = 10, pB = 16;
+  const cW = W - pL - pR, cH = H - pT - pB;
+  const mx = Math.max(...data, sub.planFee, 1) * 1.18;
+  const x = (i) => pL + (i / (data.length - 1)) * cW;
+  const y = (v) => pT + cH - (v / mx) * cH;
   const labels = getRecentMonthLabels(data.length);
-  const linePts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-  const areaD = `M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${linePts.join(' L')} L${x(data.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
-  const limitY = y(sub.planFee).toFixed(1);
-  const dots = data.map((v, i) => {
-    const real = i === data.length - 1;
-    return `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${real ? 3 : 2}" class="${real ? 'spark-dot-real' : 'spark-dot'}"/>`;
-  }).join('');
-  const xlabels = labels.map((l, i) =>
-    `<text x="${x(i).toFixed(1)}" y="${H - 4}" class="spark-xlabel">${l}</text>`
-  ).join('');
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const area = `M${x(0).toFixed(1)},${(pT + cH).toFixed(1)} L${pts.join(' L')} L${x(data.length - 1).toFixed(1)},${(pT + cH).toFixed(1)} Z`;
+  const limY = y(sub.planFee).toFixed(1);
+  const dots = data.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i === data.length - 1 ? 3 : 2}" class="${i === data.length - 1 ? 'spark-dot-real' : 'spark-dot'}"/>`).join('');
+  const xlbl = labels.map((l, i) => `<text x="${x(i).toFixed(1)}" y="${H - 4}" class="spark-xlabel">${l}</text>`).join('');
 
   return `<svg width="${W}" height="${H}" class="spark">
-  <path d="${areaD}" class="spark-area"/>
-  <polyline points="${linePts.join(' ')}" class="spark-line"/>
-  ${sub.planFee > 0 ? `<line x1="${padL}" y1="${limitY}" x2="${W - padR}" y2="${limitY}" class="spark-limit"/>` : ''}
-  ${dots}${xlabels}
-</svg>`;
-}
-
-function donutSvg(score, cls) {
-  const r = 34, c = 2 * Math.PI * r;
-  const off = c * (1 - score / 100);
-  return `<svg width="80" height="80" class="donut donut-${cls}">
-  <circle cx="40" cy="40" r="${r}" class="donut-track"/>
-  <circle cx="40" cy="40" r="${r}" class="donut-val" stroke-dasharray="${c}" stroke-dashoffset="${off}"/>
-  <text x="40" y="46" text-anchor="middle" class="donut-text">${score}</text>
-</svg>`;
+  <path d="${area}" class="spark-area"/>
+  <polyline points="${pts.join(' ')}" class="spark-line"/>
+  ${sub.planFee > 0 ? `<line x1="${pL}" y1="${limY}" x2="${W - pR}" y2="${limY}" class="spark-limit"/>` : ''}
+  ${dots}${xlbl}</svg>`;
 }
 
 function drawBigChart() {
   const host = document.getElementById('bigChart');
-  if (!host || !renderedSubscribers.length) {
-    if (host) host.innerHTML = '<div class="empty">Нет данных</div>';
-    return;
-  }
+  if (!host || !renderedSubscribers.length) { if (host) host.innerHTML = '<div style="color:var(--text-muted)">Нет данных</div>'; return; }
 
   const months = getRecentMonthLabels(HISTORY_MONTHS);
   const totals = new Array(HISTORY_MONTHS).fill(0);
   renderedSubscribers.forEach((s) => s.monthly.forEach((v, i) => { totals[i] += v; }));
 
-  const W = 720, H = 260, padL = 64, padR = 20, padT = 20, padB = 34;
-  const chartW = W - padL - padR, chartH = H - padT - padB;
-  const maxVal = Math.max(...totals, 1) * 1.12;
-  const x = (i) => padL + (i / (totals.length - 1)) * chartW;
-  const y = (v) => padT + chartH - (v / maxVal) * chartH;
+  const W = 800, H = 280, pL = 70, pR = 20, pT = 24, pB = 36;
+  const cW = W - pL - pR, cH = H - pT - pB;
+  const mx = Math.max(...totals, 1) * 1.12;
+  const x = (i) => pL + (i / (totals.length - 1)) * cW;
+  const y = (v) => pT + cH - (v / mx) * cH;
 
   const grid = [];
   for (let i = 0; i <= 4; i++) {
-    const gy = padT + (i / 4) * chartH;
-    const val = maxVal * (1 - i / 4);
-    grid.push(`<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" class="grid"/>`);
-    grid.push(`<text x="${padL - 8}" y="${gy + 4}" text-anchor="end" class="axis-label">${Math.round(val)}</text>`);
+    const gy = pT + (i / 4) * cH;
+    const val = mx * (1 - i / 4);
+    grid.push(`<line x1="${pL}" y1="${gy}" x2="${W - pR}" y2="${gy}" class="grid"/>`);
+    grid.push(`<text x="${pL - 10}" y="${gy + 4}" text-anchor="end" class="axis-label">${Math.round(val).toLocaleString('ru-RU')}</text>`);
   }
-  const linePts = totals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-  const areaD = `M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${linePts.join(' L')} L${x(totals.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z`;
-  const dots = totals.map((v, i) =>
-    `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="4" class="big-dot"/>`
-  ).join('');
-  const xlabels = months.map((m, i) =>
-    `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" class="axis-label">${m}</text>`
-  ).join('');
-  const valLabels = totals.map((v, i) =>
-    `<text x="${x(i).toFixed(1)}" y="${y(v) - 8}" text-anchor="middle" class="big-vlabel">${money(v)}</text>`
-  ).join('');
+  const pts = totals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const area = `M${x(0).toFixed(1)},${(pT + cH).toFixed(1)} L${pts.join(' L')} L${x(totals.length - 1).toFixed(1)},${(pT + cH).toFixed(1)} Z`;
+  const dots = totals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="5" class="big-dot"/>`).join('');
+  const xlbl = months.map((m, i) => `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" class="axis-label">${m}</text>`).join('');
+  const vlbl = totals.map((v, i) => `<text x="${x(i).toFixed(1)}" y="${y(v) - 10}" text-anchor="middle" class="big-vlabel">${money(v)}</text>`).join('');
 
   host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="big-svg">
   ${grid.join('')}
-  <path d="${areaD}" class="big-area"/>
-  <polyline points="${linePts.join(' ')}" class="big-line"/>
-  ${dots}${valLabels}${xlabels}
-</svg>`;
-}
-
-/* ── Helpers ───────────────────────────────────────────────── */
-function money(v) { return (Math.round(v) || 0).toLocaleString('ru-RU') + ' ₽'; }
-function fmtUsed(c) {
-  if (c.cat === 'internet') return c.used.toFixed(c.used < 10 ? 1 : 0);
-  return Math.round(c.used);
-}
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[ch]));
-}
-function getRecentMonthLabels(count) {
-  const now = new Date();
-  const labels = [];
-  for (let i = count - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    labels.push(MONTH_NAMES[d.getMonth()]);
-  }
-  return labels;
-}
-
-function showLoading(text, pct) {
-  const loading = document.getElementById('loading');
-  if (loading) loading.style.display = 'flex';
-  const loadingText = document.getElementById('loadingText');
-  if (loadingText) loadingText.innerText = text;
-  const progressFill = document.getElementById('progressFill');
-  if (progressFill) progressFill.style.width = `${pct}%`;
-}
-
-function hideLoading() {
-  const loading = document.getElementById('loading');
-  if (loading) loading.style.display = 'none';
-}
-
-function flashHint(text) {
-  const hint = document.getElementById('hint');
-  if (hint) {
-    hint.innerText = text;
-    hint.classList.add('show');
-    setTimeout(() => hint.classList.remove('show'), 3200);
-  }
+  <path d="${area}" class="big-area"/>
+  <polyline points="${pts.join(' ')}" class="big-line"/>
+  ${dots}${vlbl}${xlbl}</svg>`;
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   DEMO DATA
+   УТИЛИТЫ
    ═══════════════════════════════════════════════════════════════ */
+function money(v) { return (Math.round(v) || 0).toLocaleString('ru-RU') + ' ₽'; }
+function fmtUsed(c) { return c.cat === 'internet' ? c.used.toFixed(c.used < 10 ? 1 : 0) : Math.round(c.used); }
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
+function getRecentMonthLabels(count) {
+  const now = new Date();
+  const labels = [];
+  for (let i = count - 1; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); labels.push(MONTH_NAMES[d.getMonth()]); }
+  return labels;
+}
+function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
+function showLoading(text, pct) {
+  document.getElementById('loading').style.display = 'flex';
+  document.getElementById('loadingText').textContent = text;
+  document.getElementById('progressFill').style.width = `${pct}%`;
+}
+function hideLoading() { document.getElementById('loading').style.display = 'none'; }
+function flashHint(text) {
+  const h = document.getElementById('hint');
+  h.textContent = text; h.classList.add('show');
+  setTimeout(() => h.classList.remove('show'), 3200);
+}
 
+/* ═══════════════════════════════════════════════════════════════
+   ДЕМО-ДАННЫЕ
+   ═══════════════════════════════════════════════════════════════ */
 const DEMO_PLANS = [
   { fee: 140, name: 'Интернет. Без Переплат 04.23', minutes: 700, sms: 300, internet_mb: 15000 },
   { fee: 230, name: 'Управляй! Специалист +', minutes: 1500, sms: 500, internet_mb: 25000 },
@@ -759,58 +675,40 @@ const DEMO_PLANS = [
 
 function loadDemoData() {
   showLoading('Генерация демо-данных…', 30);
-  const reportData = {};
-
+  const rd = {};
   for (let i = 0; i < 50; i++) {
-    const phone = generatePhone();
+    const phone = genPhone();
     const plan = DEMO_PLANS[Math.floor(Math.random() * DEMO_PLANS.length)];
-    const data = { items: [], planFee: plan.fee, planName: plan.name };
+    const d = { items: [], planFee: plan.fee, planName: plan.name };
+    const add = (key, cat, vol, unit, cost) => d.items.push({ key, category: cat, rawVolume: `${vol} ${unit}`, volume: vol, unit, withDiscount: cost, noDiscount: cost });
 
     const outMin = Math.floor(Math.random() * 500);
-    if (outMin > 0) data.items.push({ key: 'home_outgoing_calls', category: 'voice', rawVolume: `${outMin} мин`, volume: outMin, unit: 'мин', withDiscount: 0 });
-    const inMin = Math.floor(Math.random() * 600) + 50;
-    data.items.push({ key: 'home_incoming_calls', category: 'voice', rawVolume: `${inMin} мин`, volume: inMin, unit: 'мин', withDiscount: 0 });
-    const onnetMin = Math.floor(Math.random() * 300);
-    if (onnetMin > 0) data.items.push({ key: 'home_onnet_calls', category: 'voice', rawVolume: `${onnetMin} мин`, volume: onnetMin, unit: 'мин', withDiscount: 0 });
+    if (outMin) add('home_outgoing_calls', 'voice', outMin, 'мин', 0);
+    add('home_incoming_calls', 'voice', Math.floor(Math.random() * 600) + 50, 'мин', 0);
+    const onnet = Math.floor(Math.random() * 300);
+    if (onnet) add('home_onnet_calls', 'voice', onnet, 'мин', 0);
     const otherMin = Math.floor(Math.random() * 100);
-    const otherCost = +(otherMin * 0.18).toFixed(2);
-    if (otherMin > 0) data.items.push({ key: 'home_other_operators', category: 'voice', rawVolume: `${otherMin} мин`, volume: otherMin, unit: 'мин', noDiscount: otherCost, withDiscount: otherCost });
-    const intercityMin = Math.floor(Math.random() * 80);
-    const intercityCost = +(intercityMin * 0.25).toFixed(2);
-    if (intercityMin > 0) data.items.push({ key: 'home_intercity_calls', category: 'voice', rawVolume: `${intercityMin} мин`, volume: intercityMin, unit: 'мин', noDiscount: intercityCost, withDiscount: intercityCost });
-    const internetMb = +(Math.random() * 50000).toFixed(2);
-    const internetCost = +(Math.max(0, (internetMb - 5000)) * 0.0001).toFixed(2);
-    data.items.push({ key: 'home_mobile_internet', category: 'internet', rawVolume: `${internetMb} Мбайт`, volume: internetMb, unit: 'Мбайт', noDiscount: internetCost, withDiscount: internetCost });
+    if (otherMin) add('home_other_operators', 'voice', otherMin, 'мин', +(otherMin * 0.18).toFixed(2));
+    const icMin = Math.floor(Math.random() * 80);
+    if (icMin) add('home_intercity_calls', 'voice', icMin, 'мин', +(icMin * 0.25).toFixed(2));
+    const mb = +(Math.random() * 50000).toFixed(2);
+    add('home_mobile_internet', 'internet', mb, 'Мбайт', +(Math.max(0, mb - 5000) * 0.0001).toFixed(2));
     const inSms = Math.floor(Math.random() * 200);
-    if (inSms > 0) data.items.push({ key: 'home_incoming_sms', category: 'sms', rawVolume: `${inSms} шт`, volume: inSms, unit: 'шт', withDiscount: 0 });
+    if (inSms) add('home_incoming_sms', 'sms', inSms, 'шт', 0);
     const outSms = Math.floor(Math.random() * 60);
-    const smsCost = +(outSms * 0.05).toFixed(2);
-    if (outSms > 0) data.items.push({ key: 'home_sms', category: 'sms', rawVolume: `${outSms} шт`, volume: outSms, unit: 'шт', noDiscount: smsCost, withDiscount: smsCost });
-    if (Math.random() < 0.3) data.items.push({ key: 'employee_protection_fee', category: 'other', rawVolume: '1', volume: 1, unit: '', withDiscount: 90, noDiscount: 90 });
-    if (Math.random() < 0.15) {
-      const travelMin = Math.floor(Math.random() * 40) + 1;
-      const travelCost = +(travelMin * 0.18).toFixed(2);
-      data.items.push({ key: 'travel_outgoing_calls', category: 'voice', rawVolume: `${travelMin} мин`, volume: travelMin, unit: 'мин', noDiscount: travelCost, withDiscount: travelCost });
-    }
-    if (Math.random() < 0.1) {
-      const travelSms = Math.floor(Math.random() * 20) + 1;
-      const travelSmsCost = +(travelSms * 0.1).toFixed(2);
-      data.items.push({ key: 'travel_sms', category: 'sms', rawVolume: `${travelSms} шт`, volume: travelSms, unit: 'шт', noDiscount: travelSmsCost, withDiscount: travelSmsCost });
-    }
-
-    reportData[phone] = data;
+    if (outSms) add('home_sms', 'sms', outSms, 'шт', +(outSms * 0.05).toFixed(2));
+    if (Math.random() < 0.3) add('employee_protection_fee', 'other', 1, '', 90);
+    if (Math.random() < 0.15) { const t = Math.floor(Math.random() * 40) + 1; add('travel_outgoing_calls', 'voice', t, 'мин', +(t * 0.18).toFixed(2)); }
+    if (Math.random() < 0.1) { const t = Math.floor(Math.random() * 20) + 1; add('travel_sms', 'sms', t, 'шт', +(t * 0.1).toFixed(2)); }
+    rd[phone] = d;
   }
-
-  currentFilter = 'all';
-  currentSort = 'overpay';
-  sortDirection = 'desc';
-  buildReportFromData(reportData);
+  currentFilter = 'all'; currentSort = 'overpay'; sortDirection = 'desc';
+  buildReportFromData(rd);
 }
 
-function generatePhone() {
-  const prefixes = [900, 901, 902, 903, 904, 905, 906, 908, 909, 910, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 950, 951, 952, 953, 958];
-  const prefix = prefixes[Math.floor(Math.random() * prefixes.length)];
-  let rest = '';
-  for (let i = 0; i < 7; i++) rest += Math.floor(Math.random() * 10);
-  return prefix + rest;
+function genPhone() {
+  const p = [900,901,902,903,904,905,906,908,909,910,912,913,914,915,916,917,918,919,920,921,922,923,924,925,926,927,928,929,930,950,951,952,953];
+  const pr = p[Math.floor(Math.random() * p.length)];
+  let r = ''; for (let i = 0; i < 7; i++) r += Math.floor(Math.random() * 10);
+  return pr + r;
 }
