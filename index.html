@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Анализ расходов на связь</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-mark">₽</span>
+    <h1>Анализ расходов на связь</h1>
+  </div>
+  <div class="upload-controls">
+    <button id="workersBtn" class="btn btn-ghost">Список сотрудников</button>
+    <input type="file" id="workersFile" accept=".csv,.txt" hidden>
+    <button id="billsBtn" class="btn btn-primary">Загрузить счета</button>
+    <input type="file" id="billsFile" accept=".csv,.txt" hidden>
+    <button id="demoBtn" class="btn btn-outline">Демо-данные</button>
+    <button id="themeBtn" class="btn btn-icon" title="Светлая / тёмная тема" aria-label="Сменить тему">◐</button>
+  </div>
+</header>
+
+<div id="hint" class="hint"></div>
+
+<div id="loading" class="loading-overlay" style="display:none">
+  <div class="loading-box">
+    <div id="loadingText" class="loading-text">Обработка файла…</div>
+    <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
+  </div>
+</div>
+
+<main class="app-main">
+
+  <section id="kpiPanel" class="kpi-panel" style="display:none">
+    <div class="kpi-card">
+      <div class="kpi-ico">👥</div>
+      <div><div class="kpi-label">Абонентов</div><div id="totalCount" class="kpi-value">0</div></div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-ico">💳</div>
+      <div><div class="kpi-label">Итого начислено</div><div id="totalCost" class="kpi-value">0 ₽</div></div>
+    </div>
+    <div class="kpi-card kpi-danger">
+      <div class="kpi-ico">📈</div>
+      <div><div class="kpi-label">Переплата</div><div id="totalOverpay" class="kpi-value">0 ₽</div></div>
+    </div>
+    <div class="kpi-card kpi-accent">
+      <div class="kpi-ico">💡</div>
+      <div><div class="kpi-label">Потенциал экономии</div><div id="totalEconomy" class="kpi-value">0 ₽</div></div>
+    </div>
+    <div class="kpi-card kpi-danger">
+      <div class="kpi-ico">⚠️</div>
+      <div><div class="kpi-label">Критичных абонентов</div><div id="criticalCount" class="kpi-value">0</div></div>
+    </div>
+  </section>
+
+  <section id="analyticsPanel" class="analytics-panel" style="display:none">
+    <div class="card risk-block">
+      <div class="block-title">Индекс риска</div>
+      <div id="riskDonut" class="risk-donut"></div>
+      <div id="riskNote" class="risk-note">низкий риск</div>
+    </div>
+    <div class="card rank-block">
+      <div class="block-title">Топ по расходам</div>
+      <div id="rankList" class="rank-list"></div>
+    </div>
+    <div class="card chart-block">
+      <button id="toggleChartBtn" class="block-title toggle" aria-expanded="false">Динамика по месяцам <span class="chev">▾</span></button>
+      <div id="chartPanel" class="chart-panel">
+        <div id="bigChart" class="big-chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="filtersPanel" class="filters-panel" style="display:none">
+    <div class="filters-group">
+      <button class="filter active" data-filter="all">Все</button>
+      <button class="filter" data-filter="normal">Норма</button>
+      <button class="filter" data-filter="warning">Внимание</button>
+      <button class="filter" data-filter="danger">Критично</button>
+      <button class="filter" data-filter="growing">С переплатой</button>
+      <button class="filter" data-filter="overpay">Переплата > 100 ₽</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="sort-group">
+      <span class="group-label">Сортировка</span>
+      <button class="sort" data-sort="overpay">Переплата</button>
+      <button class="sort" data-sort="cost">Сумма</button>
+      <button class="sort" data-sort="risk">Риск</button>
+      <button class="sort" data-sort="number">№</button>
+    </div>
+    <div class="view-group">
+      <button id="gridView" class="view active" title="Плитки">▦</button>
+      <button id="tableView" class="view" title="Список">☰</button>
+    </div>
+    <input type="text" id="searchInput" class="search-input" placeholder="Поиск по номеру или имени…">
+    <span id="resultCount" class="result-count"></span>
+  </section>
+
+  <section id="usersGrid" class="users-grid"></section>
+
+</main>
+
+<script src="script.js"></script>
+</body>
+</html>
