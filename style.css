@@ -174,6 +174,65 @@ button { font-family: inherit; }
 
 .upload-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
+/* ═══════════════════════════ ГЛАВНОЕ МЕНЮ ═══════════════════════════
+   Вместо семи кнопок в ряд — одна. Всё остальное выпадает списком,
+   прижатым к правому краю кнопки.
+   Строки крупные и в одну колонку: попасть по такой цели легко даже
+   неуверенной мышью, а название и пояснение читаются без прищура. */
+.menu-wrap { position: relative; }
+
+.menu-btn { display: inline-flex; align-items: center; gap: 9px; min-height: 38px; }
+/* Три полоски — привычный значок меню. Рисуем фоном, без картинок и шрифтов. */
+.menu-btn-bars {
+  width: 15px; height: 11px; flex: none;
+  background:
+    linear-gradient(currentColor, currentColor) 0 0    / 100% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 50%  / 100% 2px no-repeat,
+    linear-gradient(currentColor, currentColor) 0 100% / 100% 2px no-repeat;
+}
+
+.menu-drop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+  /* Ширина резиновая: не шире экрана даже при крупном масштабе. */
+  width: min(340px, calc(100vw - 24px));
+  padding: 7px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border-strong);
+  box-shadow: 0 14px 40px rgba(10, 25, 20, .18);
+  animation: menuIn .13s ease-out;
+}
+@keyframes menuIn { from { opacity: 0; transform: translateY(-4px); } }
+
+.menu-group-title {
+  padding: 9px 11px 5px; font-size: 10px; font-weight: 700;
+  letter-spacing: .4px; text-transform: uppercase; color: var(--text-muted);
+}
+
+.menu-item {
+  display: flex; flex-direction: column; gap: 2px; width: 100%;
+  padding: 10px 12px; border: none; border-radius: var(--radius-sm);
+  background: none; font-family: inherit; text-align: left; cursor: pointer;
+  color: var(--text); min-height: 44px;
+  transition: background .12s ease;
+}
+.menu-item:hover { background: var(--surface-2); }
+.menu-item:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.menu-item[hidden] { display: none; }
+.menu-item-name { font-size: 13.5px; font-weight: 600; }
+.menu-item-note { font-size: 11px; color: var(--text-muted); line-height: 1.35; }
+
+/* Главное действие выделено — с него начинают работу. */
+.menu-item.is-primary {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.menu-item.is-primary:hover { background: color-mix(in srgb, var(--primary) 17%, transparent); }
+.menu-item.is-primary .menu-item-name { color: var(--primary); }
+
+@media (max-width: 560px) {
+  /* На узком экране меню занимает всю доступную ширину под шапкой. */
+  .menu-wrap { position: static; }
+  .menu-drop { right: 10px; left: 10px; width: auto; }
+}
+
 .month-picker { display: flex; align-items: center; gap: 7px; margin-right: 4px; }
 .month-picker-label { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; opacity: .8; }
 .month-select {

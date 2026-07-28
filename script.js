@@ -197,6 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('statsBtn', 'click', openStats);
   on('settingsBtn', 'click', openSettings);
   on('monthSelect', 'change', (e) => loadMonth(e.target.value));
+  bindMainMenu();
 
   on('searchInput', 'input', debounce((e) => {
     state.search = e.target.value.trim().toLowerCase();
@@ -1031,6 +1032,46 @@ function cardChipPanel(s) {
         загрузите новый счёт — они останутся.</span>
     </div>
   </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * ГЛАВНОЕ МЕНЮ
+ *
+ * Все действия шапки собраны под одну кнопку. Поведение сделано максимально
+ * предсказуемым, потому что работать с этим будет человек, который редко
+ * пользуется компьютером:
+ *   — меню закрывается само после выбора пункта;
+ *   — закрывается по клику мимо и по Esc;
+ *   — ничего не открывается при простом наведении мыши, только по нажатию.
+ * ═════════════════════════════════════════════════════════════════════════ */
+function bindMainMenu() {
+  const btn = $('menuBtn');
+  const drop = $('mainMenu');
+  if (!btn || !drop) return;
+
+  const setOpen = (open) => {
+    drop.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    btn.classList.toggle('is-open', open);
+  };
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(drop.hidden);
+  });
+
+  // Выбрали пункт — меню уходит. Само действие выполнит обработчик кнопки,
+  // навешанный отдельно (см. init): здесь мы только закрываем список.
+  drop.addEventListener('click', (e) => {
+    if (e.target.closest('.menu-item')) setOpen(false);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!drop.hidden && !e.target.closest('.menu-wrap')) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !drop.hidden) { setOpen(false); btn.focus(); }
+  });
 }
 
 function payerText(payer) {

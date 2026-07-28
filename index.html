@@ -17,21 +17,65 @@
     </div>
   </div>
 
+  <!-- ВСЕ ДЕЙСТВИЯ СПРЯТАНЫ В ОДНО МЕНЮ.
+       Раньше в шапке висели семь кнопок в ряд. Для человека, который редко
+       работает с компьютером, это семь одинаковых на вид целей, в которых
+       надо разбираться каждый раз. Теперь видна одна кнопка, а всё
+       остальное открывается по нажатию — списком, крупными строками.
+       Идентификаторы кнопок НЕ менялись: обработчики в script.js остались
+       прежними, переехала только разметка вокруг них. -->
   <div class="upload-controls">
     <label class="month-picker" id="monthPickerWrap" hidden>
       <span class="month-picker-label">Период</span>
       <select id="monthSelect" class="month-select" aria-label="Расчётный период"></select>
     </label>
-    <button id="statsBtn" class="btn btn-ghost" hidden title="Полный отчёт по счёту">Общая статистика</button>
-    <button id="rosterBtn" class="btn btn-ghost" title="Список абонентов: номер, лимит, ФИО, должность">Список абонентов</button>
+
+    <div class="menu-wrap">
+      <button id="menuBtn" class="btn btn-primary menu-btn" type="button"
+              aria-haspopup="true" aria-expanded="false" aria-controls="mainMenu">
+        <span class="menu-btn-bars" aria-hidden="true"></span>
+        <span>Меню</span>
+      </button>
+
+      <!-- Список выпадает вниз и прижат к правому краю кнопки. -->
+      <div id="mainMenu" class="menu-drop" role="menu" hidden>
+        <div class="menu-group-title">Загрузить данные</div>
+        <button id="billsBtn" class="menu-item is-primary" role="menuitem">
+          <span class="menu-item-name">Загрузить счёт</span>
+          <span class="menu-item-note">выгрузка «Начисления по абонентским номерам»</span>
+        </button>
+        <button id="rosterBtn" class="menu-item" role="menuitem">
+          <span class="menu-item-name">Список абонентов</span>
+          <span class="menu-item-note">номер, лимит, ФИО, должность</span>
+        </button>
+        <button id="tripsBtn" class="menu-item" role="menuitem">
+          <span class="menu-item-name">Командировки</span>
+          <span class="menu-item-note">номер, ФИО, период, страна, утверждение</span>
+        </button>
+
+        <div class="menu-group-title">Отчёты и настройки</div>
+        <button id="statsBtn" class="menu-item" role="menuitem" hidden>
+          <span class="menu-item-name">Общая статистика</span>
+          <span class="menu-item-note">полный отчёт по счёту</span>
+        </button>
+        <button id="downloadBtn" class="menu-item" role="menuitem" hidden>
+          <span class="menu-item-name">Отчёт CSV</span>
+          <span class="menu-item-note">скачать таблицу на компьютер</span>
+        </button>
+        <button id="settingsBtn" class="menu-item" role="menuitem">
+          <span class="menu-item-name">Настройки</span>
+          <span class="menu-item-note">правила, тарифы, абоненты, командировки</span>
+        </button>
+        <button id="themeBtn" class="menu-item" role="menuitem">
+          <span class="menu-item-name">Светлая / тёмная тема</span>
+          <span class="menu-item-note">переключить оформление</span>
+        </button>
+      </div>
+    </div>
+
     <input type="file" id="rosterFile" accept=".csv,.txt,.tsv" hidden>
-    <button id="tripsBtn" class="btn btn-ghost" title="Список командировок: номер, ФИО, период, страна, утверждение">Командировки</button>
     <input type="file" id="tripsFile" accept=".csv,.txt,.tsv" hidden>
-    <button id="billsBtn" class="btn btn-primary" title="Выгрузка «Начисления по абонентским номерам»">Загрузить счёт</button>
     <input type="file" id="billsFile" accept=".csv,.txt" hidden>
-    <button id="downloadBtn" class="btn btn-ghost" hidden title="Скачать отчёт CSV">Отчёт CSV</button>
-    <button id="settingsBtn" class="btn btn-icon" title="Настройки" aria-label="Настройки">⚙</button>
-    <button id="themeBtn" class="btn btn-icon" title="Светлая / тёмная тема" aria-label="Сменить тему">◐</button>
   </div>
 </header>
 
