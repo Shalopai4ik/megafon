@@ -341,8 +341,15 @@ button { font-family: inherit; }
   padding: clamp(10px, 1.2vw, 16px) clamp(10px, 1.6vw, 20px) 72px;
 }
 /* Страховка от вылезающего вбок содержимого. Широкие блоки (таблицы,
-   графики) прокручиваются внутри себя, а не тянут за собой всю страницу. */
-html, body { max-width: 100%; overflow-x: hidden; }
+   графики) прокручиваются внутри себя, а не тянут за собой всю страницу.
+
+   ВНИМАНИЕ, ЗДЕСЬ БЫЛ overflow-x: hidden — И ОН ЛОМАЛ ЗАЛИПАЮЩУЮ ШАПКУ.
+   Любое значение overflow, кроме visible, делает элемент контейнером
+   прокрутки, и position: sticky внутри него начинает липнуть к этому
+   контейнеру, а не к окну — шапка уезжала вверх вместе со страницей.
+   clip обрезает так же, но контейнера прокрутки НЕ создаёт, поэтому
+   шапка снова держится сверху. */
+html, body { max-width: 100%; overflow-x: clip; }
 
 /* ═══════════════════════════ ПРИВЕТСТВИЕ ═══════════════════════════ */
 .welcome {
@@ -597,9 +604,12 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 }
 .waste-track { height: 5px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .waste-fill { display: block; height: 100%; border-radius: 4px; transition: width .4s ease; }
-.waste-fill.fill-danger { background: var(--danger); }
-.waste-fill.fill-warning { background: var(--warning); }
-.waste-fill.fill-accent { background: var(--accent); }
+/* Полоса «платим впустую» есть на КАЖДОЙ карточке. В сетке из сотни
+   карточек сплошной сигнальный красный превращался в рябь. Тон разбавлен
+   фоном: величину показывает длина полосы и сумма справа. */
+.waste-fill.fill-danger  { background: color-mix(in srgb, var(--danger) 55%, var(--surface)); }
+.waste-fill.fill-warning { background: color-mix(in srgb, var(--warning) 55%, var(--surface)); }
+.waste-fill.fill-accent  { background: color-mix(in srgb, var(--accent) 50%, var(--surface)); }
 .waste-value { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ═══════════════════════ РЕДАКТОРЫ ПРАВИЛ В НАСТРОЙКАХ ═══════════════════════
@@ -1088,13 +1098,27 @@ button.ex-row:hover { background: var(--surface-2); }
 }
 .chip-used { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .chip-cost { font-size: 12px; color: var(--text-muted); }
-.chip-good { border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
-.chip-warning { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: var(--warning-soft); }
-.chip-warning .chip-used { color: var(--warning); }
-.chip-danger { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); background: var(--danger-soft); }
-.chip-danger .chip-used { color: var(--danger); }
-.chip-accent { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--accent-soft); }
-.chip-accent .chip-used { color: var(--accent); }
+/* ПЛИТКИ ПОТРЕБЛЕНИЯ НЕ КРАСЯТСЯ.
+   Минуты, гигабайты и SMS раньше красились сразу тремя слоями: заливка
+   фона, цветная цифра и цветная полоса. Три плитки на карточке, сто
+   карточек на экране — цвет вбивался в глаза и при этом ничего не
+   сообщал: он повторял то, что и так видно по длине полосы и по сумме.
+
+   Теперь плитки нейтральные. Информация никуда не делась:
+     сколько израсходовано — длина полосы;
+     во что обошлось      — сумма под ней;
+     насколько всё плохо  — бейдж статуса и строка рекомендации,
+                            там цвет уместен, потому что он там один.
+   Разбор по категориям остался в подсказке при наведении. */
+.chip-good,
+.chip-warning,
+.chip-danger { border-color: var(--border); background: var(--surface-2); }
+.chip-good .chip-used,
+.chip-warning .chip-used,
+.chip-danger .chip-used { color: var(--text); }
+/* Четвёртый вариант плитки — тоже без краски, по той же причине. */
+.chip-accent { border-color: var(--border); background: var(--surface-2); }
+.chip-accent .chip-used { color: var(--text); }
 .chip-muted .chip-used { color: var(--text-muted); }
 
 .rec-strip {
@@ -1400,7 +1424,14 @@ button.ex-row:hover { background: var(--surface-2); }
 .chip { gap: 4px; }
 .chip-top { display: flex; align-items: center; gap: 5px; }
 .chip-bar { display: block; width: 100%; height: 4px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+/* Полоса заполнения — одного спокойного тона независимо от того, много
+   израсходовано или мало. Величину показывает ДЛИНА, а не цвет; красить
+   её ещё и цветом значит говорить одно и то же дважды, громко. */
 .chip-bar-fill { display: block; height: 100%; border-radius: 3px; }
+.chip-bar-fill.fill-good,
+.chip-bar-fill.fill-warning,
+.chip-bar-fill.fill-danger,
+.chip-bar-fill.fill-accent { background: color-mix(in srgb, var(--calm) 55%, var(--surface-3)); }
 
 .card-actions { display: flex; gap: 8px; margin-top: 12px; }
 .act {
