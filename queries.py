@@ -908,146 +908,184 @@ def stats() -> dict[str, Any]:
 #  цвет (он же правило), заметка, пометки и ручное указание плательщика.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_chip_colors() -> list[dict[str, Any]]:
-    rows = db.query("SELECT * FROM chip_colors ORDER BY sort_order, code")
+#  ЕДИНОЕ ХРАНИЛИЩЕ ПРАВИЛ.
+#  Раньше было две таблицы-близнеца: chip_colors и chip_marks. Поля у них
+#  совпадали полностью, различие было ровно одно: цвет у номера один, пометок
+#  много. Миграцией _migrate_chip_rules (db.py) обе слиты в chip_rules, а
+#  привязка номеров — в chip_rule_links. Различает их поле kind:
+#      kind='color' — красит карточку, у номера действует ОДИН;
+#      kind='mark'  — их можно навесить сколько угодно.
+#  Старые таблицы намеренно не удалены: пока не проверим на боевых данных,
+#  они наш путь отката.
+
+def get_chip_rules(kind: str = "") -> list[dict[str, Any]]:
+    """Правила чипса из chip_rules. Без аргумента — все, цвета первыми.
+
+    Порядок: сначала цвета, потом пометки, внутри — по sort_order. Именно в
+    этом порядке правила применяются в billing, поэтому сортировка задана
+    здесь, а не на фронтенде.
+    """
+    sql = "SELECT * FROM chip_rules"
+    params: list[Any] = []
+    if kind:
+        sql += " WHERE kind = ?"
+        params.append(kind)
+    sql += " ORDER BY (kind <> 'color'), sort_order, code"
+    rows = db.query(sql, params)
     return [_bools(r, "is_excluded", "is_unlimited", "builtin") for r in rows]
+
+
+def get_chip_colors() -> list[dict[str, Any]]:
+    """Только цвета. Отдельная функция оставлена ради существующих вызовов."""
+    return get_chip_rules("color")
+
+
+def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]:
+    """Создать или изменить правило чипса (цвет или пометку).
+
+    Одна функция на оба вида — поля у них совпадают, различает только kind.
+    Если kind не передан, а правило уже есть, вид НЕ меняем: администратор
+    редактирует существующее правило, а не превращает пометку в цвет.
+    """
+    code = str(data.get("code") or "").strip() or _slug(str(data.get("label") or "rule"))
+    existing = db.query_one("SELECT kind FROM chip_rules WHERE code = ?", (code,))
+    kind = kind or str(data.get("kind") or "") or (existing["kind"] if existing else "mark")
+    if kind not in ("color", "mark"):
+        kind = "mark"
+
+    fields = {
+        "kind": kind,
+        # У цвета кисть обязана быть, у пометки цвет необязателен.
+        "hex": str(data.get("hex") or ("#8a9a94" if kind == "color" else "")),
+        "label": str(data.get("label") or code),
+        "description": str(data.get("description") or ""),
+        "payer_tariff": _payer(data.get("payer_tariff")),
+        "payer_options": _payer(data.get("payer_options")),
+        "payer_overage": _payer(data.get("payer_overage")),
+        "payer_roaming": _payer(data.get("payer_roaming")),
+        "is_excluded": 1 if data.get("is_excluded") else 0,
+        "is_unlimited": 1 if data.get("is_unlimited") else 0,
+        "sort_order": domain.to_int(data.get("sort_order"), 100),
+    }
+    if existing:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        db.execute(f"UPDATE chip_rules SET {sets} WHERE code = ?", [*fields.values(), code])
+    else:
+        columns = ", ".join(["code", *fields])
+        holders = ", ".join("?" for _ in range(len(fields) + 1))
+        db.execute(f"INSERT INTO chip_rules ({columns}) VALUES ({holders})",
+                   [code, *fields.values()])
+    return get_chip_rules()
 
 
 def save_chip_color(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Создать или изменить цвет-правило."""
-    code = str(data.get("code") or "").strip() or _slug(str(data.get("label") or "color"))
-    fields = {
-        "hex": str(data.get("hex") or "#8a9a94"),
-        "label": str(data.get("label") or code),
-        "description": str(data.get("description") or ""),
-        "payer_tariff": _payer(data.get("payer_tariff")),
-        "payer_options": _payer(data.get("payer_options")),
-        "payer_overage": _payer(data.get("payer_overage")),
-        "payer_roaming": _payer(data.get("payer_roaming")),
-        "is_excluded": 1 if data.get("is_excluded") else 0,
-        "is_unlimited": 1 if data.get("is_unlimited") else 0,
-        "sort_order": domain.to_int(data.get("sort_order"), 100),
-    }
-    if db.query_one("SELECT code FROM chip_colors WHERE code = ?", (code,)):
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        db.execute(f"UPDATE chip_colors SET {sets} WHERE code = ?",
-                   [*fields.values(), code])
-    else:
-        columns = ", ".join(["code", *fields])
-        marks = ", ".join("?" for _ in range(len(fields) + 1))
-        db.execute(f"INSERT INTO chip_colors ({columns}) VALUES ({marks})",
-                   [code, *fields.values()])
+    """Сохранить цвет-правило. Обёртка над save_chip_rule для старых вызовов."""
+    save_chip_rule(data, "color")
     return get_chip_colors()
+
+
+def delete_chip_rule(code: str) -> list[dict[str, Any]]:
+    """Удалить правило. Встроенные не трогаем — их можно только переименовать."""
+    row = db.query_one("SELECT kind, builtin FROM chip_rules WHERE code = ?", (code,))
+    if not row:
+        raise ValueError("Правило не найдено")
+    if row["builtin"]:
+        raise ValueError("Встроенное правило удалить нельзя — его можно переименовать и перенастроить")
+    with db.transaction() as conn:
+        # Связи с номерами уйдут сами: у chip_rule_links стоит ON DELETE CASCADE.
+        # А вот старую колонку chip_settings.color_code каскад не чистит, её
+        # приходится возвращать к 'normal' руками, иначе повиснет ссылка
+        # на несуществующее правило.
+        conn.execute("UPDATE chip_settings SET color_code = 'normal' WHERE color_code = ?", (code,))
+        conn.execute("DELETE FROM chip_rules WHERE code = ?", (code,))
+    return get_chip_rules()
 
 
 def delete_chip_color(code: str) -> list[dict[str, Any]]:
-    row = db.query_one("SELECT builtin FROM chip_colors WHERE code = ?", (code,))
-    if not row:
-        raise ValueError("Цвет не найден")
-    if row["builtin"]:
-        raise ValueError("Встроенный цвет удалить нельзя — его можно переименовать и перекрасить")
-    with db.transaction() as conn:
-        # Номера с этим цветом возвращаем к обычному, иначе повиснет
-        # ссылка на несуществующее правило.
-        conn.execute("UPDATE chip_settings SET color_code = 'normal' WHERE color_code = ?", (code,))
-        conn.execute("DELETE FROM chip_colors WHERE code = ?", (code,))
+    """Обёртка над delete_chip_rule для старых вызовов."""
+    delete_chip_rule(code)
     return get_chip_colors()
 
 
-def get_chip_rules() -> list[dict[str, Any]]:
-    """ЕДИНЫЙ список правил чипса: цвета и пометки вместе.
-
-    ПОЧЕМУ ТАК. У chip_colors и chip_marks одинаковый набор полей, и
-    различались они ровно одним: цвет у номера один, пометок много. Для
-    администратора это разделение искусственное — он думает «навесить на
-    номер правило», а не «покрасить и пометить».
-
-    Поэтому наружу отдаётся один список. Различие осталось только внутри,
-    в поле `kind`:
-        kind='color' — правило-цвет, у номера действует ОДНО, красит карточку;
-        kind='mark'  — правило-пометка, их можно навесить сколько угодно.
-
-    Схема БД не тронута намеренно: миграция ради переименования — лишний
-    риск для уже загруженных настроек. Если позже понадобится одна таблица,
-    здесь меняется только сборка списка.
-    """
-    rules = [{**c, "kind": "color"} for c in get_chip_colors()]
-    rules += [{**m, "kind": "mark"} for m in get_chip_marks()]
-    rules.sort(key=lambda r: (0 if r["kind"] == "color" else 1,
-                              domain.to_int(r.get("sort_order"), 100), r["code"]))
-    return rules
-
-
 def get_chip_marks() -> list[dict[str, Any]]:
-    rows = db.query("SELECT * FROM chip_marks ORDER BY sort_order, code")
-    return [_bools(r, "is_excluded", "is_unlimited", "builtin") for r in rows]
+    """Только пометки. Отдельная функция оставлена ради существующих вызовов."""
+    return get_chip_rules("mark")
 
 
 def save_chip_mark(data: dict[str, Any]) -> list[dict[str, Any]]:
-    code = str(data.get("code") or "").strip() or _slug(str(data.get("label") or "mark"))
-    fields = {
-        "label": str(data.get("label") or code),
-        "hex": str(data.get("hex") or ""),
-        "description": str(data.get("description") or ""),
-        "payer_tariff": _payer(data.get("payer_tariff")),
-        "payer_options": _payer(data.get("payer_options")),
-        "payer_overage": _payer(data.get("payer_overage")),
-        "payer_roaming": _payer(data.get("payer_roaming")),
-        "is_excluded": 1 if data.get("is_excluded") else 0,
-        "is_unlimited": 1 if data.get("is_unlimited") else 0,
-        "sort_order": domain.to_int(data.get("sort_order"), 100),
-    }
-    if db.query_one("SELECT code FROM chip_marks WHERE code = ?", (code,)):
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        db.execute(f"UPDATE chip_marks SET {sets} WHERE code = ?", [*fields.values(), code])
-    else:
-        columns = ", ".join(["code", *fields])
-        marks = ", ".join("?" for _ in range(len(fields) + 1))
-        db.execute(f"INSERT INTO chip_marks ({columns}) VALUES ({marks})",
-                   [code, *fields.values()])
+    """Сохранить пометку. Обёртка над save_chip_rule для старых вызовов."""
+    save_chip_rule(data, "mark")
     return get_chip_marks()
 
 
 def delete_chip_mark(code: str) -> list[dict[str, Any]]:
-    row = db.query_one("SELECT builtin FROM chip_marks WHERE code = ?", (code,))
-    if not row:
-        raise ValueError("Пометка не найдена")
-    if row["builtin"]:
-        raise ValueError("Встроенную пометку удалить нельзя")
-    # Связи снимутся сами: у chip_mark_links стоит ON DELETE CASCADE.
-    db.execute("DELETE FROM chip_marks WHERE code = ?", (code,))
+    """Обёртка над delete_chip_rule для старых вызовов."""
+    delete_chip_rule(code)
     return get_chip_marks()
+
+
+#  ПРИВЯЗКА ПРАВИЛ К НОМЕРУ.
+#  Единственный источник правды — chip_rule_links. Там лежат ВСЕ правила
+#  номера: и цвет, и пометки, вперемешку. Разделяет их kind в chip_rules.
+#
+#  Наружу отдаём три поля, чтобы ничего не переписывать в billing:
+#      rules      — полный список кодов по порядку применения;
+#      color_code — первый цветовой код (им красится карточка), иначе 'normal';
+#      marks      — коды пометок.
+#
+#  Колонка chip_settings.color_code ещё пишется, но уже НЕ читается. Это
+#  зеркало для отката на предыдущий коммит. Удалим вместе со старыми таблицами.
+
+_CHIP_DEFAULTS = {"note": "", "payer_tariff": "auto", "payer_options": "auto",
+                  "payer_overage": "auto", "payer_roaming": "auto"}
+
+
+def _split_rules(codes: list[str], kinds: dict[str, str]) -> dict[str, Any]:
+    """Разложить коды правил номера на цвет и пометки."""
+    colors = [c for c in codes if kinds.get(c) == "color"]
+    return {"rules": codes,
+            "color_code": colors[0] if colors else "normal",
+            "marks": [c for c in codes if kinds.get(c) == "mark"]}
+
+
+def _rule_kinds() -> dict[str, str]:
+    return {r["code"]: r["kind"] for r in db.query("SELECT code, kind FROM chip_rules")}
 
 
 def get_chip(number: str) -> dict[str, Any]:
     """Настройки одного чипса. Для ненастроенного номера — значения по умолчанию."""
     number = str(number)
     row = db.query_one("SELECT * FROM chip_settings WHERE number = ?", (number,))
-    marks = [r["mark_code"] for r in db.query(
-        "SELECT mark_code FROM chip_mark_links WHERE number = ? ORDER BY mark_code", (number,))]
-    if not row:
-        return {"number": number, "color_code": "normal", "note": "",
-                "payer_tariff": "auto", "payer_options": "auto",
-                "payer_overage": "auto", "payer_roaming": "auto", "marks": marks}
-    return {**row, "color_code": row["color_code"] or "normal", "marks": marks}
+    codes = [r["rule_code"] for r in db.query(
+        "SELECT l.rule_code FROM chip_rule_links l "
+        "  JOIN chip_rules r ON r.code = l.rule_code "
+        " WHERE l.number = ? ORDER BY (r.kind <> 'color'), r.sort_order, r.code",
+        (number,))]
+    base = {"number": number, **_CHIP_DEFAULTS}
+    if row:
+        base = {**base, **{k: v for k, v in row.items() if k != "color_code"}}
+    return {**base, **_split_rules(codes, _rule_kinds())}
 
 
 def all_chips() -> dict[str, dict[str, Any]]:
     """Все настройки чипсов разом — чтобы не дёргать базу на каждый номер."""
-    rows = db.query("SELECT * FROM chip_settings")
+    kinds = _rule_kinds()
     links: dict[str, list[str]] = defaultdict(list)
-    for link in db.query("SELECT number, mark_code FROM chip_mark_links ORDER BY mark_code"):
-        links[link["number"]].append(link["mark_code"])
+    for link in db.query(
+            "SELECT l.number, l.rule_code FROM chip_rule_links l "
+            "  JOIN chip_rules r ON r.code = l.rule_code "
+            " ORDER BY (r.kind <> 'color'), r.sort_order, r.code"):
+        links[link["number"]].append(link["rule_code"])
 
-    out = {r["number"]: {**r, "color_code": r["color_code"] or "normal",
-                         "marks": links.get(r["number"], [])} for r in rows}
-    # Номера без своей строки тоже должны иметь пометки, если их успели навесить.
-    for number, mark_list in links.items():
+    out: dict[str, dict[str, Any]] = {}
+    for r in db.query("SELECT * FROM chip_settings"):
+        number = r["number"]
+        row = {k: v for k, v in r.items() if k != "color_code"}
+        out[number] = {**_CHIP_DEFAULTS, **row, **_split_rules(links.get(number, []), kinds)}
+    # Номер мог получить правила, но не иметь своей строки настроек — он тоже нужен.
+    for number, codes in links.items():
         if number not in out:
-            out[number] = {"number": number, "color_code": "normal", "note": "",
-                           "payer_tariff": "auto", "payer_options": "auto",
-                           "payer_overage": "auto", "payer_roaming": "auto",
-                           "marks": mark_list}
+            out[number] = {"number": number, **_CHIP_DEFAULTS, **_split_rules(codes, kinds)}
     return out
 
 
@@ -1076,13 +1114,36 @@ def save_chip(number: str, data: dict[str, Any]) -> dict[str, Any]:
             params.append(number)
             conn.execute(f"UPDATE chip_settings SET {', '.join(sets)} WHERE number = ?", params)
 
-        # Пометки приходят полным списком — заменяем целиком.
+        # ПРАВИЛА НОМЕРА.
+        # Принимаем три формы запроса, чтобы старый фронтенд не сломался:
+        #   rules      — полный список кодов, заменяет всё разом (новый способ);
+        #   color_code — меняет только цветовое правило, пометки не трогает;
+        #   marks      — меняет только пометки, цвет не трогает.
+        kinds = _rule_kinds()
+
+        def link(codes: list[str]) -> None:
+            for code in codes:
+                conn.execute("INSERT INTO chip_rule_links (number, rule_code) "
+                             "VALUES (?, ?) ON CONFLICT DO NOTHING", (number, str(code)))
+
+        if "rules" in data:
+            conn.execute("DELETE FROM chip_rule_links WHERE number = ?", (number,))
+            link([str(c) for c in (data["rules"] or []) if str(c) in kinds])
+
+        if "color_code" in data:
+            # Цвет у номера один: снимаем все цветовые связи и ставим новую.
+            conn.execute(
+                "DELETE FROM chip_rule_links WHERE number = ? AND rule_code IN "
+                "  (SELECT code FROM chip_rules WHERE kind = 'color')", (number,))
+            code = str(data["color_code"] or "normal")
+            if code and code != "normal" and kinds.get(code) == "color":
+                link([code])
+
         if "marks" in data:
-            conn.execute("DELETE FROM chip_mark_links WHERE number = ?", (number,))
-            for code in data["marks"] or []:
-                conn.execute(
-                    "INSERT INTO chip_mark_links (number, mark_code) VALUES (?, ?) "
-                    "ON CONFLICT DO NOTHING", (number, str(code)))
+            conn.execute(
+                "DELETE FROM chip_rule_links WHERE number = ? AND rule_code IN "
+                "  (SELECT code FROM chip_rules WHERE kind = 'mark')", (number,))
+            link([str(c) for c in (data["marks"] or []) if kinds.get(str(c)) == "mark"])
     return get_chip(number)
 
 
