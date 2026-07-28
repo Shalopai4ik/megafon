@@ -809,7 +809,7 @@ function renderExTrips() {
                      >${esc(formatPhone(t.number))}</button>`
                 : `<span>${esc(formatPhone(t.number))}</span>`}
           <span title="${esc(t.username || '')}">${esc(t.username || '—')}</span>
-          <span>${esc(t.date_start || '—')} — ${esc(t.date_end || '—')}</span>
+          <span class="trip-period">${esc(t.date_start || '—')} — ${esc(t.date_end || '—')}</span>
           <span>${esc(t.country || '—')}</span>
           <span>${esc(t.order_no || '—')}</span>
           <span>${esc(t.memo_no || '—')}</span>
@@ -2755,7 +2755,10 @@ async function renderTripSettings(el) {
       <div class="trip-item${t.approved ? '' : ' is-unapproved'}">
         <span class="trip-number">${esc(formatPhone(t.number))}</span>
         <span class="trip-name">${esc(t.username || '')}</span>
-        <span class="trip-dates">${esc(t.date_start || '')} — ${esc(t.date_end || '')}</span>
+        <!-- Класс именно trip-period, а НЕ trip-dates: trip-dates занят
+             контейнером полей ввода дат, у которого display:none по умолчанию,
+             и период из-за этого не показывался. -->
+        <span class="trip-period">${esc(t.date_start || '')} — ${esc(t.date_end || '')}</span>
         <span class="trip-country">${esc(t.country || '')}</span>
         <span class="trip-order">${t.order_no ? 'заказ ' + esc(t.order_no) : ''}</span>
         <span class="trip-approved">${t.approved ? 'утверждена' : 'НЕ утверждена'}</span>

@@ -496,7 +496,13 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .trip-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trip-number { font-weight: 600; }
 .trip-name, .trip-country, .trip-order { color: var(--text-muted); }
-.trip-dates { font-variant-numeric: tabular-nums; }
+/* ВНИМАНИЕ. Раньше этот класс назывался .trip-dates и совпадал с классом
+   контейнера полей «дата с / дата по» в карточке абонента (см. ниже по файлу).
+   Тот контейнер по умолчанию display:none — прятался, пока не включена галочка
+   «в командировке». Из-за совпадения имён правило display:none перебивало это
+   и ПЕРИОД В СПИСКЕ КОМАНДИРОВОК ПРОСТО НЕ ОТОБРАЖАЛСЯ. Разные сущности —
+   разные имена классов. */
+.trip-period { font-variant-numeric: tabular-nums; }
 .trip-approved { font-weight: 600; }
 .trip-item.is-unapproved .trip-approved { color: var(--warning); }
 
