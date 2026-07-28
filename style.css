@@ -25,28 +25,44 @@
    4. ЦИФРЫ ВАЖНЕЕ ПОДПИСЕЙ. Значения крупные и с табличными цифрами
       (столбцы выравниваются), подписи мелкие и приглушённые.
    ───────────────────────────────────────────────────────────────────────── */
+/* ФИРМЕННАЯ ПАЛИТРА ОПЕРАТОРА.
+   Основа — зелёный МегаФона. Он взят в двух версиях, и это не прихоть:
+     --brand        яркий фирменный, для заливок, полос и значков;
+     --primary      притемнённый, для ТЕКСТА и кнопок.
+   Яркий зелёный на белом даёт слишком слабый контраст для мелких букв —
+   читать такой текст тяжело. Поэтому крупные пятна красим ярким, а буквы
+   тёмным: цвет узнаётся, глаз не напрягается.
+
+   Фиолетовый — вторая фирменная краска оператора, ушла в акцент вместо
+   прежней охры. */
 :root {
-  --bg: #f0f2f1;
+  --bg: #f2f4f3;
   --surface: #ffffff;
-  --surface-2: #f4f6f5;
+  --surface-2: #f5f7f6;
   --surface-3: #e9edeb;
-  --text: #17211d;
-  --text-muted: #6d7c76;
-  --border: #e7ebe9;
-  --border-strong: #d3dad7;
+  /* Текст не чисто чёрный: на белом фоне чистый чёрный «звенит». */
+  --text: #1a2220;
+  --text-muted: #6e7d78;
+  --border: #e6eae8;
+  --border-strong: #d2d9d6;
 
-  --primary: #1c6f55;
+  --brand: #00b956;
+  --primary: #00873f;
   --primary-ink: #ffffff;
-  --accent: #a1751a;
+  --accent: #7d2a8c;
   --accent-ink: #ffffff;
-  --good: #2c8564;
-  --warning: #b87c15;
-  --danger: #c04f4e;
+  --good: #00873f;
+  --warning: #b1791a;
+  /* Красный приглушён: он должен означать беду, а не просто «много». */
+  --danger: #c25350;
+  /* Спокойный тон для больших нейтральных долей — там, где раньше стоял
+     красный просто потому, что это «не наши деньги». */
+  --calm: #7b8b9a;
 
-  --good-soft: #e6f2ec;
-  --warning-soft: #faf0d8;
-  --danger-soft: #f8e5e4;
-  --accent-soft: #faf0d8;
+  --good-soft: #e2f5ea;
+  --warning-soft: #f9f1dc;
+  --danger-soft: #f8e6e5;
+  --accent-soft: #f3e8f5;
   --muted-soft: #eef0ef;
 
   --grid: #e9edeb;
@@ -157,17 +173,25 @@ button { font-family: inherit; }
    внимание на себя, хотя главное на странице ниже. Теперь почти чёрная
    подложка с едва заметным зелёным подтоном: шапка «отходит назад»,
    а данные выходят вперёд. */
+/* ШАПКА В ФИРМЕННОМ СТИЛЕ ОПЕРАТОРА.
+   Тёмная, почти чёрная основа с зелёной фирменной чертой снизу. Так шапка
+   не спорит с содержимым за внимание: цвет узнаётся по полосе и по значку,
+   а огромное зелёное пятно во всю ширину не давит на глаза весь день.
+   Отступы резиновые — при крупном масштабе шапка ужимается вместе со всем. */
 .app-header {
   display: flex; align-items: center; justify-content: space-between;
-  flex-wrap: wrap; gap: 12px; padding: 14px 26px;
-  background: color-mix(in srgb, var(--primary) 22%, #10201a);
+  flex-wrap: wrap; gap: 12px;
+  padding: clamp(10px, 1.1vw, 15px) clamp(12px, 1.9vw, 26px);
+  background: #12181a;
+  border-bottom: 3px solid var(--brand);
   color: #fff; position: sticky; top: 0; z-index: 50;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, .06), 0 8px 24px rgba(16, 32, 26, .18);
+  box-shadow: 0 6px 20px rgba(10, 20, 16, .16);
 }
 .brand { display: flex; align-items: center; gap: 12px; }
+/* Фирменный знак — единственное сплошное зелёное пятно в шапке. */
 .brand-mark {
   width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
-  background: rgba(255, 255, 255, .18); font-size: 19px; font-weight: 700;
+  background: var(--brand); color: #06231a; font-size: 19px; font-weight: 800;
 }
 .app-header h1 { font-size: 19px; margin: 0; font-weight: 650; letter-spacing: .2px; }
 .brand-sub { font-size: 11px; opacity: .78; letter-spacing: .5px; margin-top: 1px; }
@@ -248,8 +272,15 @@ button { font-family: inherit; }
 }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn:not(:disabled):active { transform: translateY(1px); }
-.btn-primary { background: var(--accent); color: var(--accent-ink); box-shadow: 0 2px 8px rgba(0, 0, 0, .16); }
-.btn-primary:hover { filter: brightness(1.07); }
+/* Главная кнопка — фирменного зелёного цвета оператора.
+   Раньше стояла охра, потом от неё остался фиолетовый акцент, и кнопка
+   спорила с зелёным брендом. Одна главная кнопка на экране — одна
+   фирменная краска. */
+.btn-primary {
+  background: var(--brand); color: #06231a; font-weight: 650;
+  box-shadow: 0 2px 8px rgba(0, 140, 66, .28);
+}
+.btn-primary:hover { filter: brightness(1.06); }
 .btn-outline { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .55); }
 .btn-outline:hover { background: rgba(255, 255, 255, .13); }
 .btn-ghost { background: rgba(255, 255, 255, .16); color: #fff; }
@@ -810,11 +841,23 @@ button.ex-row:hover { background: var(--surface-2); }
 .ex-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ex-row-name small { color: var(--text-muted); font-size: 11px; }
 .ex-row-track { height: 7px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
-.ex-row-fill { display: block; height: 100%; border-radius: 5px; background: var(--primary); transition: width .4s ease; }
-.ex-row-fill.fill-danger { background: var(--danger); }
-.ex-row-fill.fill-warning { background: var(--warning); }
-.ex-row-fill.fill-good { background: var(--good); }
-.ex-row-fill.fill-accent { background: var(--accent); }
+/* ПОЛОСЫ В СПИСКАХ — ПРИГЛУШЕНЫ.
+   Раньше здесь стоял чистый сигнальный цвет, и десять строк подряд
+   превращались в сплошную красную стену: смотреть на такое тяжело, а
+   главное — бесполезно, потому что «всё красное» значит «ничего не
+   выделено». Полоса показывает ВЕЛИЧИНУ, её длина и цифра справа уже
+   всё говорят. Поэтому цвет разбавлен фоном: тон узнаётся, а глаз
+   отдыхает. Насыщенный цвет остался там, где он значит тревогу —
+   в бейджах и подписях. */
+.ex-row-fill {
+  display: block; height: 100%; border-radius: 5px;
+  background: color-mix(in srgb, var(--primary) 72%, var(--surface));
+  transition: width .4s ease;
+}
+.ex-row-fill.fill-danger  { background: color-mix(in srgb, var(--danger) 62%, var(--surface)); }
+.ex-row-fill.fill-warning { background: color-mix(in srgb, var(--warning) 62%, var(--surface)); }
+.ex-row-fill.fill-good    { background: color-mix(in srgb, var(--good) 62%, var(--surface)); }
+.ex-row-fill.fill-accent  { background: color-mix(in srgb, var(--accent) 55%, var(--surface)); }
 .ex-row-val { font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Стопка сегментов: одна полоса, из которой сложился весь счёт. */
@@ -1438,10 +1481,17 @@ button.ex-row:hover { background: var(--surface-2); }
   overflow: hidden; background: var(--surface-3); min-width: 0;
 }
 .cmp-seg { display: block; height: 100%; transition: width .35s ease; }
-.seg-fee { background: var(--primary); }
-.seg-min { background: var(--danger); }
-.seg-sms { background: var(--warning); }
-.seg-net { background: var(--accent); }
+/* СЕГМЕНТЫ ДИАГРАММ — это КАТЕГОРИИ, а не тревога.
+   Раньше доля «платит сотрудник» красилась сигнальным красным, и полоса
+   на две трети горела аварией — хотя то, что сотрудник платит за свой
+   перерасход, это норма работы системы, а не поломка.
+   Теперь набор спокойный и различимый: фирменный зелёный, серо-синий,
+   фиолетовый, янтарный. Красный из категорий убран совсем — он остался
+   только там, где действительно значит проблему. */
+.seg-fee { background: var(--brand); }
+.seg-min { background: var(--calm); }
+.seg-sms { background: color-mix(in srgb, var(--warning) 80%, var(--surface)); }
+.seg-net { background: color-mix(in srgb, var(--accent) 78%, var(--surface)); }
 .seg-actual { background: var(--text-muted); }
 
 .cmp-foot { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; min-width: 0; }
