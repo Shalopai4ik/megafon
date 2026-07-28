@@ -218,9 +218,89 @@ def convert(path: str, out_dir: str | None) -> None:
     stats = parsed.get("stats") or {}
     print(f"    абонентов {n1}, услуг {n2}, итогов {n3}"
           + (f"  ·  строк разобрано {stats.get('rows', '?')}" if stats else ""))
-    print(f"    → {base}.subscribers.csv")
-    print(f"    → {base}.services.csv")
-    print(f"    → {base}.invoice.csv")
+    print(f"    → {base}.subscribers.csv   для Excel")
+    print(f"    → {base}.services.csv      для Excel")
+    print(f"    → {base}.invoice.csv       для Excel")
+
+    # Четвёртый файл — тот самый, который грузится обратно на сайт.
+    # Делаем его всегда: именно им проверяют, что загрузка живая.
+    bill = make_bill_csv(path, out_dir)
+    if bill:
+        print(f"    → {base}.bill.csv          ЭТОТ ГРУЗИТЬ НА САЙТ")
+        verify_roundtrip(path, bill)
+
+
+def make_bill_csv(path: str, out_dir: str | None) -> str | None:
+    """Сделать CSV, который МОЖНО ЗАГРУЗИТЬ ОБРАТНО В ПРИЛОЖЕНИЕ.
+
+    ЧЕМ ОТЛИЧАЕТСЯ ОТ ОСТАЛЬНЫХ ТРЁХ ФАЙЛОВ. Те три — витрина для Excel:
+    там данные уже разобраны по колонкам, и сайт такое не примет, он ждёт
+    выгрузку оператора. Этот файл — сама выгрузка, слово в слово.
+
+    ЗДЕСЬ МЕНЯЕТСЯ ТОЛЬКО КОДИРОВКА, И ЭТО ПРИНЦИПИАЛЬНО.
+
+    Сперва я честно вычистил файл перед сохранением: собрал разорванные
+    переносом записи, расклеил слипшиеся. Круговая проверка поймала
+    результат за руку:
+
+        оригинал        5291.64 руб
+        после чистки    2741.21 руб   — потеряна почти половина
+
+    Причина: сайт при загрузке чистит файл САМ, тем же кодом. Моя чистка
+    оказывалась первой, а вторая проходила уже по обработанному тексту и
+    ломала записи. Двойная обработка — не «чище», а хуже.
+
+    Вывод простой: конвертер к содержимому НЕ ПРИКАСАЕТСЯ. Он переводит
+    файл в UTF-8 с меткой для Excel и даёт ему расширение .csv. Разбор —
+    забота приложения, у него это уже отлажено.
+    """
+    text, enc = read_text(path)
+
+    base = os.path.splitext(os.path.basename(path))[0]
+    target = out_dir or os.path.dirname(os.path.abspath(path))
+    os.makedirs(target, exist_ok=True)
+    out_path = os.path.join(target, f"{base}.bill.csv")
+
+    # newline='' — чтобы Windows не удваивал переводы строк.
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as fh:
+        fh.write(text)
+
+    print(f"    строк {len(text.splitlines())}, содержимое не тронуто "
+          f"(кодировка {enc} → utf-8)")
+    return out_path
+
+
+def verify_roundtrip(original: str, converted: str) -> bool:
+    """Сверить: разбор CSV даёт то же самое, что разбор исходника.
+
+    Без этой проверки конвертер — обещание, а не инструмент. Сравниваем
+    самое существенное: расчётный месяц, состав номеров и сумму по каждому.
+    """
+    a = server.parse_bill(read_text(original)[0])
+    b = server.parse_bill(read_text(converted)[0])
+
+    sa, sb = a.get("subscribers") or {}, b.get("subscribers") or {}
+    ok = True
+
+    if a.get("month") != b.get("month"):
+        print(f"    месяц:   было {a.get('month')}, стало {b.get('month')}  РАСХОЖДЕНИЕ")
+        ok = False
+    if set(sa) != set(sb):
+        print(f"    номера:  было {len(sa)}, стало {len(sb)}  РАСХОЖДЕНИЕ")
+        ok = False
+
+    diff = [n for n in sa if n in sb
+            and round(float(sa[n].get("total_charged") or 0), 2)
+            != round(float(sb[n].get("total_charged") or 0), 2)]
+    if diff:
+        print(f"    суммы:   разошлись по {len(diff)} номерам  РАСХОЖДЕНИЕ")
+        ok = False
+
+    if ok:
+        total = sum(float(v.get("total_charged") or 0) for v in sa.values())
+        print(f"    сверка:  месяц {a.get('month')}, номеров {len(sa)}, "
+              f"начислено {total:.2f} — совпало полностью")
+    return ok
 
 
 def main(argv: list[str]) -> int:

@@ -9,3 +9,10 @@ megafon.db
 megafon.db-*
 megafon.db.before-merge
 __pycache__/
+
+# Готовые выгрузки конвертера — их всегда можно пересоздать convert.py
+otche.*.csv
+*.bill.csv
+*.subscribers.csv
+*.services.csv
+*.invoice.csv
