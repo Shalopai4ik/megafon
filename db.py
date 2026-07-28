@@ -351,6 +351,38 @@ def connect() -> sqlite3.Connection:
         return _conn
 
 
+# Схема объединённых правил чипса.
+#
+# Вынесена в константу НАМЕРЕННО, а не оставлена внутри миграции. Тот же
+# текст нужен скрипту развёртывания (deploy.py), который поднимает схему на
+# PostgreSQL. Пока DDL лежал внутри функции, deploy.py его не видел и
+# разворачивал 16 таблиц вместо 18 — chip_rules и chip_rule_links молча
+# терялись. Один источник схемы — две базы не разъедутся.
+RULES_DDL = """
+CREATE TABLE IF NOT EXISTS chip_rules (
+    code          TEXT PRIMARY KEY,
+    kind          TEXT NOT NULL DEFAULT 'mark',   -- 'color' | 'mark'
+    label         TEXT NOT NULL,
+    hex           TEXT DEFAULT '',
+    description   TEXT DEFAULT '',
+    payer_tariff  TEXT DEFAULT 'auto',
+    payer_options TEXT DEFAULT 'auto',
+    payer_overage TEXT DEFAULT 'auto',
+    payer_roaming TEXT DEFAULT 'auto',
+    is_excluded   INTEGER NOT NULL DEFAULT 0,
+    is_unlimited  INTEGER NOT NULL DEFAULT 0,
+    sort_order    INTEGER DEFAULT 100,
+    builtin       INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS chip_rule_links (
+    number    TEXT NOT NULL,
+    rule_code TEXT NOT NULL REFERENCES chip_rules (code) ON DELETE CASCADE,
+    PRIMARY KEY (number, rule_code)
+);
+CREATE INDEX IF NOT EXISTS idx_chip_rule_links_number ON chip_rule_links (number);
+"""
+
+
 def _migrate_chip_rules(conn: sqlite3.Connection) -> None:
     """ОБЪЕДИНЕНИЕ ЦВЕТОВ И ПОМЕТОК В ОДНУ ТАБЛИЦУ.
 
@@ -373,29 +405,7 @@ def _migrate_chip_rules(conn: sqlite3.Connection) -> None:
         перевода чтения на chip_rules они останутся как страховка для отката.
         Удалять их — отдельным шагом, когда всё проверено на боевых данных.
     """
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS chip_rules (
-        code          TEXT PRIMARY KEY,
-        kind          TEXT NOT NULL DEFAULT 'mark',   -- 'color' | 'mark'
-        label         TEXT NOT NULL,
-        hex           TEXT DEFAULT '',
-        description   TEXT DEFAULT '',
-        payer_tariff  TEXT DEFAULT 'auto',
-        payer_options TEXT DEFAULT 'auto',
-        payer_overage TEXT DEFAULT 'auto',
-        payer_roaming TEXT DEFAULT 'auto',
-        is_excluded   INTEGER NOT NULL DEFAULT 0,
-        is_unlimited  INTEGER NOT NULL DEFAULT 0,
-        sort_order    INTEGER DEFAULT 100,
-        builtin       INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS chip_rule_links (
-        number    TEXT NOT NULL,
-        rule_code TEXT NOT NULL REFERENCES chip_rules (code) ON DELETE CASCADE,
-        PRIMARY KEY (number, rule_code)
-    );
-    CREATE INDEX IF NOT EXISTS idx_chip_rule_links_number ON chip_rule_links (number);
-    """)
+    conn.executescript(RULES_DDL)
 
     # Переносим справочники. INSERT OR IGNORE: уже перенесённое не трогаем,
     # правки администратора в chip_rules не затираются.
