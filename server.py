@@ -45,7 +45,7 @@ import socketserver
 import sys
 import urllib.parse
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 import billing
 import domain
@@ -1212,6 +1212,40 @@ def parse_multipart(body: bytes, content_type: str) -> dict[str, bytes]:
 #  HTTP
 # ═══════════════════════════════════════════════════════════════════════════
 
+class DictEndpoint(NamedTuple):
+    """Описание одной ручки-справочника.
+
+    Три справочника — цвета, пометки, правила оплаты — обслуживались шестью
+    почти дословно одинаковыми блоками кода. Отличались они ровно четырьмя
+    вещами, которые здесь и перечислены; сам обработчик теперь один.
+
+    field    — под каким именем справочник уезжает в ответе;
+    save     — что вызвать при сохранении;
+    delete   — что вызвать при удалении;
+    key_of   — как достать ключ удаляемой записи из тела запроса
+               (у цветов и пометок это строковый код, у правил — числовой id);
+    expects  — текст ошибки, если прислали не объект.
+    """
+    field: str
+    save: Any
+    delete: Any
+    key_of: Any
+    expects: str
+
+
+_DICT_ENDPOINTS: dict[str, DictEndpoint] = {
+    "/api/chip-colors": DictEndpoint(
+        "colors", queries.save_chip_color, queries.delete_chip_color,
+        lambda p: str(p.get("code") or ""), "Ожидается объект цвета"),
+    "/api/chip-marks": DictEndpoint(
+        "marks", queries.save_chip_mark, queries.delete_chip_mark,
+        lambda p: str(p.get("code") or ""), "Ожидается объект пометки"),
+    "/api/payment-rules": DictEndpoint(
+        "rules", queries.save_payment_rule, queries.delete_payment_rule,
+        lambda p: domain.to_int(p.get("id")), "Ожидается объект правила"),
+}
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "MegafonAnalytics/2.0"
     protocol_version = "HTTP/1.1"
@@ -1391,40 +1425,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     "view": build_month_view(month) if month else None})
 
         # ── Справочник цветов-правил ─────────────────────────────────────
-        if path == "/api/chip-colors":
-            payload = self._read_json()
-            if not isinstance(payload, dict):
-                raise ValueError("Ожидается объект цвета")
-            colors = queries.save_chip_color(payload)
-            return self._json(200, {"colors": colors, "view": self._fresh_view()})
-        if path == "/api/chip-colors/delete":
+        # ── Справочники: цвета, пометки, правила оплаты ──────────────────
+        #
+        # Три справочника обслуживались шестью почти дословно совпадающими
+        # блоками. Разница между ними умещается в четыре значения, поэтому
+        # они вынесены в таблицу _DICT_ENDPOINTS (см. рядом с классом), а
+        # здесь остался один общий обработчик.
+        #
+        # Ответ у всех одинаковый по смыслу: обновлённый справочник плюс
+        # пересчитанный отчёт — правка справочника меняет деньги, и клиенту
+        # нужны сразу обе половины.
+        spec = _DICT_ENDPOINTS.get(path.removesuffix("/delete"))
+        if spec is not None:
             payload = self._read_json() or {}
-            colors = queries.delete_chip_color(str(payload.get("code") or ""))
-            return self._json(200, {"colors": colors, "view": self._fresh_view()})
-
-        # ── Справочник пометок ───────────────────────────────────────────
-        if path == "/api/chip-marks":
-            payload = self._read_json()
-            if not isinstance(payload, dict):
-                raise ValueError("Ожидается объект пометки")
-            marks = queries.save_chip_mark(payload)
-            return self._json(200, {"marks": marks, "view": self._fresh_view()})
-        if path == "/api/chip-marks/delete":
-            payload = self._read_json() or {}
-            marks = queries.delete_chip_mark(str(payload.get("code") or ""))
-            return self._json(200, {"marks": marks, "view": self._fresh_view()})
-
-        # ── Правила оплаты по услугам ────────────────────────────────────
-        if path == "/api/payment-rules":
-            payload = self._read_json()
-            if not isinstance(payload, dict):
-                raise ValueError("Ожидается объект правила")
-            rules = queries.save_payment_rule(payload)
-            return self._json(200, {"rules": rules, "view": self._fresh_view()})
-        if path == "/api/payment-rules/delete":
-            payload = self._read_json() or {}
-            rules = queries.delete_payment_rule(domain.to_int(payload.get("id")))
-            return self._json(200, {"rules": rules, "view": self._fresh_view()})
+            if path.endswith("/delete"):
+                items = spec.delete(spec.key_of(payload))
+            else:
+                if not isinstance(payload, dict):
+                    raise ValueError(spec.expects)
+                items = spec.save(payload)
+            return self._json(200, {spec.field: items, "view": self._fresh_view()})
 
         # ── Загрузка списка командировок ─────────────────────────────────
         if path == "/api/upload-trips":

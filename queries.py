@@ -221,12 +221,6 @@ def find_parameter_id(service_name: str) -> int | None:
     return best_id
 
 
-def all_parameters() -> list[dict[str, Any]]:
-    rows = db.query("SELECT id, description, category, service_type FROM pname ORDER BY id")
-    # Ключ "name" оставлен для совместимости с прежним кодом.
-    return [{**r, "name": r["description"]} for r in rows]
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  Абоненты (users_numbers)
 # ═══════════════════════════════════════════════════════════════════════════
