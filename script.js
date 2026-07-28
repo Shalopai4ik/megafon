@@ -1797,8 +1797,23 @@ function renderUsers() {
   const term = state.search;
   let list = state.subscribers.filter((s) => {
     if (term) {
+      // ПОИСК ПОНИМАЕТ ОБА ВИДА НОМЕРА.
+      // На экране номер оформленный: +7 (996) 305-40-30. Человек так его и
+      // наберёт — со скобками, пробелами или как получится. В базе же лежат
+      // голые десять цифр. Поэтому: если в запросе есть цифры, сравниваем
+      // ТОЛЬКО цифры, выкинув из обеих сторон всё лишнее. Запрос из одних
+      // букв (ФИО, должность, тариф) идёт обычным путём.
+      const digits = term.replace(/\D/g, '');
+      // Человек часто копирует номер целиком, вместе с «+7» или «8». В базе
+      // код страны не хранится, поэтому пробуем оба варианта: как набрали и
+      // без ведущей семёрки/восьмёрки.
+      const variants = digits ? [digits, digits.replace(/^[78]/, '')] : [];
       const hay = `${s.number} ${s.username} ${s.position} ${s.plan_name}`.toLowerCase();
-      if (!hay.includes(term)) return false;
+      // Совпало хотя бы одним способом — годится. Дальше номер всё равно
+      // проходит остальные фильтры, поэтому выходим только при промахе.
+      const hit = hay.includes(term)
+        || variants.some((v) => v.length > 0 && String(s.number).includes(v));
+      if (!hit) return false;
     }
     if (state.filter.startsWith('status:')) return s.user_status === state.filter.slice(7);
     // Фильтр по цвету-правилу: color:unlimited и т.п.
@@ -1913,7 +1928,9 @@ function renderCard(s) {
   const status = STATUS_META[s.status] || STATUS_META.normal;
   const action = ACTION_META[s.recommendation.action] || ACTION_META.keep;
   const userStatus = state.statuses.find((x) => x.id === s.user_status);
-  const title = s.username || `Абонент ${s.number}`;
+  // Нет ФИО — заголовком становится сам номер, и он тоже должен быть
+  // оформленным. Раньше здесь стояло «Абонент 9921876423» сырыми цифрами.
+  const title = s.username || formatPhone(s.number);
   const subtitle = [s.username ? formatPhone(s.number) : '', s.position].filter(Boolean).join(' · ');
 
   const trendCls = s.trend > 1 ? 'up' : s.trend < -1 ? 'down' : 'flat';
@@ -2265,7 +2282,7 @@ function openModal(number) {
       <div class="sm-name">
         ${userStatus && userStatus.id !== 'normal'
           ? `<span class="status-dot" style="background:${esc(userStatus.color)}"></span>` : ''}
-        ${esc(s.username || `Абонент ${s.number}`)}
+        ${esc(s.username || formatPhone(s.number))}
       </div>
       <div class="sm-sub">${esc([formatPhone(s.number), s.position,
         s.personnel_no && `таб. ${s.personnel_no}`].filter(Boolean).join(' · '))}</div>
@@ -3383,10 +3400,28 @@ function shortMonth(month) {
   return m ? `${MONTH_SHORT[Number(m[2]) - 1]} ${m[1].slice(2)}` : String(month || '');
 }
 
+/* ОФОРМЛЕНИЕ НОМЕРА — ТОЛЬКО ДЛЯ ЭКРАНА.
+ *
+ * Вид: +7 (996) 305-40-30. Скобки вокруг кода дают глазу опору, а группы
+ * по две цифры в конце читаются вслух без запинки — это важно, когда номер
+ * диктуют по телефону.
+ *
+ * В БАЗЕ НОМЕР ХРАНИТСЯ КАК БЫЛ — десять цифр без разделителей. Форматируем
+ * только при выводе, ни одно сохранение через эту функцию не проходит.
+ * Причина простая: по номеру идут поиск, сверка со счётом и связь с
+ * правилами. Начни мы хранить скобки — пришлось бы чистить их в каждом
+ * запросе, и рано или поздно где-то забыли бы.
+ *
+ * Одиннадцать цифр с ведущей 7 или 8 тоже понимаем: в выгрузках оператора
+ * встречаются оба варианта.
+ */
 function formatPhone(number) {
-  const d = String(number || '').replace(/\D/g, '');
+  let d = String(number || '').replace(/\D/g, '');
+  // Отбрасываем код страны, если он есть: 8XXXXXXXXXX или 7XXXXXXXXXX.
+  if (d.length === 11 && (d[0] === '7' || d[0] === '8')) d = d.slice(1);
+  // Непонятное не трогаем — лучше показать как есть, чем исказить.
   if (d.length !== 10) return String(number || '');
-  return `+7 ${d.slice(0, 3)} ${d.slice(3, 6)}-${d.slice(6, 8)}-${d.slice(8)}`;
+  return `+7 (${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 8)}-${d.slice(8)}`;
 }
 
 function plural(n, one, few, many) {
