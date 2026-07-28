@@ -954,6 +954,30 @@ def delete_chip_color(code: str) -> list[dict[str, Any]]:
     return get_chip_colors()
 
 
+def get_chip_rules() -> list[dict[str, Any]]:
+    """ЕДИНЫЙ список правил чипса: цвета и пометки вместе.
+
+    ПОЧЕМУ ТАК. У chip_colors и chip_marks одинаковый набор полей, и
+    различались они ровно одним: цвет у номера один, пометок много. Для
+    администратора это разделение искусственное — он думает «навесить на
+    номер правило», а не «покрасить и пометить».
+
+    Поэтому наружу отдаётся один список. Различие осталось только внутри,
+    в поле `kind`:
+        kind='color' — правило-цвет, у номера действует ОДНО, красит карточку;
+        kind='mark'  — правило-пометка, их можно навесить сколько угодно.
+
+    Схема БД не тронута намеренно: миграция ради переименования — лишний
+    риск для уже загруженных настроек. Если позже понадобится одна таблица,
+    здесь меняется только сборка списка.
+    """
+    rules = [{**c, "kind": "color"} for c in get_chip_colors()]
+    rules += [{**m, "kind": "mark"} for m in get_chip_marks()]
+    rules.sort(key=lambda r: (0 if r["kind"] == "color" else 1,
+                              domain.to_int(r.get("sort_order"), 100), r["code"]))
+    return rules
+
+
 def get_chip_marks() -> list[dict[str, Any]]:
     rows = db.query("SELECT * FROM chip_marks ORDER BY sort_order, code")
     return [_bools(r, "is_excluded", "is_unlimited", "builtin") for r in rows]

@@ -351,6 +351,81 @@ def connect() -> sqlite3.Connection:
         return _conn
 
 
+def _migrate_chip_rules(conn: sqlite3.Connection) -> None:
+    """ОБЪЕДИНЕНИЕ ЦВЕТОВ И ПОМЕТОК В ОДНУ ТАБЛИЦУ.
+
+    ЗАЧЕМ. chip_colors и chip_marks имели одинаковый набор полей и одинаковую
+    логику. Различались ровно одним: цвет у номера один, пометок много. Для
+    администратора это деление искусственное — он думает «навесить правило».
+
+    ЧТО ДЕЛАЕТ МИГРАЦИЯ.
+        chip_colors  ──┐
+                       ├──►  chip_rules      (поле kind: 'color' | 'mark')
+        chip_marks   ──┘
+
+        chip_settings.color_code ──┐
+                                   ├──►  chip_rule_links (номер ↔ правило)
+        chip_mark_links          ──┘
+
+    БЕЗОПАСНОСТЬ.
+      * идемпотентна — повторный запуск ничего не портит;
+      * СТАРЫЕ ТАБЛИЦЫ НЕ УДАЛЯЮТСЯ. Пока приложение читает их, а после
+        перевода чтения на chip_rules они останутся как страховка для отката.
+        Удалять их — отдельным шагом, когда всё проверено на боевых данных.
+    """
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS chip_rules (
+        code          TEXT PRIMARY KEY,
+        kind          TEXT NOT NULL DEFAULT 'mark',   -- 'color' | 'mark'
+        label         TEXT NOT NULL,
+        hex           TEXT DEFAULT '',
+        description   TEXT DEFAULT '',
+        payer_tariff  TEXT DEFAULT 'auto',
+        payer_options TEXT DEFAULT 'auto',
+        payer_overage TEXT DEFAULT 'auto',
+        payer_roaming TEXT DEFAULT 'auto',
+        is_excluded   INTEGER NOT NULL DEFAULT 0,
+        is_unlimited  INTEGER NOT NULL DEFAULT 0,
+        sort_order    INTEGER DEFAULT 100,
+        builtin       INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS chip_rule_links (
+        number    TEXT NOT NULL,
+        rule_code TEXT NOT NULL REFERENCES chip_rules (code) ON DELETE CASCADE,
+        PRIMARY KEY (number, rule_code)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chip_rule_links_number ON chip_rule_links (number);
+    """)
+
+    # Переносим справочники. INSERT OR IGNORE: уже перенесённое не трогаем,
+    # правки администратора в chip_rules не затираются.
+    for table, kind in (("chip_colors", "color"), ("chip_marks", "mark")):
+        conn.execute(f"""
+            INSERT OR IGNORE INTO chip_rules
+                (code, kind, label, hex, description, payer_tariff, payer_options,
+                 payer_overage, payer_roaming, is_excluded, is_unlimited,
+                 sort_order, builtin)
+            SELECT code, '{kind}', label, COALESCE(hex, ''), COALESCE(description, ''),
+                   payer_tariff, payer_options, payer_overage, payer_roaming,
+                   is_excluded, is_unlimited,
+                   -- Цвета идут раньше пометок: первый по порядку красит карточку.
+                   COALESCE(sort_order, 100) + {0 if kind == 'color' else 1000},
+                   builtin
+              FROM {table}
+        """)
+
+    # Переносим связи «номер ↔ правило»: назначенный цвет и все пометки.
+    conn.execute("""
+        INSERT OR IGNORE INTO chip_rule_links (number, rule_code)
+        SELECT number, color_code FROM chip_settings
+         WHERE color_code IS NOT NULL AND color_code <> '' AND color_code <> 'normal'
+    """)
+    conn.execute("""
+        INSERT OR IGNORE INTO chip_rule_links (number, rule_code)
+        SELECT number, mark_code FROM chip_mark_links
+    """)
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Донастроить схему уже существующей базы.
 
@@ -372,6 +447,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for name, sql_type in columns.items():
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+
+    # Объединение цветов и пометок. Идёт последней: опирается на то, что
+    # обе исходные таблицы уже созданы блоком EXTENSION_DDL.
+    _migrate_chip_rules(conn)
 
 
 def close() -> None:

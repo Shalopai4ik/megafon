@@ -1131,6 +1131,9 @@ def build_month_view(month: str) -> dict[str, Any]:
         "statuses": queries.get_statuses(),
         "chip_colors": queries.get_chip_colors(),
         "chip_marks": queries.get_chip_marks(),
+        # Единый список правил (цвета + пометки) — интерфейс
+        # показывает их одной группой, без искусственного деления.
+        "chip_rules": queries.get_chip_rules(),
         # Командировки идут вместе с отчётом, чтобы таблица на главной
         # рисовалась сразу, без отдельного запроса при каждой перерисовке.
         "trips": queries.get_trips(),
