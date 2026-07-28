@@ -1,0 +1,1443 @@
+> Anikey:
+'use strict'; //
+============================================================= ============== // Фронтенд «Анализ расходов на связь». //
+============================================================= ============== const MONTH_NAMES = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+// --- Состояние приложения -------------------------------------------------let currentMonth = null; let subscribers = []; let summary = null; let trendCache = null; const detailCache = {}; let currentFilter = 'all'; let currentSort = 'overpay'; let sortDirection = 'desc';
+// Глобальный список статусов (по умолчанию) // color - цвет полоски (CSS переменная или hex) let customStatuses = [ { id: 'normal', label: 'Норма', color: 'var(--good)' }, { id: 'vip', label: 'VIP', color: 'var(--primary)' }, { id: 'fired', label: 'Уволен', color: 'var(--danger)' }, { id: 'cancelled', label: 'Аннулирована', color: 'var(--text-muted)' }
+];
+// --- Тонкий помощник для запросов к API -----------------------------------async function getJSON(url) { const resp = await fetch(url, { headers: { Accept: 'application/json' } }); let data = null; try { data = await resp.json(); } catch (_) { /* тело не JSON */ } if (!resp.ok) { const msg = (data && data.error) ? data.error : HTTP ${resp.status}; throw new Error(msg);}
+return data;
+}
+// --- Инициализация ---------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+const $ = (id) => document.getElementById(id);
+$('monthSelect').addEventListener('change', (e) => loadMonth(e.target.value));
+$('refreshBtn').addEventListener('click', () => { if (currentMonth) { trendCache =
+null; loadMonth(currentMonth); } });
+$('themeBtn').addEventListener('click', toggleTheme);
+$('searchInput').addEventListener('input', renderUsers);
+// Обработчики фильтров
+document.querySelectorAll('.filter').forEach((btn) => {
+btn.addEventListener('click', () => {
+document.querySelectorAll('.filter').forEach((b) =>
+b.classList.remove('active'));
+btn.classList.add('active');
+currentFilter = btn.dataset.filter;
+renderUsers();
+});
+});
+// Обработчики сортировки
+document.querySelectorAll('.sort').forEach((btn) => {
+if (btn.dataset.sort === currentSort) btn.classList.add('active');
+btn.addEventListener('click', () => {
+if (currentSort === btn.dataset.sort) sortDirection = sortDirection === 'desc' ?
+'asc' : 'desc';
+else { currentSort = btn.dataset.sort; sortDirection = 'desc'; }
+document.querySelectorAll('.sort').forEach((b) =>
+b.classList.remove('active'));
+btn.classList.add('active');
+renderUsers();
+});
+});$('gridView').addEventListener('click', () => setView('grid'));
+$('tableView').addEventListener('click', () => setView('table'));
+// График всегда открыт
+(async () => {
+const panel = $('chartPanel');
+const toggleBtn = $('toggleChartBtn');
+if (panel && toggleBtn) {
+panel.classList.add('open');
+toggleBtn.setAttribute('aria-expanded', 'true');
+toggleBtn.style.cursor = 'default';
+toggleBtn.style.pointerEvents = 'none';
+await drawBigChart();
+}
+})();
+const savedTheme = localStorage.getItem('theme');
+if (savedTheme) document.documentElement.setAttribute('data-theme',
+savedTheme);
+window.addEventListener('resize', () => {
+if ($('chartPanel') && $('chartPanel').classList.contains('open') && trendCache)
+drawBigChart();
+});
+loadMonths();
+// Инициализация модального окна настроек
+initSettingsModal();
+});
+function setView(mode) {
+document.querySelectorAll('.view').forEach((b) => b.classList.remove('active'));
+const btnId = mode === 'table' ? 'tableView' : 'gridView';
+const btn = document.getElementById(btnId);
+if (btn) btn.classList.add('active');const grid = document.getElementById('usersGrid');
+if (grid) grid.classList.toggle('table-view', mode === 'table');
+renderUsers();
+}
+function toggleTheme() {
+
+> Anikey:
+const root = document.documentElement;
+const isDark = root.getAttribute('data-theme') === 'dark'
+|| (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme:
+dark)').matches);
+const next = isDark ? 'light' : 'dark';
+root.setAttribute('data-theme', next);
+localStorage.setItem('theme', next);
+const chartPanel = document.getElementById('chartPanel');
+if (chartPanel && chartPanel.classList.contains('open') && trendCache)
+drawBigChart();
+}
+// --- Загрузка данных с бэкенда ---------------------------------------------
+async function loadMonths() {
+showLoading('Получение списка периодов…', 30);
+try {
+const data = await getJSON('/api/months');
+const months = data.months || [];
+const select = document.getElementById('monthSelect');
+if (!months.length) {
+hideLoading();
+showBanner('В базе нет ни одного отчёта. Проверьте наполнение
+таблицы reports и связи (GET /api/diagnostics).');
+return;
+}
+select.innerHTML = months
+.map((m) => <option
+value="${m.report_month}">${monthLabel(m.report_month)} · ${m.report_count}
+счёт(ов)</option>)
+.join('');hideBanner();
+const savedMonth = localStorage.getItem('selectedMonth');
+const availableMonths = months.map(m => m.report_month);
+if (savedMonth && availableMonths.includes(savedMonth)) {
+await loadMonth(savedMonth);
+} else {
+await loadMonth(months[0].report_month);
+}
+} catch (err) {
+hideLoading();
+showBanner(Не удалось получить данные: ${err.message}. Бэкенд
+запущен и БД доступна? Проверьте GET /api/health.);
+}
+}
+async function loadMonth(month) {
+currentMonth = month;
+localStorage.setItem('selectedMonth', month);
+const select = document.getElementById('monthSelect');
+if (select) select.value = month;
+showLoading('Загрузка данных за период…', 55);
+try {
+const data = await
+getJSON(/api/subscribers?month=${encodeURIComponent(month)});
+subscribers = data.subscribers || [];
+summary = data.summary || null;
+for (const k of Object.keys(detailCache)) delete detailCache[k];
+updateKpis();
+updateRankList();
+renderUsers();
+const kpiPanel = document.getElementById('kpiPanel');
+const analyticsPanel = document.getElementById('analyticsPanel');
+const filtersPanel = document.getElementById('filtersPanel');if (kpiPanel) kpiPanel.style.display = 'grid';
+if (analyticsPanel) analyticsPanel.style.display = 'flex';
+if (filtersPanel) filtersPanel.style.display = 'flex';
+hideBanner();
+const chartPanel = document.getElementById('chartPanel');
+if (chartPanel && chartPanel.classList.contains('open')) {
+trendCache = null;
+await drawBigChart();
+}
+} catch (err) {
+showBanner(Ошибка загрузки за ${monthLabel(month)}: ${err.message});
+} finally {
+hideLoading();
+}
+}
+// --- KPI и рейтинг ---------------------------------------------------------
+function updateKpis() {
+if (!summary) return;
+const el = (id) => document.getElementById(id);
+if (el('totalCount')) el('totalCount').innerText = summary.subscribers;
+if (el('totalCost')) el('totalCost').innerText = money(summary.total_cost);
+if (el('totalOverpay')) el('totalOverpay').innerText =
+money(summary.total_overpay);
+if (el('totalEconomy')) el('totalEconomy').innerText =
+money(summary.economy_potential);
+if (el('criticalCount')) el('criticalCount').innerText = summary.critical;
+const r = summary.risk_index;
+const cls = r >= 60 ? 'danger' : (r >= 30 ? 'warning' : 'good');
+if (el('riskDonut')) el('riskDonut').innerHTML = donutSvg(r, cls);
+if (el('riskNote')) el('riskNote').innerText = r >= 60 ? 'высокий риск' : (r >= 30 ?
+'средний риск' : 'низкий риск');
+}function updateRankList() {
+const rankList = document.getElementById('rankList');
+const top = [...subscribers].sort((a, b) => b.overpayment -
+a.overpayment).slice(0, 5);
+if (!top.length) {
+if (rankList) rankList.innerHTML = '<div class="rank-item">нет данных</div>';
+return;
+}
+rankList.innerHTML = top.map((s, i) => `
+<button class="rank-item" data-goto="${s.number}">
+
+> Anikey:
+<span class="rank-pos">${i + 1}</span>
+<span class="rank-name">${escapeHtml(s.username || s.number)}</span>
+<span class="rank-val">${money(s.overpayment)}</span>
+</button>).join('');
+rankList.querySelectorAll('[data-goto]').forEach((el) => {
+el.addEventListener('click', () => {
+const card = document.querySelector(.user-card[data-
+number="${el.dataset.goto}"]);
+if (card) {
+card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+card.classList.add('flash');
+setTimeout(() => card.classList.remove('flash'), 1200);
+}
+});
+});
+}
+// --- Рендер карточек и фильтры ---------------------------------------------
+function renderUsers() {
+const grid = document.getElementById('usersGrid');
+const term =
+document.getElementById('searchInput').value.trim().toLowerCase();
+let list = subscribers.filter((s) => {if (term && !(String(s.number).includes(term) || (s.username ||
+'').toLowerCase().includes(term))) return false;
+if (currentFilter === 'all') return true;
+if (currentFilter === 'overpay') return s.overpayment > 0;
+if (currentFilter === 'underused') return s.underused;
+// НОВЫЕ ФИЛЬТРЫ
+if (currentFilter === 'vip') return s.status === 'vip';
+if (currentFilter === 'fired') return s.status === 'fired';
+if (currentFilter === 'cancelled') return s.status === 'cancelled';
+if (currentFilter === 'business_trip') return s.is_business_trip;
+// Стандартные фильтры (normal, warning, danger)
+return s.status === currentFilter;
+});
+const dir = sortDirection === 'desc' ? -1 : 1;
+const keys = {
+overpay: (a, b) => a.overpayment - b.overpayment,
+total: (a, b) => a.total - b.total,
+risk: (a, b) => a.risk - b.risk,
+number: (a, b) => String(a.number).localeCompare(String(a.number)),
+};
+list.sort((a, b) => dir * (keys[currentSort] || keys.overpay)(a, b));
+const resultCount = document.getElementById('resultCount');
+if (resultCount) resultCount.innerText = ${list.length} из ${subscribers.length};
+if (!list.length) {
+if (grid) grid.innerHTML = '<div class="empty-state">Нет данных для
+отображения</div>';
+return;
+}
+grid.innerHTML = list.map(renderCard).join('');
+}function renderCard(sub) {
+// Определяем цвет статуса для карточки
+let statusClass = 'card-normal';
+if (sub.status === 'vip') statusClass = 'card-vip';
+else if (sub.status === 'fired') statusClass = 'card-fired';
+else if (sub.status === 'cancelled') statusClass = 'card-cancelled';
+else if (sub.status === 'warning') statusClass = 'card-warning';
+else if (sub.status === 'danger') statusClass = 'card-danger';
+const tariffInfo = sub.tariff_id && sub.tariff_id !== 0 ? Текущий тариф ID:
+${sub.tariff_id} : '';
+let tariffDetails = '';
+let savingInfo = '';
+if (sub.recommendation && sub.recommendation.action !== 'keep') {
+const rec = sub.recommendation;
+const currentName = rec.current_name || 'Не задан';
+const currentCost = rec.current_cost || 0;
+if (rec.action === 'lower' && rec.saving > 0) {
+savingInfo = 
+<div class="tariff-saving">
+<strong>Сейчас:</strong> ${currentName} (${money(currentCost)} ₽)
+<br>
+<strong>Рекомендуем:</strong> ${rec.suggested_tariff_name}
+(${money(rec.suggested_limit)} ₽)<br>
+<strong>Экономия:</strong> ${money(rec.saving)} в месяц
+</div>;
+} else if (rec.action === 'raise') {
+savingInfo = 
+<div class="tariff-warning">
+<strong>Сейчас:</strong> ${currentName} (${money(currentCost)} ₽)
+<br>
+<strong>Рекомендуем:</strong> ${rec.suggested_tariff_name}
+(${money(rec.suggested_limit)} ₽)<br>
+<strong>Доплата:</strong> ${money(rec.additional_cost)} в месяц (во
+избежание перерасхода)
+</div>;}
+} else if (sub.recommendation && sub.recommendation.action === 'keep') { savingInfo = <div class="tariff-neutral">Текущий тариф оптимален</div>;
+}
+if (sub.suggested_tariff) { const suggested = sub.suggested_tariff; if (sub.potential_saving) { savingInfo =  <div class="tariff-saving">
+<strong>Возможная экономия:</strong> ${money(sub.potential_saving)} в месяц
+
+> Anikey:
+</div> <div class="tariff-recommendation"> Рекомендуется перейти на ${suggested.name} (${suggested.cost} ₽) </div>;
+} else if (sub.additional_cost) { savingInfo =  <div class="tariff-warning">
+Требуется повышение до ${suggested.name} (${suggested.cost} ₽) <br>Дополнительные расходы: ${money(sub.additional_cost)} в месяц </div>;
+} }
+const pct = sub.limit ? Math.min(100, (sub.total / sub.limit) * 100) : 0; const rec = recPill(sub.recommendation.action); const teaser = (sub.recommendation.lines && sub.recommendation.lines[0]) || '';
+return  <article class="user-card ${statusClass}" data-number="${sub.number}"> <header class="card-header"> <div class="card-id"> <div class="user-name">${escapeHtml(sub.username || 'Абонент ' +
+sub.number)}</div> <div class="user-sub">${sub.username ? sub.number : ''}</div> </div> <span class="badge badge-${sub.status}">${statusText(sub.status)}</span>
+
+> Anikey:
+</header> <div class="cost-row"> <div> <div class="cost-main">${money(sub.overpayment)}</div> <div class="cost-sub">Фактические расходы: <b>${money(sub.total)}</b></div> ${tariffDetails} ${savingInfo} </div> <span class="pill pill-${rec.cls}" title="Рекомендация">${rec.lbl}</span> </div> <div class="bar" title="Расход относительно тарифа"><div class="bar-fill fill${sub.status}" style="width:${pct}%"></div></div> <div class="cat-chips">${sub.categories.map(catChip).join('')}</div> ${teaser ? <div class="rec-teaser">${escapeHtml(teaser)}</div> : ''}
+<div class="card-divider"></div>
+<div class="card-actions"> <button class="act" data-act="details">Подробнее ▾</button> <button class="act act-limits" data-act="limits">Детально по тарифам
+▾</button> </div>
+<div class="panels-wrapper"> <div class="panel panel-details"></div> <div class="panel-separator-vertical"></div> <div class="panel panel-limits"></div> </div>
+</article>; }
+function catChip(c) { const has = c.cost > 0; return  <div class="chip ${has ? 'chip-warning' : 'chip-good'}" title="${c.label}: ${fmtUsed(c)} ${c.unit}${has ? ', начислено ' + money(c.cost) : ', в пакете'}"> <span class="chip-ico">${c.icon}</span><span class="chip-num">${fmtUsed(c)}<small> ${c.unit}</small></span>
+</div>;
+}
+// --- МОДАЛЬНОЕ ОКНО НАСТРОЕК (КОМПАКТНОЕ) ----------------------------------
+function initSettingsModal() {
+const settingsBtn = document.getElementById('settingsBtn');
+if (!settingsBtn) return;
+const modal = document.createElement('div');
+modal.className = 'settings-modal';
+modal.id = 'settingsModal';
+modal.innerHTML = 
+<div class="settings-content">
+<div class="settings-header">
+<h2>⚙ Настройки абонентов</h2>
+<div style="display:flex; gap:8px;">
+<button id="addStatusBtn" class="btn-add-status">+ Статус</button>
+<button class="settings-close">&times;</button>
+</div>
+</div>
+<div class="settings-body">
+<input type="text" class="settings-search" placeholder="Поиск по номеру
+или имени..." id="settingsSearch">
+<div class="subscribers-list" id="subscribersList">
+<div class="loading-subscribers">Загрузка данных...</div>
+</div>
+</div>
+<div class="settings-footer">
+<button class="btn-secondary" id="closeSettings">Закрыть</button>
+</div>
+</div>
+;
+document.body.appendChild(modal);
+settingsBtn.addEventListener('click', openSettings);
+modal.querySelector('.settings-close').addEventListener('click', closeSettings);
+document.getElementById('closeSettings').addEventListener('click',closeSettings);
+document.getElementById('settingsSearch').addEventListener('input',
+filterSubscribers);
+document.getElementById('addStatusBtn').addEventListener('click',
+openManageStatuses);
+modal.addEventListener('click', (e) => {
+if (e.target === modal) closeSettings();
+});
+}
+// Модальное окно для управления статусами (Создание, Редактирование,
+Удаление)
+function openManageStatuses() {
+const modal = document.createElement('div');
+modal.className = 'settings-modal';
+modal.style.zIndex = '1001';
+modal.innerHTML = 
+<div class="settings-content" style="max-width: 600px;">
+<div class="settings-header">
+<h2>Управление статусами</h2>
+<button class="settings-close">&times;</button>
+</div>
+<div class="settings-body" style="padding: 20px;">
+<div style="margin-bottom: 15px;">
+<h3>Создать новый статус</h3>
+<div style="display: flex; gap: 10px; align-items: flex-end;">
+<div class="control-group" style="flex: 1;">
+<label>Название</label>
+<input type="text" id="newStatusName" placeholder="Например: В
+отпуске">
+</div>
+<div class="control-group" style="flex: 1;">
+<label>Цвет полоски</label>
+<input type="color" id="newStatusColor" value="#1f7a5c" style="width:
+100%; height: 40px; border: none; padding: 0;">
+</div>
+<button id="createStatusBtn" class="btn-add-status">Создать</button></div>
+</div>
+<div style="border-top: 1px solid var(--border); margin: 20px 0;"></div>
+
+> Anikey:
+<div>
+<h3>Существующие статусы</h3>
+<div id="statusList" style="display: flex; flex-direction: column; gap:
+10px;"></div>
+</div>
+</div>
+<div class="settings-footer" style="justify-content: flex-end; padding: 10px
+20px;">
+<button id="closeStatusModal" class="btn-secondary">Закрыть</button>
+</div>
+</div>
+;
+document.body.appendChild(modal);
+modal.querySelector('.settings-close').addEventListener('click', () =>
+modal.remove());
+document.getElementById('closeStatusModal').addEventListener('click', () =>
+modal.remove());
+modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove();
+});
+// Рендер списка статусов
+const renderStatusList = () => {
+const listContainer = document.getElementById('statusList');
+listContainer.innerHTML = customStatuses.map(s => 
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px;
+background: var(--surface-2); border-radius: 6px; border: 1px solid var(--
+border);">
+<div style="width: 16px; height: 16px; border-radius: 50%; background:
+${s.color}; border: 1px solid var(--border);"></div>
+<span style="flex: 1; font-weight: 500;">${s.label}</span>
+<button class="btn-secondary" style="padding: 4px 8px; font-size: 11px;"
+onclick="editStatus('${s.id}')">
+</button>${s.id !== 'normal' && s.id !== 'vip' && s.id !== 'fired' && s.id !== 'cancelled' ?
+<button class="btn-secondary" style="padding: 4px 8px; font-size: 11px;
+color: var(--danger); border-color: var(--danger);"
+onclick="deleteStatus('${s.id}')">
+</button> : ''}
+</div>
+).join('');
+};
+renderStatusList();
+// Создание статуса
+document.getElementById('createStatusBtn').addEventListener('click', () => {
+const name = document.getElementById('newStatusName').value.trim();
+const color = document.getElementById('newStatusColor').value;
+if (!name) {
+showBanner('Введите название статуса', 'error');
+return;
+}
+const id = name.toLowerCase().replace(/\s+/g, '-');
+if (customStatuses.some(s => s.id === id)) {
+showBanner('Статус с таким названием уже существует', 'error');
+return;
+}
+customStatuses.push({ id, label: name, color });
+// Добавляем фильтр
+const filterBtn = document.createElement('button');
+filterBtn.className = 'filter';
+filterBtn.dataset.filter = id;
+filterBtn.innerText = name;
+document.querySelector('.filters-group').appendChild(filterBtn);
+filterBtn.addEventListener('click', () => {
+document.querySelectorAll('.filter').forEach((b) =>
+b.classList.remove('active'));filterBtn.classList.add('active');
+currentFilter = id;
+renderUsers();
+});
+showBanner(Статус "${name}" создан`, 'success');
+document.getElementById('newStatusName').value = '';
+renderStatusList();
+// Обновляем список в настройках
+if (document.getElementById('settingsModal').classList.contains('open')) {
+loadSubscribersForSettings();
+}
+});
+// Глобальные функции для кнопок редактирования/удаления
+window.editStatus = (id) => {
+const status = customStatuses.find(s => s.id === id);
+if (!status) return;
+const newName = prompt('Изменить название статуса:', status.label);
+if (newName === null) return;
+const newColor = prompt('Изменить цвет (HEX, например #ff0000):',
+status.color);
+if (newColor === null) return;
+const newId = newName.toLowerCase().replace(/\s+/g, '-');
+if (id !== newId && customStatuses.some(s => s.id === newId)) {
+showBanner('Статус с таким названием уже существует', 'error');
+return;
+}
+// Обновляем
+const index = customStatuses.findIndex(s => s.id === id);
+customStatuses[index] = { id: newId, label: newName, color: newColor };// Обновляем фильтры
+const filters = document.querySelectorAll('.filter');
+filters.forEach(f => {
+if (f.dataset.filter === id) {
+f.dataset.filter = newId;
+f.innerText = newName;
+}
+});
+renderStatusList();
+if (document.getElementById('settingsModal').classList.contains('open')) {
+loadSubscribersForSettings();
+}
+};
+window.deleteStatus = (id) => {
+
+> Anikey:
+if (!confirm('Удалить этот статус? Абоненты с этим статусом перейдут в
+"Норма".')) return;
+customStatuses = customStatuses.filter(s => s.id !== id);
+// Сбрасываем фильтры
+const filters = document.querySelectorAll('.filter');
+filters.forEach(f => {
+if (f.dataset.filter === id) {
+f.remove();
+}
+});
+// Сбрасываем статусы у абонентов (упрощенно - просто
+перерисовываем, бэкенд должен обработать)
+// В идеале нужно обновить БД, но пока просто перерисуем список
+renderStatusList();
+if (document.getElementById('settingsModal').classList.contains('open')) {
+loadSubscribersForSettings();
+}
+};
+}async function openSettings() {
+const modal = document.getElementById('settingsModal');
+modal.classList.add('open');
+await loadSubscribersForSettings();
+}
+function closeSettings() {
+const modal = document.getElementById('settingsModal');
+modal.classList.remove('open');
+}
+// ОДИН ЗАПРОС ДЛЯ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ
+async function loadSubscribersForSettings() {
+const listContainer = document.getElementById('subscribersList');
+listContainer.innerHTML = '<div class="loading-subscribers">Загрузка
+данных...</div>';
+try {
+const subscribersResponse = await
+getJSON(/api/subscribers?month=${encodeURIComponent(currentMonth)});
+const apiSubscribers = subscribersResponse.subscribers || [];
+const usersResponse = await getJSON('/api/users');
+const usersData = usersResponse.users || [];
+const subscribersWithLimits = apiSubscribers.map(apiSub => {
+const userData = usersData.find(u => u.number == apiSub.number);
+return {
+...apiSub,
+limit_numbr: userData ? userData.limit_numbr : null,
+username: userData ? userData.username : apiSub.username,
+status: userData ? userData.status : 'normal',
+status_color: userData ? userData.status_color : 'normal',
+is_business_trip: userData ? userData.is_business_trip : false,
+trip_start_date: userData ? userData.trip_start_date : null,
+trip_end_date: userData ? userData.trip_end_date : null
+};
+});if (subscribersWithLimits.length === 0) {
+listContainer.innerHTML = '<div class="no-subscribers">Нет данных об
+абонентах</div>';
+return;
+}
+renderInteractiveList(subscribersWithLimits);
+} catch (error) {
+listContainer.innerHTML = <div class="no-subscribers">Ошибка загрузки:
+${error.message}</div>;
+}
+}
+// Рендер интерактивного списка
+function renderInteractiveList(subscribers) {
+const listContainer = document.getElementById('subscribersList');
+if (subscribers.length === 0) {
+listContainer.innerHTML = '<div class="no-subscribers">Нет абонентов для
+отображения</div>';
+return;
+}
+listContainer.innerHTML = subscribers.map(sub => {
+const statusClass = status-${sub.status || 'normal'};
+// Генерируем опции для селекта статуса (Только статус, без цвета)
+const statusOptions = customStatuses.map(s =>
+<option value="${s.id}" ${sub.status === s.id ? 'selected' :
+''}>${s.label}</option>
+).join('');
+return 
+<div class="subscriber-item ${statusClass}" data-number="${sub.number}">
+<div class="subscriber-info">
+<div class="subscriber-number">${sub.number}</div>
+${sub.username ? <div class="subscriber-name">${sub.username}</div> :
+''}</div>
+<div class="subscriber-controls"> <div class="control-group"> <label>Статус</label> <select class="status-select" data-number="${sub.number}" datafield="status">
+${statusOptions} </select> </div>
+<div class="control-group"> <label class="trip-toggle"> <input type="checkbox" class="trip-check" data-number="${sub.number}"
+${sub.is_business_trip ? 'checked' : ''}> В командировке </label> <div class="trip-dates ${sub.is_business_trip ? 'active' : ''}" datanumber="${sub.number}"> <input type="date" class="trip-start" data-number="${sub.number}" value="${sub.trip_start_date || ''}"> <input type="date" class="trip-end" data-number="${sub.number}" value="${sub.trip_end_date || ''}"> </div> </div>
+<div class="limit-control"> <span class="limit-label">Лимит:</span> <input type="number" class="limit-input" value="${sub.limit_numbr || ''}" placeholder="₽" data-number="${sub.number}"> <button class="save-limit-btn"
+onclick="saveLimit('${sub.number}')">Сохранить</button> </div> </div> </div> ;
+}).join('');
+
+> Anikey:
+attachSettingsListeners(); }
+function attachSettingsListeners() { // Обработчик изменения статуса
+document.querySelectorAll('.status-select').forEach(select => { select.addEventListener('change', async (e) => { const number = e.target.dataset.number; const newStatus = e.target.value; await updateSubscriberSetting(number, 'status', newStatus); // Обновляем визуальный класс карточки const item = e.target.closest('.subscriber-item'); item.className = item.className.replace(/status-\w+/, status${newStatus}); });
+}); // Обработчик командировки
+document.querySelectorAll('.trip-check').forEach(checkbox => { checkbox.addEventListener('change', async (e) => { const number = e.target.dataset.number; const isChecked = e.target.checked; const datesDiv = e.target.closest('.control-group').querySelector('.trip-dates');
+datesDiv.classList.toggle('active', isChecked); await updateSubscriberSetting(number, 'is_business_trip', isChecked);
+if (isChecked) { const startInput = datesDiv.querySelector('.trip-start'); const endInput = datesDiv.querySelector('.trip-end'); if (!startInput.value) startInput.value = new Date().toISOString().split('T')[0]; if (!endInput.value) endInput.value = new Date().toISOString().split('T')[0];
+} });
+}); // Обработчик дат командировкиdocument.querySelectorAll('.trip-start, .trip-end').forEach(input => {
+input.addEventListener('change', async (e) => {
+const number = e.target.dataset.number;
+const field = e.target.classList.contains('trip-start') ? 'trip_start_date' :
+'trip_end_date';
+await updateSubscriberSetting(number, field, e.target.value);
+});
+});
+}
+async function updateSubscriberSetting(number, field, value) {
+try {
+const currentData = await getJSON(/api/users/${number});
+const updatePayload = {
+status: field === 'status' ? value : currentData.status,
+status_color: field === 'status_color' ? value : currentData.status_color,
+is_business_trip: field === 'is_business_trip' ? value :
+currentData.is_business_trip,
+trip_start_date: field === 'trip_start_date' ? value :
+currentData.trip_start_date,
+trip_end_date: field === 'trip_end_date' ? value : currentData.trip_end_date
+};
+const response = await fetch(/api/users/${number}, {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify(updatePayload)
+});
+if (!response.ok) {
+const err = await response.json();
+throw new Error(err.error || 'Ошибка сохранения');
+}
+if (field === 'status' && currentMonth) {
+setTimeout(() => { loadMonth(currentMonth); }, 300);
+}} catch (error) {
+showBanner(Ошибка сохранения для ${number}: ${error.message}, 'error');
+}
+}
+async function getSubscribersWithLimits() {
+try {
+const response = await
+getJSON(/api/subscribers?month=${encodeURIComponent(currentMonth)});
+const apiSubscribers = response.subscribers || [];
+const usersResponse = await getJSON('/api/users');
+const usersData = usersResponse.users || [];
+const subscribersWithLimits = apiSubscribers.map(apiSub => {
+const userData = usersData.find(u => u.number == apiSub.number);
+return {
+...apiSub,
+limit_numbr: userData ? userData.limit_numbr : null,
+username: userData ? userData.username : apiSub.username,
+status: userData ? userData.status : 'normal',
+status_color: userData ? userData.status_color : 'normal',
+is_business_trip: userData ? userData.is_business_trip : false,
+trip_start_date: userData ? userData.trip_start_date : null,
+trip_end_date: userData ? userData.trip_end_date : null
+};
+});
+return subscribersWithLimits;
+} catch (error) {
+console.error('Ошибка получения данных абонентов:', error);
+throw error;
+}
+}
+function filterSubscribers(e) {
+const searchTerm = e.target.value.toLowerCase();
+const items = document.querySelectorAll('.subscriber-item');
+items.forEach(item => {const number = item.querySelector('.subscriber-
+number').textContent.toLowerCase();
+
+> Anikey:
+const nameElement = item.querySelector('.subscriber-name');
+const name = nameElement ? nameElement.textContent.toLowerCase() : '';
+if (number.includes(searchTerm) || name.includes(searchTerm)) {
+item.style.display = 'flex';
+} else {
+item.style.display = 'none';
+}
+});
+}
+async function saveLimit(number) {
+const input = document.querySelector(.limit-input[data-number="${number}"]);
+if (!input) return;
+const saveBtn = input.closest('.limit-control').querySelector('.save-limit-btn');
+const limitValue = input.value.trim();
+if (!limitValue) {
+showBanner('Введите значение лимита', 'error');
+return;
+}
+const limit = parseInt(limitValue);
+if (isNaN(limit) || limit < 0) {
+showBanner('Введите корректное значение лимита', 'error');
+return;
+}
+try {
+saveBtn.disabled = true;
+saveBtn.textContent = 'Сохранение...';
+const response = await fetch(/api/users/${number}, {
+method: 'POST',
+headers: {
+'Content-Type': 'application/json','Accept': 'application/json'
+},
+body: JSON.stringify({ limit: limit })
+});
+const result = await response.json();
+if (!response.ok) {
+throw new Error(result.error || 'Ошибка сервера');
+}
+showBanner(Лимит для ${number} успешно сохранен (${limit} ₽),
+'success');
+const subscriber = subscribers.find(s => s.number === number);
+if (subscriber) {
+subscriber.limit = limit;
+renderUsers();
+}
+} catch (error) {
+showBanner(Ошибка сохранения: ${error.message}, 'error');
+console.error('Ошибка сохранения лимита:', error);
+} finally {
+saveBtn.disabled = false;
+saveBtn.textContent = 'Сохранить';
+}
+}
+// --- Остальные функции (details, limits, charts, etc.) --------------------
+document.addEventListener('click', async (e) => {
+const btn = e.target.closest('.act');
+if (!btn) return;
+const card = btn.closest('.user-card');
+if (!card) return;
+const number = card.dataset.number;
+const action = btn.dataset.act;
+const detailsPanel = card.querySelector('.panel-details');
+const limitsPanel = card.querySelector('.panel-limits');
+const separator = card.querySelector('.panel-separator-vertical');const wrapper = card.querySelector('.panels-wrapper');
+const isDetailsOpen = detailsPanel.classList.contains('show');
+const isLimitsOpen = limitsPanel.classList.contains('show');
+const targetPanel = action === 'limits' ? limitsPanel : detailsPanel;
+const otherPanel = action === 'limits' ? detailsPanel : limitsPanel;
+const otherBtn = action === 'limits' ? card.querySelector('[data-act="details"]') :
+card.querySelector('[data-act="limits"]');
+if (targetPanel.classList.contains('show')) {
+targetPanel.classList.remove('show');
+toggleChevron(btn, false);
+if (separator) separator.style.display = 'none';
+if (wrapper) wrapper.classList.remove('two-panels');
+return;
+}
+if (otherPanel.classList.contains('show')) {
+otherPanel.classList.remove('show');
+toggleChevron(otherBtn, false);
+}
+try {
+if (!detailCache[number]) {
+btn.disabled = true;
+try {
+detailCache[number] = await
+getJSON(/api/subscribers/${number}?month=${encodeURIComponent(currentM
+onth)});
+} catch (err) {
+throw err;
+} finally {
+btn.disabled = false;
+}
+}
+const detail = detailCache[number];
+if (action === 'limits') {
+limitsPanel.innerHTML = renderLimitsPanel(detail);
+limitsPanel.classList.add('show');} else {
+detailsPanel.innerHTML = renderDetailsPanel(detail);
+detailsPanel.classList.add('show');
+const host = detailsPanel.querySelector('.spark-host');
+if (host) host.innerHTML = sparkline(detail.history, detail.month);
+}
+toggleChevron(btn, true);
+if (separator) separator.style.display = 'none';
+if (wrapper) wrapper.classList.remove('two-panels');
+} catch (err) {
+btn.disabled = false;
+const errorPanel = action === 'limits' ? limitsPanel : detailsPanel;
+errorPanel.innerHTML = <div class="panel-error">Ошибка загрузки:
+${escapeHtml(err.message)}</div>;
+errorPanel.classList.add('show');
+toggleChevron(btn, true);
+
+> Anikey:
+}
+});
+function toggleChevron(btn, isOpen) {
+if (!btn) return;
+const text = btn.textContent;
+const up = '▴';
+const down = '▾';
+let cleanText = text.replace(up, '').replace(down, '').trim();
+if (isOpen) {
+btn.textContent = cleanText + ' ' + up;
+} else {
+btn.textContent = cleanText + ' ' + down;
+}
+}
+function renderDetailsPanel(d) {
+const rec = recPill(d.recommendation.action);
+const trendClass = d.trend > 0.5 ? 'up' : (d.trend < -0.5 ? 'down' : 'flat');
+const trendArrow = trendClass === 'up' ? '↗' : (trendClass === 'down' ? '↘' :
+'→');
+const services = (d.services || []);let tariffInfo = '';
+const currentName = d.recommendation.current_name || (d.current_tariff_info ?
+d.current_tariff_info.name : 'Не задан');
+const currentCost = d.recommendation.current_cost || (d.current_tariff_info ?
+d.current_tariff_info.base_cost : 0);
+if (currentCost > 0 && d.current_tariff_info) {
+const tariff = d.current_tariff_info;
+const intLimit = tariff.internet_limit == -1 ? 'Безлимит' :
+${fmtNum(tariff.internet_limit)} МБ;
+const voiceLimit = tariff.voice_limit == -1 ? 'Безлимит' : ${tariff.voice_limit}
+мин;
+const smsLimit = tariff.sms_limit == -1 ? 'Безлимит' : ${tariff.sms_limit} шт;
+tariffInfo = 
+<div class="panel-title">Текущий тариф</div>
+<div class="tariff-info-box">
+<div><strong>Название:</strong> ${escapeHtml(tariff.name)}</div>
+<div><strong>Стоимость:</strong> ${money(tariff.base_cost)} в
+месяц</div>
+<div><strong>Лимиты:</strong> ${intLimit} / ${voiceLimit} /
+${smsLimit}</div>
+</div>;
+} else {
+tariffInfo = 
+<div class="panel-title">Текущий тариф</div>
+<div class="tariff-info-box" style="color: var(--danger);">
+<div><strong>Статус:</strong> Тариф не задан</div>
+<div><strong>Стоимость:</strong> 0 ₽</div>
+</div>;
+}
+let suggestionInfo = '';
+if (d.recommendation && d.recommendation.lines &&
+d.recommendation.lines.length > 0) {
+const recData = d.recommendation;
+let actionText = '';
+let actionClass = '';if (recData.action === 'lower') {
+actionText = 'Понизить тариф';
+actionClass = 'suggestion-lower';
+} else if (recData.action === 'raise') {
+actionText = 'Повысить тариф';
+actionClass = 'suggestion-raise';
+} else {
+actionText = 'Оставить как есть';
+actionClass = 'suggestion-keep';
+}
+suggestionInfo = 
+<div class="panel-title">Рекомендация</div>
+<div class="suggestion-box ${actionClass}">
+<div class="suggestion-main">
+<strong>${actionText}:</strong>
+${escapeHtml(recData.suggested_tariff_name)}
+(${money(recData.suggested_limit)} ₽)
+</div>
+<div class="suggestion-reason">
+${escapeHtml(recData.lines[0])}
+</div>
+${recData.action === 'lower' && recData.saving > 0 ? 
+<div class="suggestion-detail">
+<strong>Экономия:</strong> ${money(recData.saving)} в месяц
+</div>
+ : ''}
+${recData.action === 'raise' && recData.additional_cost > 0 ? 
+<div class="suggestion-detail">
+<strong>Доплата:</strong> ${money(recData.additional_cost)} в месяц
+(во избежание перерасхода)
+</div>
+ : ''}
+</div>;
+}
+return 
+<div class="panel-title">Рекомендация по тарифу <span class="pill pill-
+${rec.cls}">${rec.lbl}</span></div>${suggestionInfo}
+${tariffInfo}
+<div class="panel-title">Динамика расхода (факт из БД)
+<span class="trend trend-${trendClass}">${trendArrow} ${d.trend > 0 ? '+' :
+''}${d.trend}%</span>
+</div>
+<div class="spark-host"></div>
+<div class="panel-title">Крупнейшие начисления</div>
+<div class="svc-table">
+${services.map((s) => 
+<div class="svc-row">
+<span class="svc-name">${escapeHtml(s.service)}</span>
+<span class="svc-vol">${s.volume ? fmtNum(s.volume) + ' ' + (s.unit || '') :
+''}</span>
+<span class="svc-cost ${s.cost > 0 ? 'txt-danger' : 'txt-
+muted'}">${money(s.cost)}</span>
+</div>).join('')}
+</div>;
+}
+function renderLimitsPanel(d) {
+const pct = d.limit ? Math.min(100, (d.total / d.limit) * 100) : 0;
+const over = d.limit && d.total > d.limit;
+const maxCost = Math.max(1, ...d.categories.map((c) => c.cost), d.plan_fee);
+
+> Anikey:
+return 
+<div class="panel-title">Расход относительно тарифа</div>
+<div class="limit-head">
+<span class="limit-name">Начислено ${money(d.total)}</span>
+<span class="limit-val">тариф ${d.limit ? money(d.limit) : 'не задан'}${over ?
+' · перерасход ' + money(d.total - d.limit) : ''}</span>
+</div>
+<div class="bar bar-lg${over ? ' bar-over' : ''}"><div class="bar-fill fill-
+${d.status}" style="width:${pct}%"></div></div>
+<div class="panel-title">Куда уходят деньги</div>
+${d.categories.map((c) => {
+const w = Math.min(100, (c.cost / maxCost) * 100);
+return <div class="limit-row" data-category="${c.key}" datanumber="${d.number}"> <div class="limit-head"> <span class="limit-name">${c.icon} ${c.label}</span> <span class="limit-val">${fmtUsed(c)} ${c.unit} · ${money(c.cost)}</span>
+</div> <div class="progress-section"> <div class="bar"><div class="bar-fill ${c.cost > 0 ? 'fill-warning' : 'fillgood'}" style="width:${w}%"></div></div> <div class="chart-toggle-btn" aria-label="Показать график"> <span class="toggle-chev">▾</span> </div>
+</div> <div class="category-chart" style="display: none; margin-top: 16px;"> <div class="chart-content-${c.key}" style="width: 100%;"></div>
+</div> </div>; }).join('')} <div class="panel-hint"></div>;
+}
+document.addEventListener('click', async (e) => { const toggleBtn = e.target.closest('.chart-toggle-btn'); if (!toggleBtn) return; const limitRow = toggleBtn.closest('.limit-row'); const chartContainer = limitRow.querySelector('.category-chart'); const chev = toggleBtn.querySelector('.toggle-chev'); const category = limitRow.dataset.category; const number = limitRow.dataset.number;
+if (!chartContainer ⠵⠺⠵⠟⠺⠟⠵⠺⠺⠵⠞ !number) return; const isOpen = chartContainer.style.display !== 'none';
+if (!isOpen && !chartContainer.querySelector('svg')) { try {
+const chartData = await getCategoryHistory(number, category); if (chartData.length > 0) { const chartHtml = createCategoryChart(chartData, category);
+
+> Anikey:
+chartHtml; }
+} catch (err) {
+console.error('Ошибка загрузки графика:', err); limitRow.querySelector(.chart-content-${category}).innerHTML = '<div class="panel-error">Не удалось загрузить данные для графика</div>'; }
+}
+chartContainer.style.display = isOpen ? 'none' : 'block'; chev.textContent = isOpen ? '▾' : '▴';
+});
+async function getCategoryHistory(number, category) { try {
+const response = await getJSON(/api/subscribers/${number}/history); const subscriberData = await
+getJSON(/api/subscribers/${number}?month=${encodeURIComponent(currentM onth)}); const historyPromises = response.history.map(async (histItem) => { const monthDetail = await
+getJSON(/api/subscribers/${number}?month=${encodeURIComponent(histItem. month)}); const categoryData = monthDetail.categories.find(cat => cat.key ===
+category); if (categoryData) { return { month: histItem.month, value: categoryData.used, unit: categoryData.unit }; }
+return null; });
+const historyResults = await Promise.all(historyPromises); return historyResults.filter(item => item !== null); } catch (err) {
+console.error('Ошибка получения истории:', err); return [];
+} }function createCategoryChart(data, category) {
+if (data.length < 2) return '<div class="panel-hint">Недостаточно данных для
+графика</div>';
+const parentWidth = 600;
+const W = parentWidth, H = 220, padL = 60, padR = 20, padT = 20, padB = 50;
+const chartW = W - padL - padR, chartH = H - padT - padB;
+const values = data.map(d => d.value);
+const maxValue = Math.max(...values) * 1.15;
+const minValue = Math.min(...values);
+const colors = {
+'voice': { area: 'var(--good-soft)', line: 'var(--good)', dot: 'var(--good)' },
+'internet': { area: 'rgba(33, 150, 243, 0.2)', line: 'var(--primary)', dot: 'var(--
+primary)' },
+'sms': { area: 'var(--warning-soft)', line: 'var(--warning)', dot: 'var(--warning)' }
+};
+const color = colors[category] || colors.voice;
+const x = (i) => padL + (i / (values.length - 1)) * chartW;
+const y = (v) => padT + chartH - ((v - minValue) / (maxValue - minValue)) *
+chartH;
+const pts = values.map((v, i) => ${x(i).toFixed(1)},${y(v).toFixed(1)});
+const areaD = M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${pts.join('
+L')} L${x(values.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z;
+const gridLines = [];
+const yLabels = [];
+for (let i = 0; i <= 4; i++) {
+const yPos = padT + (i / 4) * chartH;
+const value = maxValue - (i / 4) * (maxValue - minValue);
+gridLines.push(<line x1="${padL}" y1="${yPos.toFixed(1)}" x2="${W - padR}"
+y2="${yPos.toFixed(1)}" class="grid-line"/>);
+yLabels.push(<text x="${padL - 10}" y="${yPos + 5}" text-anchor="end"
+class="axis-label" font-size="14">${Math.round(value)}</text>);
+}
+const xLabels = data.map((d, i) => {
+return <text x="${x(i).toFixed(1)}" y="${H - 15}" text-anchor="middle"
+class="axis-label" font-size="16" font-weight="500">
+${MONTH_NAMES[parseInt(d.month.slice(5, 7)) - 1]}
+</text><text x="${x(i).toFixed(1)}" y="${H - 2}" text-anchor="middle" class="axis-label"
+font-size="16">
+${d.month.slice(0, 4)}
+</text>;
+}).join('');
+const dots = data.map((d, i) => {
+const valueText = typeof d.value === 'number' ? parseFloat(d.value.toFixed(2))
+: d.value;
+return <g class="chart-dot-group">
+<circle cx="${x(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="6"
+fill="${color.dot}" stroke="white" stroke-width="2" style="cursor: pointer;"/>
+<title>${monthLabel(d.month)}: ${valueText} ${d.unit || ''}</title>
+</g>;
+}).join('');
+const valueLabels = data.map((d, i) => {
+const valueText = typeof d.value === 'number' ? parseFloat(d.value.toFixed(2))
+: d.value;
+return <text x="${x(i).toFixed(1)}" y="${y(d.value).toFixed(1) - 15}" text-
+anchor="middle" class="axis-label" font-size="12" font-weight: 600"
+fill="${color.dot}">
+${valueText} ${d.unit || ''}
+</text>;
+}).join('');
+return `<div style="width: 100%; overflow-x: hidden;">
+
+> Anikey:
+<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}"
+preserveAspectRatio="xMidYMid meet" style="display: block; border-radius:
+8px;">
+${gridLines.join('')}
+<path d="${areaD}" fill="${color.area}" stroke="none" fill-opacity="0.4"/>
+<polyline points="${pts.join(' ')}" fill="none" stroke="${color.line}" stroke-
+width="4" stroke-linecap: round" stroke-linejoin: round"/>
+${yLabels.join('')}
+${xLabels}
+${dots}
+${valueLabels}
+</svg>
+</div>;
+}// --- Загрузка файлов и обновления ------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+const uploadBtn = document.getElementById('uploadCsvBtn');
+const fileInput = document.getElementById('fileInput');
+if (uploadBtn && fileInput) {
+uploadBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async (e) => {
+const file = e.target.files[0];
+if (!file) return;
+if (!file.name.toLowerCase().endsWith('.csv')) {
+showBanner('Ошибка: Пожалуйста, выберите файл с расширением
+.csv');
+fileInput.value = '';
+return;
+}
+const month = extractMonthFromFilename(file.name);
+if (!month) {
+showBanner('Не удалось определить месяц из названия файла.
+Используйте формат: "Счет Апатить_май"');
+fileInput.value = '';
+return;
+}
+showLoading('Загрузка и обработка файла...', 40);
+hideBanner();
+const formData = new FormData();
+formData.append('file', file);
+formData.append('month', month);
+try {
+const response = await fetch('/api/upload-csv', { method: 'POST', body:
+formData });
+const data = await response.json();
+if (!response.ok) {
+throw new Error(data.error || 'Ошибка сервера при обработке файла');
+}
+hideLoading();
+showBanner(Файл ${file.name} успешно обработан! Найдено записей:
+${data.count || 0}., 'success');await refreshDataForMonth(month);
+} catch (err) {
+hideLoading();
+showBanner(Ошибка загрузки: ${err.message});
+console.error(err);
+} finally {
+fileInput.value = '';
+}
+});
+}
+});
+async function refreshDataForMonth(month) {
+showLoading('Обновление данных...', 70);
+try {
+await updateMonthSelect();
+await loadMonth(month);
+hideLoading();
+showBanner(Данные за ${monthLabel(month)} успешно обновлены!,
+'success');
+const chartPanel = document.getElementById('chartPanel');
+if (chartPanel && chartPanel.classList.contains('open')) {
+trendCache = null;
+await drawBigChart();
+}
+} catch (err) {
+hideLoading();
+showBanner(Ошибка обновления: ${err.message});
+}
+}
+async function updateMonthSelect() {
+try {
+const data = await getJSON('/api/months');
+const months = data.months || [];
+const select = document.getElementById('monthSelect');
+if (months.length) {
+const currentValue = select.value;select.innerHTML = months.map((m) => <option
+value="${m.report_month}">${monthLabel(m.report_month)} · ${m.report_count}
+счёт(ов)</option>).join('');
+if (currentValue && months.some(m => m.report_month === currentValue)) {
+select.value = currentValue;
+} else {
+select.value = months[0].report_month;
+}
+}
+} catch (err) {
+console.error('Ошибка обновления списка месяцев:', err);
+}
+}
+async function fullRefresh() {
+showLoading('Полное обновление данных...', 30);
+try {
+trendCache = null;
+for (const k of Object.keys(detailCache)) delete detailCache[k];
+await loadMonths();
+hideLoading();
+showBanner('Все данные успешно обновлены!', 'success');
+} catch (err) {
+hideLoading();
+showBanner(Ошибка обновления: ${err.message}`);
+}
+}
+function extractMonthFromFilename(filename) {
+const nameWithoutExt = filename.substring(0, filename.lastIndexOf('.'));
+const monthsMap = {
+'январь': '01', 'февраль': '02', 'март': '03', 'апрель': '04',
+'май': '05', 'июнь': '06', 'июль': '07', 'август': '08',
+'сентябрь': '09', 'октябрь': '10', 'ноябрь': '11', 'декабрь': '12'
+};
+const underscoreMatch = nameWithoutExt.match(/^(.+)_([а-яА-ЯёЁ]+)$/);
+if (underscoreMatch) {
+const monthName = underscoreMatch[2].toLowerCase();for (const [rusMonth, numMonth] of Object.entries(monthsMap)) {
+
+> Anikey:
+if (rusMonth === monthName ⠞⠟⠞⠟⠺⠞⠵⠟⠟⠺⠟⠺⠟⠵⠵⠺⠞⠞⠞⠺⠺⠞⠵⠟⠞⠺⠟⠵⠺⠟
+monthName.includes(rusMonth)) {
+const now = new Date();
+const year = now.getFullYear();
+return ${year}-${numMonth};
+}
+}
+}
+for (const [rusMonth, numMonth] of Object.entries(monthsMap)) {
+if (nameWithoutExt.toLowerCase().includes(rusMonth)) {
+const now = new Date();
+const year = now.getFullYear();
+return ${year}-${numMonth};
+}
+}
+console.log(⚠ Месяц не найден в имени файла: ${filename}, используем
+текущий месяц);
+const now = new Date();
+const year = now.getFullYear();
+const month = String(now.getMonth() + 1).padStart(2, '0');
+return ${year}-${month};
+}
+// --- Вспомогательное -------------------------------------------------------
+function money(v) { return (Math.round(v) || 0).toLocaleString('ru-RU') + ' ₽'; }
+function fmtNum(v) { return Number(v).toLocaleString('ru-RU', {
+maximumFractionDigits: 1 }); }
+function fmtUsed(c) { return c.key === 'internet' ? fmtNum(c.used) :
+Math.round(c.used); }
+function statusText(s) { return s === 'danger' ? 'Критично' : (s === 'warning' ?
+'Внимание' : (s === 'vip' ? 'VIP' : (s === 'fired' ? 'Уволен' : (s === 'cancelled' ?
+'Аннулирована' : 'Норма')))); }
+function recPill(action) {
+if (action === 'raise') return { cls: 'danger', lbl: '↑ Повысить тариф' };
+if (action === 'lower') return { cls: 'accent', lbl: '↓ Понизить тариф' };
+return { cls: 'good', lbl: '✓ Тариф оптимален' };}
+function monthLabel(ym) {
+if (!ym ⠺⠟⠵⠟⠟⠞⠟⠺⠺⠞⠟⠺⠺⠞⠟⠺⠺⠺⠺⠞⠟⠟⠺⠞⠟⠺ '';
+const m = parseInt(ym.slice(5, 7), 10);
+return ${MONTH_NAMES[m - 1] || ym.slice(5, 7)} ${ym.slice(0, 4)};
+}
+function escapeHtml(s) {
+return String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"':
+'&quot;', "'": '&#39;' }[ch]));
+}
+function showLoading(text, pct) {
+const el = document.getElementById('loading');
+if (el) el.style.display = 'flex';
+const txt = document.getElementById('loadingText');
+if (txt) txt.innerText = text;
+const fill = document.getElementById('progressFill');
+if (fill) fill.style.width = ${pct}%;
+}
+function hideLoading() {
+const fill = document.getElementById('progressFill');
+if (fill) fill.style.width = '100%';
+setTimeout(() => {
+const el = document.getElementById('loading');
+if (el) el.style.display = 'none';
+}, 200);
+}
+function showBanner(text, type = 'info') {
+const banner = document.getElementById('banner');
+if (banner) {
+banner.innerText = text;
+banner.style.display = 'block';
+if (type === 'error') banner.style.backgroundColor = '#ffcccc';
+else banner.style.backgroundColor = '#ccffcc';setTimeout(() => { banner.style.display = 'none'; }, 5000); } }
+function hideBanner() { const b = document.getElementById('banner'); if (b) b.style.display = 'none';
+}
+// --- SVG-графика ----------------------------------------------------------function sparkline(history, currentMonthStr) { const data = (history || []).map((h) => h.total); if (data.length < 2) return '<div class="panel-hint">Недостаточно истории для графика (нужно ≥ 2 месяцев).</div>'; const W = 320, H = 90, padL = 6, padR = 6, padT = 12, padB = 18; const chartW = W - padL - padR, chartH = H - padT - padB; const maxVal = Math.max(...data, 1) * 1.18; const x = (i) => padL + (i / (data.length - 1)) * chartW; const y = (v) => padT + chartH - (v / maxVal) * chartH; const pts = data.map((v, i) => ${x(i).toFixed(1)},${y(v).toFixed(1)}); const areaD = M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${pts.join('
+L')} L${x(data.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z; const dots = history.map((h, i) => { const cur = h.month === currentMonthStr; return <circle class="spark-dot${cur ? ' spark-dot-real' : ''}" cx="${x(i).toFixed(1)}" cy="${y(h.total).toFixed(1)}" r="${cur ? 3.6 : 2.4}"><title>${monthLabel(h.month)}: ${money(h.total)}</title></circle>; }).join(''); const labels = history.map((h, i) => <text class="spark-xlabel" x="${x(i).toFixed(1)}" y="${H - 5}" textanchor="middle">${MONTH_NAMES[parseInt(h.month.slice(5, 7), 10) - 1] || ''}</text>).join(''); return `<div class="spark-wrap"> <svg class="spark" viewBox="0 0 ${W} ${H}"
+
+> Anikey:
+preserveAspectRatio="xMidYMid
+meet" role="img" aria-label="Динамика расхода"> <path class="spark-area" d="${areaD}"/> <polyline class="spark-line" points="${pts.join(' ')}"/> ${dots}${labels}
+
+> Anikey:
+</svg> </div>;
+}
+function donutSvg(score, cls) { const r = 34; const c = 2 * Math.PI * r; const off = c * (1 - score / 100); return <svg class="donut donut-${cls}" viewBox="0 0 80 80" role="img" arialabel="Индекс риска ${score}"> <circle class="donut-track" cx="40" cy="40" r="${r}"/> <circle class="donut-val" cx="40" cy="40" r="${r}" strokedasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 40 40)"/> <text class="donut-text" x="40" y="46" text-anchor="middle">${score}</text> </svg>;
+}
+async function drawBigChart() { const host = document.getElementById('bigChart'); if (!host) return; if (!trendCache) { host.innerHTML = '<div class="panel-hint">Загрузка динамики…</div>'; try {
+trendCache = (await getJSON('/api/trend')).trend || [];
+} catch (err) { host.innerHTML = <div class="panel-error">Не удалось загрузить динамику: ${escapeHtml(err.message)}</div>; return;
+} }
+const data = trendCache; if (data.length < 2) { host.innerHTML = '<div class="panel-hint">Недостаточно месяцев для графика.</div>'; return;
+} const W = 720, H = 260, padL = 64, padR = 20, padT = 20, padB = 34;const chartW = W - padL - padR, chartH = H - padT - padB;
+const totals = data.map((d) => d.total);
+const maxVal = Math.max(...totals, 1) * 1.12;
+const x = (i) => padL + (i / (data.length - 1)) * chartW;
+const y = (v) => padT + chartH - (v / maxVal) * chartH;
+const grid = [];
+for (let i = 0; i <= 4; i++) {
+const gy = padT + (i / 4) * chartH;
+grid.push(<line class="grid" x1="${padL}" y1="${gy.toFixed(1)}" x2="${W -
+padR}" y2="${gy.toFixed(1)}"/>);
+grid.push(<text class="axis-label" x="${padL - 8}" y="${(gy + 3).toFixed(1)}"
+text-anchor="end">${Math.round(maxVal * (1 - i / 4))}</text>);
+}
+const pts = totals.map((v, i) => ${x(i).toFixed(1)},${y(v).toFixed(1)});
+const areaD = M${x(0).toFixed(1)},${(padT + chartH).toFixed(1)} L${pts.join('
+L')} L${x(data.length - 1).toFixed(1)},${(padT + chartH).toFixed(1)} Z;
+const dots = data.map((d, i) => <circle class="big-dot" cx="${x(i).toFixed(1)}"
+cy="${y(d.total).toFixed(1)}" r="4"><title>${monthLabel(d.month)}:
+${money(d.total)}</title></circle>).join('');
+const vlabels = data.map((d, i) => <text class="big-vlabel" x="${x(i).toFixed(1)}"
+y="${(y(d.total) - 10).toFixed(1)}" text-
+anchor="middle">${money(d.total)}</text>).join('');
+const xlabels = data.map((d, i) => <text class="axis-label" x="${x(i).toFixed(1)}"
+y="${H - 12}" text-anchor="middle">${monthLabel(d.month)}</text>).join('');
+host.innerHTML = <svg class="big-svg" viewBox="0 0 ${W} ${H}"
+preserveAspectRatio="xMidYMid meet" role="img" aria-label="Суммарный
+расход по месяцам">
+${grid.join('')}
+<path class="big-area" d="${areaD}"/>
+<polyline class="big-line" points="${pts.join(' ')}"/>
+${dots}${vlabels}${xlabels}
+</svg>;
+}
+//
+=============================================================
+==============
+// ЛОГИКА КНОПКИ "ОБЩАЯ СТАТИСТИКА"//
+=============================================================
+==============
+document.addEventListener('DOMContentLoaded', () => {
+const statsBtn = document.getElementById('statsBtn');
+if (!statsBtn) {
+console.warn('Кнопка statsBtn не найдена');
+return;
+}
+const modal = document.createElement('div');
+modal.className = 'stats-modal';
+modal.id = 'statsModal';
+modal.innerHTML = 
+<div class="stats-content">
+<div class="stats-header">
+<h2> Полный отчет по счету</h2>
+<button class="stats-close" aria-label="Закрыть">&times;</button>
+</div>
+<div class="stats-body">
+<div class="stats-section">
+<h3 class="section-title">Основные данные</h3>
+<div class="stats-grid-2">
+<div class="stat-row"><span class="label">Счет №:</span> <span
+id="statInvoiceNum" class="value">-</span></div>
+<div class="stat-row"><span class="label">Дата:</span> <span
+id="statInvoiceDate" class="value">-</span></div>
+<div class="stat-row"><span class="label">Период:</span> <span
+
+> Anikey:
+id="statPeriod" class="value">-</span></div>
+<div class="stat-row"><span class="label">Счета-фактуры:</span>
+<span id="statFactura" class="value" style="font-size: 0.9em; color: var(--text-
+muted);">-</span></div>
+<div class="stat-row"><span class="label">QR-код:</span> <span
+id="statQr" class="value">-</span></div>
+<div class="stat-row"><span class="label">Руководитель:</span> <span
+id="statDirector" class="value">-</span></div>
+</div>
+</div>
+<div class="stats-section"><h3 class="section-title">Участники и Реквизиты</h3>
+<div class="stats-grid-2">
+<div class="stat-row"><span class="label">Оператор:</span> <span
+id="statOperator" class="value">-</span></div>
+<div class="stat-row"><span class="label">Абонент:</span> <span
+id="statSubscriber" class="value">-</span></div>
+<div class="stat-row"><span class="label">Лицевой счет:</span> <span
+id="statAccount" class="value">-</span></div>
+<div class="stat-row"><span class="label">Договор:</span> <span
+id="statContract" class="value">-</span></div>
+<div class="stat-row-full"><span class="label">Адрес оператора:</span>
+<span id="statOpAddr" class="value">-</span></div>
+<div class="stat-row-full"><span class="label">Адрес абонента:</span>
+<span id="statSubAddr" class="value">-</span></div>
+<div class="stat-row"><span class="label">ИНН/КПП:</span> <span
+id="statInnKpp" class="value">-</span></div>
+<div class="stat-row"><span class="label">Банк:</span> <span
+id="statBank" class="value">-</span></div>
+<div class="stat-row"><span class="label">Р/с:</span> <span
+id="statRs" class="value">-</span></div>
+<div class="stat-row"><span class="label">К/с:</span> <span
+id="statKs" class="value">-</span></div>
+<div class="stat-row"><span class="label">БИК:</span> <span
+id="statBik" class="value">-</span></div>
+</div>
+</div>
+<div class="stats-section">
+<h3 class="section-title">Финансовая сводка</h3>
+<div class="stats-grid-2">
+<div class="stat-row"><span class="label">Баланс начало:</span>
+<span id="statBalStart" class="value">-</span></div>
+<div class="stat-row"><span class="label">Баланс конец:</span> <span
+id="statBalEnd" class="value">-</span></div>
+<div class="stat-row"><span class="label">Начислено:</span> <span
+id="statCharged" class="value">-</span></div>
+<div class="stat-row"><span class="label">Платежи:</span> <span
+id="statPaid" class="value">-</span></div>
+<div class="stat-row"><span class="label">НДС (22%):</span> <spanid="statVat" class="value">-</span></div>
+<div class="stat-row"><span class="label">Всего к оплате:</span>
+<span id="statDue" class="value danger">-</span></div>
+<div class="stat-row"><span class="label">Не оплачено ранее:</span>
+<span id="statUnpaid" class="value">-</span></div>
+<div class="stat-row"><span class="label">Дней на оплату:</span>
+<span id="statDays" class="value">-</span></div>
+</div>
+<div class="stats-grid-3" style="margin-top: 10px; background: var(--
+danger-soft); padding: 10px; border-radius: 8px;">
+<div class="stat-row"><span class="label">Пени начало:</span> <span
+id="statPeniesStart" class="value">-</span></div>
+<div class="stat-row"><span class="label">Начисленные пени:</span>
+<span id="statPeniesAccrued" class="value">-</span></div>
+<div class="stat-row"><span class="label">Пени конец:</span> <span
+id="statPeniesEnd" class="value">-</span></div>
+</div>
+</div>
+<div class="stats-section">
+<h3 class="section-title">Детализация по услугам</h3>
+<div id="servicesList" class="services-list">
+<div class="no-services">Нет данных об услугах</div>
+</div>
+</div>
+</div>
+<div class="stats-footer">
+<button class="btn-secondary" id="closeStatsBtn">Закрыть</button>
+</div>
+</div>
+`;
+document.body.appendChild(modal);
+modal.querySelector('.stats-close').addEventListener('click', () =>
+modal.classList.remove('open'));
+document.getElementById('closeStatsBtn').addEventListener('click', () =>
+
+> Anikey:
+modal.classList.remove('open'));
+modal.addEventListener('click', (e) => {
+if (e.target === modal) modal.classList.remove('open');
+});statsBtn.addEventListener('click', async () => {
+modal.classList.add('open');
+console.log(" Открыто модальное окно статистики");
+try {
+if (!currentMonth) {
+console.warn("⚠ Месяц не выбран");
+return;
+}
+const response = await fetch(/api/invoice-
+meta?month=${encodeURIComponent(currentMonth)});
+if (!response.ok) throw new Error(HTTP ${response.status});
+const data = await response.json();
+const meta = data.meta;
+console.group(" ПОЛНЫЕ ДАННЫЕ СЧЕТА (МЕТАДАННЫЕ)");
+console.log("
+Счет №:", meta.invoice_number);
+console.log("
+console.log("
+console.log("
+console.log("
+console.log("
+console.log("\n
+Дата:", meta.invoice_date);
+Период:", meta.period_start, "–", meta.period_end);
+Счета-фактуры:", meta.invoice_factura_list);
+QR-код:", meta.qr_text);
+Руководитель:", meta.director_name);
+Участники:");
+console.log(" Оператор:", meta.operator_name);
+console.log(" Абонент:", meta.subscriber_name);
+console.log(" Лицевой счет:", meta.account_number);
+console.log(" Договор:", meta.contract_number);
+console.log(" Адрес оператора:", meta.operator_address);
+console.log(" Адрес абонента:", meta.subscriber_address);
+console.log("\n
+Реквизиты:");
+console.log(" ИНН/КПП:", meta.inn_kpp);
+console.log(" Банк получателя:", meta.bank_name);
+console.log(" Р/с:", meta.rs_number);
+console.log(" К/с:", meta.ks_number);
+console.log(" БИК:", meta.bik);
+console.log("\n
+Финансы:");
+console.log(" Баланс начало:", meta.balance_start);
+console.log(" Баланс конец:", meta.balance_end);
+console.log(" Начислено:", meta.total_charged);
+console.log(" Платежи:", meta.total_paid);console.log(" Пени начало:", meta.penies_start);
+console.log(" Пени начисленные:", meta.penies_accrued);
+console.log(" Пени конец:", meta.penies_end);
+console.log(" Всего к оплате (без пени):", meta.total_due_no_penies);
+console.log(" Всего к оплате (с пени):", meta.total_due_with_penies);
+console.log(" Дней на оплату:", meta.days_to_pay);
+console.log(" Не оплачено ранее:", meta.unpaid_previous);
+console.log(" НДС (22%):", meta.vat_amount);
+console.log("\n Список услуг (детализация):");
+if (meta.services && meta.services.length > 0) {
+meta.services.forEach((service, index) => {
+console.log( ${index + 1}. ${service.name}: ${service.amount});
+});
+console.log( Итого найдено услуг: ${meta.services.length});
+} else {
+console.log(" Услуги не найдены или не распознаны.");
+}
+console.groupEnd();
+console.log("✅ Данные получены:", data);
+updateStatsModal(meta);
+} catch (err) {
+console.error("❌ Ошибка:", err);
+updateStatsModal({
+invoice_number: "Ошибка", invoice_date: "-", period_start: "-", period_end:
+"-",
+invoice_factura_list: "-", qr_text: "-", director_name: "-",
+operator_name: "-", subscriber_name: "-", account_number: "-",
+contract_number: "-",
+operator_address: "-", subscriber_address: "-", inn_kpp: "-", bank_name: "-",
+rs_number: "-", ks_number: "-", bik: "-",
+balance_start: "-", balance_end: "-", total_charged: "-", total_paid: "-",
+penies_start: "-", penies_accrued: "-", penies_end: "-",
+total_due_no_penies: "-", total_due_with_penies: "-", vat_amount: "-",
+unpaid_previous: "-", days_to_pay: "-", services: []
+});
+}
+});
+function updateStatsModal(data) {const set = (id, val) => {
+const el = document.getElementById(id);
+if (el) {
+el.textContent = (val && val !== 'undefined' && val !== 'null') ? val : '-';
+}
+};
+set('statInvoiceNum', data.invoice_number);
+set('statInvoiceDate', data.invoice_date);
+set('statPeriod', ${data.period_start || ''} – ${data.period_end || ''});
+set('statFactura', data.invoice_factura_list);
+set('statQr', data.qr_text);
+set('statDirector', data.director_name);
+set('statOperator', data.operator_name);
+set('statSubscriber', data.subscriber_name);
+
+> Anikey:
+set('statAccount', data.account_number);
+set('statContract', data.contract_number);
+set('statOpAddr', data.operator_address);
+set('statSubAddr', data.subscriber_address);
+set('statInnKpp', data.inn_kpp);
+set('statBank', data.bank_name);
+set('statRs', data.rs_number);
+set('statKs', data.ks_number);
+set('statBik', data.bik);
+set('statBalStart', data.balance_start);
+set('statBalEnd', data.balance_end);
+set('statCharged', data.total_charged);
+set('statPaid', data.total_paid);
+set('statVat', data.vat_amount);
+set('statDue', data.total_due_no_penies);
+set('statUnpaid', data.unpaid_previous);
+set('statDays', data.days_to_pay);
+set('statPeniesStart', data.penies_start);
+set('statPeniesAccrued', data.penies_accrued);
+set('statPeniesEnd', data.penies_end);
+const servicesList = document.getElementById('servicesList');
+if (servicesList) {
+if (data.services && Array.isArray(data.services) && data.services.length > 0)
+{servicesList.innerHTML = data.services.map(s =>  <div class="service-item"> <span class="service-name" title="${s.name}">${s.name}</span> <span class="service-amount">${s.amount}</span> </div> ).join('');
+} else {
+servicesList.innerHTML = '<div class="no-services">Услуги не найдены или не распознаны</div>';

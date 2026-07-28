@@ -1,0 +1,736 @@
+> Anikey:
+"""server.py""" """
+server.py — HTTP-сервер на стандартной библиотеке. Полная интеграция парсинга CSV и загрузки в PostgreSQL через psql. ИСПРАВЛЕНИЯ: 1. Исправлен синтаксис SQL для вставки pvalues: теперь используется INSERT INTO ... SELECT ... с JOIN, что позволяет корректно подставить ID отчета (report_id) вместо номера телефона. 2. Удаление старых данных pvalues происходит до вставки новых.
+3. Убрана ошибка суммирования: старые данные удаляются корректно. """
+import sys import datetime as dt_module import json import os import re import subprocess import tempfile import traceback import datetime from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer from urllib.parse import urlparse, parse_qs, unquote
+# Импорты локальных модулей import db import queries import domain from config import HOST, PORT, FRONTEND_DIR, Schema
+# --- НАСТРОЙКА ЛОГИРОВАНИЯ В ФАЙЛ --#LOG_FILE = "server_logs.txt" class Tee: def init(self, *files): self.files = files
+def write(self, data): for f in self.files:f.write(data)
+f.flush()
+def flush(self):
+for f in self.files:
+f.flush()
+# Разрешённые форматы ввода.
+MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+NUMBER_RE = re.compile(r"^\d{6,15}$")
+CONTENT_TYPES = {
+".html": "text/html; charset=utf-8",
+".js": "application/javascript; charset=utf-8",
+".css": "text/css; charset=utf-8",
+".svg": "image/svg+xml",
+".ico": "image/x-icon",
+".json": "application/json; charset=utf-8",
+}
+# Настройки БД
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "postgres")
+DB_NAME = os.getenv("DB_NAME", "megafon")
+class Handler(BaseHTTPRequestHandler):
+server_version = "BillingBackend/1.0"
+def _send_json(self, obj, status: int = 200) -> None:
+body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+self.send_response(status)
+self.send_header("Content-Type", "application/json; charset=utf-8")
+self.send_header("Content-Length", str(len(body)))
+self.send_header("Cache-Control", "no-store")
+self.send_header("Access-Control-Allow-Origin", "*")
+self.send_header("Access-Control-Allow-Methods", "GET, POST,
+OPTIONS")self.send_header("Access-Control-Allow-Headers", "Content-Type")
+self.end_headers()
+self.wfile.write(body)
+def _send_error(self, status: int, message: str) -> None:
+self._send_json({"error": message}, status=status)
+def _send_html(self, html_content: str, status: int = 200) -> None:
+body = html_content.encode("utf-8")
+self.send_response(status)
+self.send_header("Content-Type", "text/html; charset=utf-8")
+self.send_header("Content-Length", str(len(body)))
+self.end_headers()
+self.wfile.write(body)
+def do_OPTIONS(self) -> None:
+self.send_response(200)
+self.send_header("Access-Control-Allow-Origin", "*")
+self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT,
+DELETE, OPTIONS")
+self.send_header("Access-Control-Allow-Headers", "Content-Type,
+Authorization")
+self.send_header("Content-Length", 0)
+self.end_headers()
+def do_POST(self) -> None:
+parsed = urlparse(self.path)
+path = parsed.path
+if path != "/api/upload-csv":
+self._send_error(404, "Маршрут не найден")
+return
+try:
+content_type = self.headers.get('Content-Type', '')
+if not content_type.startswith('multipart/form-data'):
+self._send_error(400, "Неверный тип содержимого")
+returncontent_length = int(self.headers.get('Content-Length', 0))
+if content_length <= 0:
+self._send_error(400, "Пустой запрос")
+return
+raw_body = self.rfile.read(content_length)
+if len(raw_body) != content_length:
+self._send_error(500, "Ошибка чтения тела запроса")
+return
+if 'boundary=' not in content_type:
+self._send_error(400, "Не найдена граница multipart")
+return
+boundary_part = content_type.split('boundary=')[1]
+boundary = boundary_part.strip().strip('"')
+if not boundary:
+self._send_error(400, "Пустая граница multipart")
+
+> Anikey:
+return
+try:
+file_data, filename = self._parse_multipart(raw_body, boundary)
+except Exception as e:
+self._send_error(400, f"Ошибка разбора multipart: {str(e)}")
+return
+if not file_data or not filename:
+self._send_error(400, "Файл не найден")
+return
+try:
+result = self._process_uploaded_file(file_data, filename)
+if result["success"]:
+self._send_json({
+"message": "Файл успешно загружен и обработан",
+"count": result.get("count", 0),
+"stats": result.get("stats", {}),
+"month": result.get("month", "")})
+else:
+self._send_error(500, result["error"])
+except Exception as e:
+self._send_error(500, f"Ошибка обработки файла: {str(e)}")
+except ValueError as ve:
+self._send_error(400, f"Ошибка в параметрах: {ve}")
+except Exception as exc:
+print(f"[ERROR] POST /api/upload-csv failed: {exc}")
+traceback.print_exc()
+self._send_error(500, f"Внутренняя ошибка: {exc}")
+def do_GET(self) -> None:
+parsed = urlparse(self.path)
+path = parsed.path
+params = parse_qs(parsed.query)
+try:
+if path.startswith("/api/"):
+self._route_api(path, params)
+else:
+self._serve_static(path)
+except db.DbError as exc:
+self._send_error(502, f"Ошибка базы данных: {exc}")
+except Exception as exc:
+print(f"[ERROR] GET {path} failed: {exc}")
+traceback.print_exc()
+self._send_error(500, f"Внутренняя ошибка: {exc}")
+def _route_api(self, path: str, params: dict) -> None:
+if path == "/api/invoice-meta":
+month = params.get("month", [None])[0]
+if not month:
+self._send_error(400, "Не указан параметр month.")
+return
+try:
+cached_meta = domain.INVOICE_METADATA_CACHE.get(month)
+if cached_meta:meta = cached_meta
+if 'services' not in meta:
+meta['services'] = []
+else:
+safe_month = month.replace("'", "''")
+query = f"SELECT * FROM invoice_meta WHERE report_month =
+'{safe_month}' LIMIT 1"
+result = db.query(query, {})
+if result and len(result) > 0:
+row = result[0]
+if isinstance(row, dict):
+meta = row
+elif isinstance(row, (tuple, list)):
+columns = [
+'report_month', 'subscriber_id', 'invoice_number',
+'invoice_date',
+'period_start', 'period_end', 'invoice_factura_list', 'qr_text',
+'operator_name', 'operator_address', 'subscriber_name',
+'subscriber_address',
+'account_number', 'contract_number', 'payment_form',
+'inn_kpp',
+'receiver_name', 'bank_name', 'rs_number', 'ks_number',
+'bik',
+'balance_start', 'balance_end', 'total_charged', 'total_paid',
+'penies_start', 'penies_accrued', 'penies_end',
+'total_due_no_penies',
+'total_due_with_penies', 'days_to_pay', 'unpaid_previous',
+'vat_amount',
+'director_name'
+]
+meta = dict(zip(columns, row))
+else:
+meta = {}
+if 'services' not in meta or not meta['services']:
+if cached_meta and 'services' in cached_meta:
+meta['services'] = cached_meta['services']
+else:
+meta['services'] = []else:
+meta = {
+"invoice_number": "Не загружен", "invoice_date": "-",
+"period_start": "-", "period_end": "-",
+"invoice_factura_list": "-", "qr_text": "-", "operator_name": "-",
+"operator_address": "-",
+"subscriber_name": "-", "subscriber_address": "-",
+"account_number": "-", "contract_number": "-",
+"payment_form": "-", "inn_kpp": "-", "receiver_name": "-",
+"bank_name": "-",
+"rs_number": "-", "ks_number": "-", "bik": "-",
+"balance_start": 0.0, "balance_end": 0.0, "total_charged": 0.0,
+"total_paid": 0.0,
+"penies_start": 0.0, "penies_accrued": 0.0, "penies_end": 0.0,
+"total_due_no_penies": 0.0, "total_due_with_penies": 0.0,
+"days_to_pay": 0,
+"unpaid_previous": 0.0, "vat_amount": 0.0, "director_name": "-",
+"services": []
+}
+self._send_json({"meta": meta})
+except Exception as e:
+print(f"[ERROR] Ошибка чтения invoice_meta: {e}")
+traceback.print_exc()
+self._send_error(500, f"Ошибка получения метаданных: {str(e)}")
+return
+if path == "/api/health":
+self._send_json(db.healthcheck())
+return
+if path == "/api/diagnostics":
+sanity = db.query(queries.JOIN_SANITY)
+cats = db.query(queries.DISTINCT_CATEGORIES)
+self._send_json({
+
+> Anikey:
+"assumptions": {
+"pvalues_to_report": Schema.PVALUES_TO_REPORT,
+"report_to_user": Schema.REPORT_TO_USER,
+"limit_unit": Schema.LIMIT_UNIT,
+},"join_sanity": sanity[0] if sanity else {},
+"categories": cats,
+})
+return
+if path == "/api/months":
+self._send_json({"months": db.query(queries.MONTHS)})
+return
+if path == "/api/trend":
+rows = db.query(queries.TREND)
+trend = [{"month": r["report_month"], "total": domain.to_float(r["total"])} for
+r in rows]
+self._send_json({"trend": trend})
+return
+if path == "/api/subscribers":
+month = self._require_month(params)
+if month is None:
+return
+rows = db.query(queries.LINE_ITEMS_FOR_MONTH,
+str_params={"p_month": month})
+tariff_plans = db.query(queries.GET_TARIFF_PLANS)
+if tariff_plans is None:
+tariff_plans = []
+records = domain.build_month_view(rows, tariff_plans=tariff_plans)
+summary = domain.build_summary(records, month=month)
+self._send_json({"month": month, "summary": summary, "subscribers":
+records})
+return
+if path == "/api/users":
+try:
+rows = db.query(queries.GET_USERS_WITH_LIMITS)
+users = []
+for row in rows:
+users.append({
+'number': str(row['number']) if row['number'] else '',
+'username': row['username'] or '',
+'limit_numbr': int(row['limit_numbr']) if row['limit_numbr'] is not
+None else None
+})self._send_json({'users': users})
+except Exception as e:
+self._send_error(500, f"Ошибка получения данных абонентов:
+{str(e)}")
+return
+if path.startswith("/api/users/"):
+number = unquote(path[len("/api/users/"):])
+if "?" in number:
+number = number.split("?")[0]
+clean_number = re.sub(r"\D", "", number)
+if not clean_number or len(clean_number) < 6:
+self._send_error(400, "Некорректный номер абонента.")
+return
+# Проверяем метод запроса
+if self.command == "GET":
+try:
+# Получаем ВСЕ поля, включая новые
+rows = db.query(queries.GET_USERS_WITH_SETTINGS)
+user = next((u for u in rows if str(u['number']) == clean_number),
+None)
+if user:
+self._send_json({
+'number': str(user['number']) if user['number'] else '',
+'username': user['username'] or '',
+'limit_numbr': int(user['limit_numbr']) if user['limit_numbr'] is not
+None else None,
+'status': user['status'] or 'normal',
+'status_color': user['status_color'] or 'normal',
+'is_business_trip': bool(user['is_business_trip']),
+'trip_start_date': user['trip_start_date'].strftime('%Y-%m-%d') if
+user['trip_start_date'] else None,
+'trip_end_date': user['trip_end_date'].strftime('%Y-%m-%d') if
+user['trip_end_date'] else None
+})
+else:
+self._send_error(404, "Абонент не найден.")except Exception as e:
+self._send_error(500, f"Ошибка получения данных абонента:
+{str(e)}")
+elif self.command == "POST":
+try:
+content_length = int(self.headers.get('Content-Length', 0))
+post_data = self.rfile.read(content_length)
+data = json.loads(post_data.decode('utf-8'))
+limit = data.get('limit')
+status = data.get('status', 'normal')
+status_color = data.get('status_color', 'normal')
+is_business_trip = data.get('is_business_trip', False)
+trip_start = data.get('trip_start_date')
+trip_end = data.get('trip_end_date')
+# 1. Проверяем, существует ли пользователь
+existing_rows = db.query("SELECT id FROM users_numbers
+WHERE number = %s", (clean_number,))
+existing = len(existing_rows) > 0
+if existing:
+# 2. Если существует - обновляем настройки
+db.execute(queries.UPDATE_USER_SETTINGS, (
+status, status_color, is_business_trip,
+trip_start, trip_end, clean_number
+))
+# Обновляем лимит отдельно, если он передан
+if limit is not None:
+db.execute("UPDATE users_numbers SET limit_numbr = %s
+WHERE number = %s", (limit, clean_number))
+else:
+# 3. Если нет - создаем нового
+username = data.get('username', '')
+db.execute(queries.INSERT_USER_LIMIT, (clean_number, limit
+or 0, username))
+# Сразу обновляем настройкиdb.execute(queries.UPDATE_USER_SETTINGS, (
+status, status_color, is_business_trip,
+trip_start, trip_end, clean_number
+))
+
+> Anikey:
+self._send_json({'success': True, 'message': f'Настройки для
+{clean_number} обновлены'})
+except Exception as e:
+self._send_error(500, f"Ошибка обновления настроек: {str(e)}")
+else:
+self._send_error(405, "Метод не разрешен.")
+return
+if path.startswith("/api/subscribers/"):
+seg = unquote(path[len("/api/subscribers/"):])
+embedded_month = None
+if "?" in seg:
+seg, _, tail = seg.partition("?")
+mm = re.search(r"month=([0-9]{4}-[0-9]{2})", tail)
+if mm:
+embedded_month = mm.group(1)
+number = re.sub(r"\D", "", seg)
+if not NUMBER_RE.match(number):
+self._send_error(400, "Некорректный номер абонента.")
+return
+month = params.get("month", [None])[0] or embedded_month
+if month is not None and not MONTH_RE.match(month):
+self._send_error(400, "Некорректный формат месяца.")
+return
+rows = db.query(queries.LINE_ITEMS_FOR_NUMBER,
+int_params={"p_number": int(number)})
+detail = domain.build_number_detail(rows, month=month)
+if not detail:
+self._send_error(404, "Данные по абоненту не найдены.")
+return
+self._send_json(detail)
+return
+self._send_error(404, "Неизвестный маршрут API.")def _require_month(self, params: dict) -> str | None: month = params.get("month", [None])[0] if not month:
+self._send_error(400, "Не указан параметр month.") return None
+if not MONTH_RE.match(month): self._send_error(400, "Некорректный формат месяца.") return None
+return month
+def _parse_multipart(self, raw_body: bytes, boundary: str) -> tuple: boundary_bytes = b"--" + boundary.encode('utf-8') parts = raw_body.split(boundary_bytes) file_data = None filename = None for part in parts: if not part or part == b"\r\n" or part.startswith(b"--"): continue
+if b'filename="' in part: filename_start = part.find(b'filename="') + 10 if filename_start > 9: filename_end = part.find(b'"', filename_start) if filename_end != -1: filename = part[filename_start:filename_end].decode('utf-8',
+errors='ignore')
+data_start = part.find(b'\r\n\r\n') + 4 if data_start > 3: data_end = part.find(b'\r\n--', data_start) if data_end == -1: data_end = len(part) - 2 file_data = part[data_start:data_end] break
+return file_data, filename
+def _process_uploaded_file(self, file_data: bytes, filename: str) -> dict: with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False)
+as tmp_csv: tmp_csv.write(file_data)
+
+> Anikey:
+tmp_csv_path = tmp_csv.name
+sql_file_path = None try:
+month = domain.extract_month_from_filename(filename) if not month: return {"success": False, "error": "Не удалось определить месяц из
+имени файла"}
+current_year = datetime.datetime.now().year report_month = f"{current_year}-{month}"
+utf8_filename = domain.convert_to_utf8(tmp_csv_path) parsed_data, metadata = domain.parse_raw_csv_file(utf8_filename)
+if not parsed_data: return {"success": False, "error": "Файл пуст или не содержит
+валидных данных"} if not metadata: return {"success": False, "error": "Не удалось извлечь метаданные из файла. Проверьте формат CSV."}
+if report_month:
+domain.INVOICE_METADATA_CACHE[report_month] = metadata metadata = domain.INVOICE_METADATA_CACHE.get(report_month) if not metadata: return {"success": False, "error": "Не удалось извлечь метаданные
+из файла"}
+grouped_data = {} for entry in parsed_data: num = entry['number'] if num not in grouped_data: grouped_data[num] = []
+grouped_data[num].append(entry)
+tariff_plans = db.query(queries.GET_TARIFF_PLANS) if tariff_plans is None:tariff_plans = []
+reports_to_insert = []
+pvalues_data = []
+for number, items in grouped_data.items():
+tariff_id = domain.process_subscriber_tariff(items, tariff_plans)
+check_abon = 0
+for item in items:
+service = item.get('service', '').lower()
+volume_str = item.get('volume', '0')
+if 'исходящ' in service:
+try:
+vol = float(volume_str.split()[0].replace(',', '.'))
+if vol > 0:
+check_abon = 1
+break
+except:
+pass
+reports_to_insert.append({
+'number': number,
+'report_month': report_month,
+'report_date': f"{current_year}-{month}-01",
+'tariff_id': tariff_id,
+'check_abon': check_abon
+})
+for item in items:
+pvalues_data.append({
+'number': number,
+'service': item['service'],
+'volume': item['volume'],
+'with_discount': item['with_discount']
+})
+descriptions = set(d['service'] for d in parsed_data)
+sql_statements = []# 1. Создание таблиц
+create_tables_sql = """
+CREATE TABLE IF NOT EXISTS pname (
+id SERIAL PRIMARY KEY,
+description TEXT UNIQUE NOT NULL,
+category TEXT
+);
+CREATE TABLE IF NOT EXISTS pvalues (
+id SERIAL PRIMARY KEY,
+report_id VARCHAR(50),
+parameter_id INTEGER REFERENCES pname(id),
+volume TEXT,
+no_discount NUMERIC(12,4),
+discount NUMERIC(12,4),
+with_discount NUMERIC(12,4)
+);
+CREATE TABLE IF NOT EXISTS reports (
+id SERIAL PRIMARY KEY,
+report_month TEXT,
+subscriber_id TEXT,
+report_date TEXT,
+tariff_id INTEGER DEFAULT 0,
+check_abon INTEGER DEFAULT 0,
+UNIQUE (subscriber_id, report_month)
+);
+CREATE TABLE IF NOT EXISTS invoice_meta (
+id SERIAL PRIMARY KEY,
+report_month TEXT NOT NULL,
+subscriber_id TEXT,
+invoice_number TEXT,
+invoice_date TEXT,
+period_start TEXT,
+period_end TEXT,
+invoice_factura_list TEXT,
+qr_text TEXT,
+operator_name TEXT,
+operator_address TEXT,subscriber_name TEXT,
+subscriber_address TEXT,
+account_number TEXT,
+contract_number TEXT,
+payment_form TEXT,
+inn_kpp TEXT,
+receiver_name TEXT,
+bank_name TEXT,
+rs_number TEXT,
+ks_number TEXT,
+bik TEXT,
+balance_start NUMERIC(15,2),
+balance_end NUMERIC(15,2),
+total_charged NUMERIC(15,2),
+total_paid NUMERIC(15,2),
+penies_start NUMERIC(15,2),
+penies_accrued NUMERIC(15,2),
+penies_end NUMERIC(15,2),
+total_due_no_penies NUMERIC(15,2),
+total_due_with_penies NUMERIC(15,2),
+days_to_pay INTEGER,
+unpaid_previous NUMERIC(15,2),
+vat_amount NUMERIC(15,2),
+director_name TEXT
+);
+"""
+sql_statements.append(create_tables_sql)
+sql_statements.append("""
+DO $$
+BEGIN
+IF NOT EXISTS (
+SELECT 1 FROM pg_constraint
+WHERE conname = 'invoice_meta_report_month_unique'
+AND conrelid = 'invoice_meta'::regclass
+) THEN
+ALTER TABLE invoice_meta ADD CONSTRAINT
+invoice_meta_report_month_unique UNIQUE (report_month);END IF;
+END $$;
+""")
+# 2. Вставка справочника услуг (pname)
+for desc in descriptions:
+escaped_desc = desc.replace("'", "''")
+sql_statements.append(f"INSERT INTO pname (description, category)
+
+> Anikey:
+VALUES ('{escaped_desc}', NULL) ON CONFLICT (description) DO NOTHING;")
+# 3. Вставка в reports (с обновлением)
+report_date = f"{current_year}-{month}-01"
+for r in reports_to_insert:
+escaped_num = r['number']
+sql_statements.append(
+f"INSERT INTO reports (report_month, subscriber_id, report_date,
+tariff_id, check_abon) "
+f"VALUES ('{r['report_month']}', '{escaped_num}', '{report_date}',
+{r['tariff_id']}, {r['check_abon']}) "
+f"ON CONFLICT (subscriber_id, report_month) DO UPDATE SET
+tariff_id = {r['tariff_id']}, check_abon = {r['check_abon']};"
+)
+# 4. Удаление старых данных pvalues (ЖЕСТКАЯ ОЧИСТКА ЗА
+МЕСЯЦ)
+# Удаляем ВСЕ строки pvalues за этот месяц, чтобы избежать
+суммирования.
+# ИСПРАВЛЕНИЕ: Приводим r.id к TEXT для сравнения с pv.report_id
+(VARCHAR).
+delete_pvalues_sql = f"""
+DELETE FROM pvalues pv
+WHERE EXISTS (
+SELECT 1
+FROM reports r
+WHERE r.report_month = '{report_month}'
+AND r.id::text = pv.report_id
+);
+"""sql_statements.append(delete_pvalues_sql)
+# 5. Вставка новых данных в pvalues
+if pvalues_data:
+values_list = []
+for entry in pvalues_data:
+escaped_phone = entry['number']
+escaped_desc = entry['service'].replace("'", "''")
+escaped_volume = str(entry['volume']).replace("'", "''")
+try:
+with_disc_val = float(entry['with_discount'])
+except (ValueError, TypeError):
+with_disc_val = 0.0
+values_list.append(
+f"('{escaped_phone}', '{escaped_desc}', '{escaped_volume}',
+{with_disc_val})"
+)
+if values_list:
+insert_sql = f"""
+INSERT INTO pvalues (report_id, parameter_id, volume,
+no_discount, discount, with_discount)
+SELECT
+r.id::text,
+pn.id,
+v.volume,
+v.with_discount,
+0,
+v.with_discount
+FROM (
+VALUES {', '.join(values_list)}
+) AS v(number, description, volume, with_discount)
+JOIN reports r ON r.subscriber_id = v.number AND r.report_month =
+'{report_month}'
+JOIN pname pn ON pn.description = v.description;
+"""
+sql_statements.append(insert_sql)# 6. Вставка метаданных в invoice_meta
+first_subscriber_id = list(grouped_data.keys())[0] if grouped_data else
+'UNKNOWN'
+def safe_val(val):
+if val is None or val == "":
+return "NULL"
+if isinstance(val, (int, float)):
+return str(val)
+escaped = str(val).replace("'", "''")
+return f"'{escaped}'"
+insert_meta_sql = f"""
+INSERT INTO invoice_meta (
+report_month, subscriber_id, invoice_number, invoice_date,
+period_start, period_end,
+invoice_factura_list, qr_text, operator_name, operator_address,
+subscriber_name, subscriber_address,
+account_number, contract_number, payment_form, inn_kpp,
+receiver_name, bank_name,
+rs_number, ks_number, bik, balance_start, balance_end,
+total_charged, total_paid,
+penies_start, penies_accrued, penies_end, total_due_no_penies,
+total_due_with_penies,
+days_to_pay, unpaid_previous, vat_amount, director_name
+) VALUES (
+'{report_month}',
+'{first_subscriber_id}',
+{safe_val(metadata.get('invoice_number'))},
+{safe_val(metadata.get('invoice_date'))},
+{safe_val(metadata.get('period_start'))},
+{safe_val(metadata.get('period_end'))},
+{safe_val(metadata.get('invoice_factura_list'))},
+{safe_val(metadata.get('qr_text'))},
+{safe_val(metadata.get('operator_name'))},
+{safe_val(metadata.get('operator_address'))},
+{safe_val(metadata.get('subscriber_name'))},{safe_val(metadata.get('subscriber_address'))},
+{safe_val(metadata.get('account_number'))},
+{safe_val(metadata.get('contract_number'))},
+{safe_val(metadata.get('payment_form'))},
+{safe_val(metadata.get('inn_kpp'))},
+{safe_val(metadata.get('receiver_name'))},
+{safe_val(metadata.get('bank_name'))},
+{safe_val(metadata.get('rs_number'))},
+{safe_val(metadata.get('ks_number'))},
+{safe_val(metadata.get('bik'))},
+{safe_val(metadata.get('balance_start'))},
+{safe_val(metadata.get('balance_end'))},
+{safe_val(metadata.get('total_charged'))},
+{safe_val(metadata.get('total_paid'))},
+{safe_val(metadata.get('penies_start'))},
+{safe_val(metadata.get('penies_accrued'))},
+
+> Anikey:
+{safe_val(metadata.get('penies_end'))},
+{safe_val(metadata.get('total_due_no_penies'))},
+{safe_val(metadata.get('total_due_with_penies'))},
+{safe_val(metadata.get('days_to_pay'))},
+{safe_val(metadata.get('unpaid_previous'))},
+{safe_val(metadata.get('vat_amount'))},
+{safe_val(metadata.get('director_name'))}
+)
+ON CONFLICT (report_month) DO UPDATE SET
+subscriber_id = EXCLUDED.subscriber_id,
+invoice_number = EXCLUDED.invoice_number,
+invoice_date = EXCLUDED.invoice_date,
+period_start = EXCLUDED.period_start,
+period_end = EXCLUDED.period_end,
+invoice_factura_list = EXCLUDED.invoice_factura_list,
+qr_text = EXCLUDED.qr_text,
+operator_name = EXCLUDED.operator_name,
+operator_address = EXCLUDED.operator_address,
+subscriber_name = EXCLUDED.subscriber_name,
+subscriber_address = EXCLUDED.subscriber_address,
+account_number = EXCLUDED.account_number,
+contract_number = EXCLUDED.contract_number,payment_form = EXCLUDED.payment_form,
+inn_kpp = EXCLUDED.inn_kpp,
+receiver_name = EXCLUDED.receiver_name,
+bank_name = EXCLUDED.bank_name,
+rs_number = EXCLUDED.rs_number,
+ks_number = EXCLUDED.ks_number,
+bik = EXCLUDED.bik,
+balance_start = EXCLUDED.balance_start,
+balance_end = EXCLUDED.balance_end,
+total_charged = (
+SELECT COALESCE(SUM(p.with_discount), 0)
+FROM pvalues p
+JOIN reports r ON r.report_month = EXCLUDED.report_month
+WHERE p.report_id::bigint = r.id
+AND p.parameter_id = 51
+),
+total_paid = EXCLUDED.total_paid,
+penies_start = EXCLUDED.penies_start,
+penies_accrued = EXCLUDED.penies_accrued,
+penies_end = EXCLUDED.penies_end,
+total_due_no_penies = EXCLUDED.total_due_no_penies,
+total_due_with_penies = EXCLUDED.total_due_with_penies,
+days_to_pay = EXCLUDED.days_to_pay,
+unpaid_previous = EXCLUDED.unpaid_previous,
+vat_amount = EXCLUDED.vat_amount,
+director_name = EXCLUDED.director_name;
+"""
+sql_statements.append(insert_meta_sql)
+full_sql = "\n".join(sql_statements)
+with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False,
+encoding='utf-8') as sql_tmp:
+sql_tmp.write(full_sql)
+sql_file_path = sql_tmp.name
+psql_cmd = [
+'psql',
+'-h', DB_HOST,'-p', DB_PORT,
+'-U', DB_USER,
+'-d', DB_NAME,
+'-v', 'ON_ERROR_STOP=1',
+'-f', sql_file_path
+]
+env = os.environ.copy()
+env['PGPASSWORD'] = DB_PASS
+process = subprocess.run(
+psql_cmd,
+env=env,
+capture_output=True,
+text=True,
+timeout=180
+)
+if process.returncode != 0:
+error_msg = process.stderr or process.stdout
+return {"success": False, "error": f"Ошибка psql: {error_msg}"}
+return {
+"success": True,
+"count": len(parsed_data),
+"month": report_month,
+"stats": {
+"phones": len(grouped_data),
+"services": len(descriptions),
+"records": len(parsed_data)
+}
+}
+except subprocess.TimeoutExpired:
+return {"success": False, "error": "Обработка заняла слишком много
+времени"}
+except Exception as e:
+return {"success": False, "error": f"Ошибка обработки: {str(e)}"}
+finally:
+try:
+if 'tmp_csv_path' in locals():
+os.unlink(tmp_csv_path)if 'utf8_filename' in locals() and utf8_filename != tmp_csv_path:
+os.unlink(utf8_filename)
+if sql_file_path and os.path.exists(sql_file_path):
+os.unlink(sql_file_path)
+except:
+pass
+def _serve_static(self, path: str) -> None:
+rel = "index.html" if path in ("/", "") else path.lstrip("/")
+full = os.path.normpath(os.path.join(FRONTEND_DIR, rel))
+if not full.startswith(os.path.abspath(FRONTEND_DIR)):
+self._send_error(403, "Доступ запрещён.")
+return
+if not os.path.isfile(full):
+self._send_error(404, "Файл не найден.")
+return
+ext = os.path.splitext(full)[1].lower()
+ctype = CONTENT_TYPES.get(ext, "application/octet-stream")
+with open(full, "rb") as fh:
+body = fh.read()
+self.send_response(200)
+self.send_header("Content-Type", ctype)
+self.send_header("Content-Length", str(len(body)))
+self.end_headers()
+self.wfile.write(body)
+def log_message(self, fmt: str, *args) -> None:
+print(f"[{self.log_date_time_string()}] {self.address_string()} {fmt % args}")
+
+> Anikey:
+def main() -> None:
+httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+print(f"Backend запущен: http://{HOST}:{PORT}")
+print(f"Статика фронтенда: {FRONTEND_DIR}")
+print(f"БД: {DB_NAME}@{DB_HOST}:{DB_PORT}")
+print("Остановка: Ctrl+C")
+try:
+httpd.serve_forever()
+except KeyboardInterrupt:print("\nОстановка сервера…") httpd.shutdown()
+if name == "main": main()

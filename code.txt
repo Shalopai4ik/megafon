@@ -1,0 +1,1772 @@
+[20.07.2026 6:16] Anikey: Хлебопашев Антон Александрович:
+#!/usr/bin/env python3
+import re
+import subprocess
+import sys
+import os
+from pathlib import Path
+import datetime
+import json
+import csv
+
+def extract_month_from_filename(filename):
+    months_map = {
+        'январь': '01',
+        'февраль': '02',
+        'март': '03',
+        'апрель': '04',
+        'май': '05',
+        'июнь': '06',
+        'июль': '07',
+        'август': '08',
+        'сентябрь': '09',
+        'октябрь': '10',
+        'ноябрь': '11',
+        'декабрь': '12'
+    }
+    filename_lower = filename.lower()
+    for rus_month, num_month in months_map.items():
+        if rus_month in filename_lower:
+            return num_month
+    return None
+
+def convert_to_utf8(input_file, output_file=None):
+    """
+    Преобразует файл в UTF-8, автоматически определяя исходную кодировку
+    """
+    if output_file is None:
+        output_file = input_file.replace('.csv', '_utf8.csv')
+    # Сначала пробуем определить кодировку с помощью file
+    try:
+        result = subprocess.run(['file', '-i', input_file],
+                              capture_output=True, text=True)
+        mime_info = result.stdout.lower()
+        # Если уже UTF-8, просто копируем
+        if 'utf-8' in mime_info:
+            if input_file != output_file:
+                subprocess.run(['cp', input_file, output_file])
+            return output_file
+    except:
+        pass
+    # Пробуем различные кодировки
+    encodings = ['cp1251', 'cp866', 'koi8-r', 'iso-8859-5']
+    for encoding in encodings:
+        try:
+            result = subprocess.run([
+                'iconv', '-f', encoding, '-t', 'utf-8', input_file
+            ], capture_output=True, text=True)
+            if result.returncode == 0:
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(result.stdout)
+                print(f"✅ Файл {input_file} успешно преобразован из {encoding} в UTF-8")
+                return output_file
+        except:
+            continue
+    # Если ничего не помогло, используем универсальный подход
+    try:
+        # Читаем с игнорированием ошибок и сохраняем как UTF-8
+        with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f"⚠️ Файл {input_file} преобразован с игнорированием ошибок")
+        return output_file
+    except Exception as e:
+        print(f"❌ Не удалось преобразовать {input_file}: {e}")
+        return input_file  # Возвращаем оригинальный файл
+
+def write_debug_lines(lines, filename="debug_lines.txt"):
+    """
+    Записывает строки в текстовый файл для отладки.
+    """
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        print(f"🔍 Промежуточные строки записаны в {filename}")
+    except Exception as e:
+        print(f"⚠️ Ошибка при записи строк: {e}")
+
+def clean_line(line):
+    """
+    Очищает строку от ненужных элементов и нормализует пробелы
+    """
+    # Удаляем паттерн "[число] из [число]"
+    line = re.sub(r'\d+\s+из\s+\d+', '', line, flags=re.IGNORECASE)
+
+    # Заменяем все запятые на точки
+    line = line.replace(',', '.')
+
+    # Заменяем множественные пробелы на одинарные
+    line = re.sub(r'\s+', ' ', line)
+
+    # Убираем лишние пробелы в начале и конце
+    line = line.strip()
+
+    return line
+
+def repair_broken_lines(lines):
+    """
+    Исправляет сломанные многострочные записи
+    """
+    repaired_lines = []
+    buffer = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Проверяем, похожа ли строка на начало записи (имеет мало точек с запятой)
+        semicolon_count = line.count(';')
+
+        if semicolon_count <= 2 and not line.endswith(';'):
+[20.07.2026 6:16] Anikey: # Это, скорее всего, продолжение предыдущей строки
+            if buffer:
+                buffer += " " + line
+            else:
+                buffer = line
+        else:
+            # Это полноценная строка
+            if buffer:
+                # Сохраняем накопленный буфер
+
+Хлебопашев Антон Александрович:
+repaired_lines.append(buffer + '\n')
+                buffer = ""
+            repaired_lines.append(line + '\n')
+
+    # Не забываем про последний буфер
+    if buffer:
+        repaired_lines.append(buffer + '\n')
+
+    return repaired_lines
+
+def update_pvalues_with_report_ids():
+    """Выполняет обновление report_id в таблице pvalues на основе таблицы reports"""
+    update_sql = """
+    UPDATE pvalues
+    SET report_id = reports.id
+    FROM reports
+    WHERE reports.subscriber_id = pvalues.report_id;
+    """
+    try:
+        psql_cmd = [
+            'psql',
+            '-h', 'localhost',
+            '-p', '5432',
+            '-U', 'postgres',
+            '-d', 'megafon'
+        ]
+        process = subprocess.Popen(
+            psql_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=update_sql)
+        if process.returncode == 0:
+            print("✅ Поле report_id в pvalues успешно обновлено")
+        else:
+            print("⚠️ Ошибка при обновлении report_id:")
+            print(stderr)
+    except Exception as e:
+        print(f"❌ Ошибка выполнения обновления: {e}")
+
+def insert_reports_data(month, phone_numbers):
+    """Вставляем данные в таблицу reports"""
+    print(f"DEBUG: Попытка вставки в reports - месяц: {month}, телефонов: {len(phone_numbers) if phone_numbers else 0}")
+    if not month or not phone_numbers:
+        print("⚠️ Нет данных для вставки в reports")
+        return
+    try:
+        psql_cmd = [
+            'psql',
+            '-h', 'localhost',
+            '-p', '5432',
+            '-U', 'postgres',
+            '-d', 'megafon'
+        ]
+        # Формируем правильный формат report_month: YYYY-MM
+        current_year = datetime.datetime.now().year
+        report_month = f"{current_year}-{month}"  # Например: "2024-01"
+        report_date = f"{current_year}-{month}-01"  # Первый день месяца
+        # Создаем временный список значений для вставки
+        values_list = []
+        for phone in phone_numbers:
+            values_list.append(f"('{report_month}', '{phone}', '{report_date}')")
+        if values_list:
+            insert_sql = f"""
+            INSERT INTO reports (report_month, subscriber_id, report_date)
+            VALUES {', '.join(values_list)}
+            ON CONFLICT DO NOTHING;
+            """
+            print(f"DEBUG: SQL для вставки: {insert_sql[:200]}...")
+            process = subprocess.Popen(
+                psql_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            stdout, stderr = process.communicate(input=insert_sql)
+            if process.returncode == 0:
+                print(f"✅ Добавлено {len(values_list)} записей в таблицу reports")
+            else:
+                print("⚠️ Ошибка при вставке в reports:")
+                print(stderr)
+        else:
+            print("⚠️ Нет данных для вставки")
+    except Exception as e:
+        print(f"❌ Ошибка вставки в reports: {e}")
+        import traceback
+        traceback.print_exc()
+
+def process_file_and_load_to_postgres():
+    # Читаем исходный файл
+    # Файл передается как аргумент командной строки
+    if len(sys.argv) < 2:
+        print("❌ Укажите путь к CSV-файлу как аргумент командной строки.")
+        sys.exit(1)
+    input_filename = sys.argv[1]
+    # Извлекаем месяц из имени файла
+[20.07.2026 6:16] Anikey: month = extract_month_from_filename(input_filename)
+    if month:
+        print(f"📁 Месяц из имени файла: {month}")
+    else:
+        print("⚠️ Месяц не найден в имени файла")
+    # Преобразуем в UTF-8
+    utf8_filename = convert_to_utf8(input_filename)
+    # Читаем преобразованный файл
+    with open(utf8_filename, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    # Шаг 1: Заменяем ;; на ; до тех пор, пока есть вхождения
+    content = ''.join(lines)
+    while ';;' in content:
+        content = content.replace(';;', ';')
+    lines = content.
+
+Хлебопашев Антон Александрович:
+splitlines(keepends=True)
+    # Шаг 2: Удаляем паттерн "[число] из [число]"
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'[0-9]+ из [0-9]+', '', lines[i])
+    # Шаг 3: Удаляем пустые строки
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого начислено\s*;', 'Итого начислено;', lines[i])
+    # Шаг 3: Удаляем пустые строки
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого  начислено;', 'Итого начислено;', lines[i])
+    # Шаг 4: Берем строки от "Начисления по абонентским номерам" до конца файла
+    start_index = -1
+    for i, line in enumerate(lines):
+        if 'Начисления по абонентским номерам' in line:
+            start_index = i
+            break
+    if start_index != -1:
+        lines = lines[start_index:]
+    else:
+        lines = []
+    # Шаг 5: Удаление лишних строк
+    patterns_to_remove = [
+        'Услуги Антифрода',
+        'Прочие;',
+        'Услуги связи в домашнем',
+        'Услуги связи',
+        'Услуги передачи',
+        'Административные услуги',
+        'Услуги голосовой',
+        'Абонентская плата;',
+        'Название услуги;',
+        'Услуги в расчётном периоде не потреблялись',
+        'Дополнительные услуги',
+    ]
+    filtered_lines = []
+    for line in lines:
+        should_remove = False
+        if line.strip() == 'Услуги связи':
+            should_remove = True
+        elif any(pattern in line for pattern in patterns_to_remove if pattern != 'Услуги связи$'):
+            should_remove = True
+        elif line.rstrip('\n\r') == 'Услуги связи':
+            should_remove = True
+        if not should_remove:
+            filtered_lines.append(line)
+    lines = filtered_lines
+    # Шаг 6: Удаление "Абонентский номер "
+    lines = [line.replace('Абонентский номер ', '') for line in lines]
+    # Шаг 7: Исправление ";Услуги"
+    for i in range(len(lines)):
+        if 2 <= lines[i].count(';') <= 4:
+            parts = lines[i].split(';', 1)
+            if len(parts) == 2:
+                lines[i] = parts[0] + ';1;' + parts[1]
+
+    # <<< ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+    lines = repair_broken_lines(lines)
+    # <<< /ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+
+    # Шаг 8: Берём строки от "Все суммы приведены" до конца файла
+    start_index = -1
+    for i, line in enumerate(lines):
+        if 'Все суммы приведены' in line:
+            start_index = i
+            break
+    if start_index != -1:
+        lines = lines[start_index:]
+    else:
+        lines = []
+
+    # <<< ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+    # Применяем очистку ко всем строкам
+    lines = [clean_line(line) + '\n' for line in lines]
+    # Удаляем пустые строки после очистки
+    lines = [line for line in lines if line.strip()]
+    # <<< /ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+
+    # <<< ДОБАВЛЕНО ДЛЯ ОТЛАДКИ >>>
+    write_debug_lines(lines, "debug_lines_before_parsing.txt")
+    # <<< /ДОБАВЛЕНО ДЛЯ ОТЛАДКИ >>>
+
+    # Создаем таблицы если они не существуют
+    create_tables_if_not_exists()
+    # Генерируем и выполняем SQL
+    data_for_insert = execute_sql_via_psql(lines)
+    # Вставляем данные в reports
+    if month and data_for_insert:
+        unique_phones = list(set(d['phone'] for d in data_for_insert))
+        insert_reports_data(month, unique_phones)
+    update_pvalues_with_report_ids()
+[20.07.2026 6:16] Anikey: def create_tables_if_not_exists():
+    """Создает таблицы если они не существуют"""
+    create_tables_sql = """
+    -- Создаем таблицу pname если её нет
+    CREATE TABLE IF NOT EXISTS pname (
+        id SERIAL PRIMARY KEY,
+        description TEXT UNIQUE NOT NULL,
+        category TEXT
+    );
+    -- Создаем таблицу pvalues если её нет
+    CREATE TABLE IF NOT EXISTS pvalues (
+        id SERIAL PRIMARY KEY,
+        report_id VARCHAR(10),
+        parameter_id INTEGER REFERENCES pname(id),
+        volume TEXT,
+        no_discount NUMERIC(12,4),
+        discount NUMERIC(12,4),
+        with_discount NUMERIC(12,4)
+    );
+    """
+    try:
+        psql_cmd = [
+            'psql',
+
+Хлебопашев Антон Александрович:
+'-h', 'localhost',
+            '-p', '5432',
+            '-U', 'postgres',
+            '-d', 'megafon'
+        ]
+        process = subprocess.Popen(
+            psql_cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(input=create_tables_sql)
+        if process.returncode == 0:
+            print("✅ Таблицы проверены/созданы")
+        else:
+            print("Сообщение при проверке таблиц:")
+            print(stderr)
+    except Exception as e:
+        print(f"❌ Ошибка работы с таблицами: {e}")
+
+def execute_sql_via_psql(lines):
+    current_phone = None
+    service_descriptions = set()
+    data_for_insert = []
+    print(f"Обрабатываем {len(lines)} строк...")
+    # Собираем все данные
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        # Проверяем, может ли это быть номер телефона (10 цифр)
+        phone_match = re.match(r'^(\d{10})(?:\s*;|$)', line)
+        if phone_match:
+            current_phone = phone_match.group(1)
+            continue
+        # Пропускаем заголовочные строки
+        if (line.startswith("Название услуги") or
+            line.startswith("Тарифный план") or
+            line.startswith("Все суммы приведены") or
+            "НДС" in line or
+            not line or
+            line.count(';') < 4):
+            continue
+        # Разбор полей
+        fields = line.split(';')
+        if len(fields) < 5:
+            continue
+        description = fields[0].strip().replace("'", "''")
+        volume = fields[1].strip().replace("'", "''")
+        # Пропускаем строки с описаниями услуг без числовых значений
+        if not description or description in ['Название услуги', 'Все суммы приведены']:
+            continue
+        try:
+            no_discount = float(fields[2]) if fields[2] and fields[2].strip() != '' else 0
+        except ValueError:
+            no_discount = 0
+        try:
+            discount = float(fields[3]) if len(fields) > 3 and fields[3] and fields[3].strip() != '' else 0
+        except ValueError:
+            discount = 0
+        try:
+            with_discount = float(fields[4]) if len(fields) > 4 and fields[4] and fields[4].strip() != '' else 0
+        except ValueError:
+            with_discount = 0
+        # Только если есть текущий номер телефона и валидное описание
+        if current_phone and description and description != current_phone:
+            service_descriptions.add(description)
+            data_for_insert.append({
+                'phone': current_phone,
+                'description': description,
+                'volume': volume,
+                'no_discount': no_discount,
+                'discount': discount,
+                'with_discount': with_discount
+            })
+    print(f"\nСТАТИСТИКА:")
+    print(f"Уникальных телефонов: {len(set(d['phone'] for d in data_for_insert))}")
+    print(f"Уникальных услуг: {len(service_descriptions)}")
+    print(f"Всего записей услуг: {len(data_for_insert)}")
+[20.07.2026 6:16] Anikey: if len(data_for_insert) > 0:
+        phones = list(set(d['phone'] for d in data_for_insert))
+        print(f"Первые 5 телефонов: {phones[:5]}")
+        print(f"Первые 5 услуг: {list(service_descriptions)[:5]}")
+    # Создаем SQL команды
+    if service_descriptions and data_for_insert:
+        try:
+            psql_cmd = [
+                'psql',
+                '-h', 'localhost',
+                '-p', '5432',
+                '-U', 'postgres',
+                '-d', 'megafon',
+                '-v', 'ON_ERROR_STOP=1'
+            ]
+            # Вставляем значения услуг (пакетами по 1000)
+            print("Вставляем значения услуг...")
+            batch_size = 3000
+            total_batches = (len(data_for_insert) + batch_size - 1) // batch_size
+            for batch_num, i in enumerate(range(0, len(data_for_insert), batch_size), 1):
+                batch = data_for_insert[i:i + batch_size]
+                pvalues_values = []
+                for entry in batch:
+
+Хлебопашев Антон Александрович:
+escaped_phone = entry['phone']
+escaped_desc = entry['description'].replace("'", "''")
+escaped_volume = entry['volume'].replace("'", "''")
+pvalues_values.append(
+f"('{escaped_phone}', "
+f"(SELECT id FROM pname WHERE description = '{escaped_desc}'), "
+f"'{escaped_volume}', "
+f"{entry['no_discount']}, "
+f"{entry['discount']}, "
+f"{entry['with_discount']})"
+)
+if pvalues_values:
+insert_sql = f"""
+INSERT INTO pvalues (report_id, parameter_id, volume, no_discount, discount, with_discount)
+VALUES {', '.join(pvalues_values)};
+"""
+insert_process = subprocess.Popen(
+psql_cmd,
+stdin=subprocess.PIPE,
+stdout=subprocess.DEVNULL,
+stderr=subprocess.PIPE,
+text=True
+)
+stdout, stderr = insert_process.communicate(input=insert_sql)
+if insert_process.returncode != 0:
+print(f"Ошибка при вставке пакета {batch_num}/{total_batches}:")
+print(stderr)
+continue
+print(f"  Обработано пакетов: {batch_num}/{total_batches}")
+print("✅ Данные успешно загружены в PostgreSQL!")
+unique_phones = len(set(d['phone'] for d in data_for_insert))
+print(f"📊 Обработано: {unique_phones} телефонов, "
+f"{len(service_descriptions)} типов услуг, "
+f"{len(data_for_insert)} записей")
+except Exception as e:
+print(f"❌ Ошибка выполнения: {e}")
+import traceback
+traceback.print_exc()
+else:
+print("⚠️  Нет данных для вставки")
+return data_for_insert
+
+if name == 'main':
+process_file_and_load_to_postgres()
+[20.07.2026 6:17] Anikey: Хлебопашев Антон Александрович:
+"""
+domain.py — прикладная логика («что означают данные»).
+============================================================================
+ЗАДАЧИ:
+  1) Парсер CSV файла с извлечением месяца из названия файла
+  2) Прикладная логика: классификация услуг, расчеты, рекомендации
+"""
+import re
+import subprocess
+import sys
+import os
+from pathlib import Path
+import datetime
+import csv
+from decimal import Decimal, InvalidOperation
+from typing import Any, List, Dict
+
+def extract_month_from_filename(filename):    months_map = {        'январь': '01',        'февраль': '02',        'март': '03',        'апрель': '04',        'май': '05',        'июнь': '06',        'июль': '07',        'август': '08',        'сентябрь': '09',        'октябрь': '10',        'ноябрь': '11',        'декабрь': '12'    }    filename_lower = filename.lower()    for rus_month, num_month in months_map.items():        if rus_month in filename_lower:            return num_month    return None                                                                                                                                                                                                                            
+
+def convert_to_utf8(input_file, output_file=None):    """    Преобразует файл в UTF-8, автоматически определяя исходную кодировку    """    if output_file is None:        output_file = input_file.replace('.csv', '_utf8.csv')    # Сначала пробуем определить кодировку с помощью file    try:        result = subprocess.run(['file', '-i', input_file],                              capture_output=True, text=True)        mime_info = result.stdout.lower()        # Если уже UTF-8, просто копируем        if 'utf-8' in mime_info:            if input_file != output_file:                subprocess.run(['cp', input_file, output_file])            return output_file    except:        pass    # Пробуем различные кодировки    encodings = ['cp1251', 'cp866', 'koi8-r', 'iso-8859-5']    for encoding in encodings:        try:            result = subprocess.run([                'iconv', '-f', encoding, '-t', 'utf-8', input_file            ], capture_output=True, text=True)            if result.returncode == 0:                with open(output_file, 'w', encoding='utf-8') as f:                    f.write(result.stdout)                print(f"✅ Файл {input_file} успешно преобразован из {encoding} в UTF-8")                return output_file        except:            continue    # Если ничего не помогло, используем универсальный подход    try:        # Читаем с игнорированием ошибок и сохраняем как UTF-8        with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:            content = f.read()        with open(output_file, 'w', encoding='utf-8') as f:            f.write(content)        print(f"⚠️ Файл {input_file} преобразован с игнорированием ошибок")        return output_file    except Exception as e:        print(f"❌ Не удалось преобразовать {input_file}: {e}")        return input_file  # Возвращаем оригинальный файл                                                                                                                                                                                  
+
+def clean_line(line):    """    Очищает строку от ненужных элементов и нормализует пробелы    """    # Удаляем паттерн "[число] из [число]"    line = re.sub(r'\d+\s+из\s+\d+', '', line, flags=re.IGNORECASE)    # Заменяем все запятые на точки    line = line.replace(',', '.')    # Заменяем множественные пробелы на одинарные    line = re.sub(r'\s+', ' ', line)    # Убираем лишние пробелы в начале и конце    line = line.strip()    return line                                                                                                                                                                                                                            
+
+def repair_broken_lines(lines):    """    Исправляет сломанные многострочные записи    """    repaired_lines = []    buffer = ""    for line in lines:        line = line.
+[20.07.2026 6:17] Anikey: Хлебопашев Антон Александрович:
+strip()        if not line:            continue        # Проверяем, похожа ли строка на начало записи (имеет мало точек с запятой)        semicolon_count = line.count(';')        if semicolon_count <= 2 and not line.endswith(';'):            # Это, скорее всего, продолжение предыдущей строки            if buffer:                buffer += " " + line            else:                buffer = line        else:            # Это полноценная строка            if buffer:                # Сохраняем накопленный буфер                repaired_lines.append(buffer + '\n')                buffer = ""            repaired_lines.append(line + '\n')    # Не забываем про последний буфер    if buffer:        repaired_lines.append(buffer + '\n')    return repaired_lines                                                                                                                                                                                                                  
+
+def parse_raw_csv_file(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Читает и чистит CSV файл с использованием логики из старого парсера.
+    """
+    # Извлекаем месяц из имени файла
+    month = extract_month_from_filename(os.path.basename(file_path))
+    if not month:
+        print("⚠️ Месяц не найден в имени файла, используем 01")
+        month = "01"
+
+    # Преобразуем в UTF-8
+    utf8_filename = convert_to_utf8(file_path)
+
+    # Читаем преобразованный файл
+    with open(utf8_filename, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # Шаг 1: Заменяем ;; на ; до тех пор, пока есть вхождения
+    content = ''.join(lines)
+    while ';;' in content:
+        content = content.replace(';;', ';')
+    lines = content.splitlines(keepends=True)
+
+    # Шаг 2: Удаляем паттерн "[число] из [число]"
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'[0-9]+ из [0-9]+', '', lines[i])
+
+    # Шаг 3: Удаляем пустые строки
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого начислено\s*;', 'Итого начислено;', lines[i])
+
+    # Шаг 3: Удаляем пустые строки (повторно)
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого  начислено;', 'Итого начислено;', lines[i])
+
+    # Шаг 4: Берем строки от "Начисления по абонентским номерам" до конца файла
+    start_index = -1
+    for i, line in enumerate(lines):
+        if 'Начисления по абонентским номерам' in line:
+            start_index = i
+            break
+
+    if start_index != -1:
+        lines = lines[start_index:]
+    else:
+        lines = []
+
+    # Шаг 5: Удаление лишних строк
+    patterns_to_remove = [
+        'Услуги Антифрода', 'Прочие;', 'Услуги связи в домашнем', 'Услуги связи',
+        'Услуги передачи', 'Административные услуги', 'Услуги голосовой',
+        'Абонентская плата;', 'Название услуги;', 'Услуги в расчётном периоде не потреблялись',
+        'Дополнительные услуги',
+    ]
+
+    filtered_lines = []
+    for line in lines:
+        should_remove = False
+        if line.strip() == 'Услуги связи':
+            should_remove = True
+        elif any(pattern in line for pattern in patterns_to_remove if pattern != 'Услуги связи$'):
+            should_remove = True
+        elif line.rstrip('\n\r') == 'Услуги связи':
+            should_remove = True
+        if not should_remove:
+            filtered_lines.append(line)
+
+    lines = filtered_lines
+
+    # Шаг 6: Удаление "Абонентский номер "
+    lines = [line.replace('Абонентский номер ', '') for line in lines]
+
+    # Шаг 7: Исправление ";Услуги"
+    for i in range(len(lines)):
+        if 2 <= lines[i].count(';') <= 4:
+            parts = lines[i].split(';', 1)
+            if len(parts) == 2:
+                lines[i] = parts[0] + ';1;' + parts[1]
+
+    # <<< ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+    lines = repair_broken_lines(lines)
+    # <<< /ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+[20.07.2026 6:17] Anikey: # Шаг 8: Берём строки от "Все суммы приведены" до конца файла
+    start_index = -1
+
+Хлебопашев Антон Александрович:
+for i, line in enumerate(lines):
+if 'Все суммы приведены' in line:
+start_index = i
+break
+if start_index != -1:
+lines = lines[start_index:]
+else:
+lines = []
+
+# <<< ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+# Применяем очистку ко всем строкам
+lines = [clean_line(line) + '\n' for line in lines]
+# Удаляем пустые строки после очистки
+lines = [line for line in lines if line.strip()]
+# <<< /ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+
+# Формируем правильный формат report_month: YYYY-MM
+current_year = datetime.datetime.now().year
+report_month = f"{current_year}-{month}"
+
+# Преобразование строк в словари (data_rows)
+data_rows = []
+current_phone = None
+
+for line in lines:
+line = line.strip()
+if not line:
+continue
+
+# Проверяем, может ли это быть номер телефона (10 цифр)
+phone_match = re.match(r'^(\d{10})(?:\s*;|$)', line)
+if phone_match:
+current_phone = phone_match.group(1)
+continue
+
+# Пропускаем заголовочные строки
+if (line.startswith("Название услуги") or
+line.startswith("Тарифный план") or
+line.startswith("Все суммы приведены") or
+"НДС" in line or
+not line or
+line.count(';') < 4):
+continue
+
+# Разбор полей
+fields = line.split(';')
+if len(fields) < 5:
+continue
+
+description = fields[0].strip().replace("'", "''")
+volume = fields[1].strip().replace("'", "''")
+
+# Пропускаем строки с описаниями услуг без числовых значений
+if not description or description in ['Название услуги', 'Все суммы приведены']:
+continue
+
+try:
+no_discount = float(fields[2]) if fields[2] and fields[2].strip() != '' else 0
+except ValueError:
+no_discount = 0
+
+try:
+discount = float(fields[3]) if len(fields) > 3 and fields[3] and fields[3].strip() != '' else 0
+except ValueError:
+discount = 0
+
+try:
+with_discount = float(fields[4]) if len(fields) > 4 and fields[4] and fields[4].strip() != '' else 0
+except ValueError:
+with_discount = 0
+
+# Только если есть текущий номер телефона и валидное описание
+if current_phone and description and description != current_phone:
+data_rows.append({
+"number": current_phone,
+"username": "",
+"service": description,
+"volume": volume,
+"with_discount": str(with_discount),
+"category": "",
+"service_type": "",
+"report_month": report_month,
+"limit_numbr": 0,
+"parameter_id": ""
+})
+
+return data_rows
+
+# Метаданные категорий: как показывать их во фронтенде.
+CATEGORY_META = {
+"voice": {"label": "Минуты", "unit": "мин", "icon": "📞"},
+"internet": {"label": "Интернет", "unit": "ГБ", "icon": "🌐"},
+"sms": {"label": "SMS", "unit": "шт", "icon": "✉️"},
+}
+EXCLUDED_SERVICES = {
+"Абонентская плата и начисления по опции «Бизнес без границ+»", "Абонентская плата и начисления по опции «Бизнес без границ»"
+}
+EXCLUDED_PARAM_IDS = {
+"37", "38", "39", "40", "41", "42", "45", "46", "49", "50", "67", "68"
+}
+EXCLUDED = {str(x) for x in EXCLUDEDPARAM_IDS}
+
+# --- Мелкие безопасные конвертеры ------------------------------------------
+def to_float(value: Any, default: float = 0.0) -> float:
+"""Строку в число. Понимает и запятую, и точку как разделитель дробей."""
+if value is None or value == "":
+return default
+try:
+return float(Decimal(str(value).replace(",", ".").strip()))
+except (InvalidOperation, ValueError):
+return default
+
+def to_int(value: Any, default: int = 0) -> int:
+"""Строку в целое (например users_numbers.limit_numbr)."""
+try:
+return int(float(str(value).strip()))
+except (ValueError, TypeError):
+return default
+
+# --- Разбор объёма
+
+Хлебопашев Антон Александрович:
+услуги --------------------------------------------------
+VOLUMERE = re.compile(r"^\s*([\d.,]+)\s*(шт|мин|мбайт|мб|гб|гбайт|б)?", re.IGNORECASE)
+
+def parse_volume(text: Any) -> tuple[float, str]:
+"""Вернуть (объём, единица). Единицы приводим к: 'мин', 'мбайт', 'гб', 'шт'."""
+s = "" if text is None else str(text)
+m = VOLUMERE.match(s)
+if not m:
+return to_float(s), ""
+amount = to_float(m.group(1))
+unit = (m.group(2) or "").lower()
+if unit in ("мб", "мбайт"):
+unit = "мбайт"
+elif unit in ("гб", "гбайт"):
+unit = "гб"
+return amount, unit
+[20.07.2026 6:17] Anikey: # --- Классификатор категорий ----------------------------------------------
+INTERNETKW = ("интернет", "трафик", "gprs", "data", "мбайт", "гбайт")
+SMSKW = ("sms", "смс", "сообщен", "mms", "ммс")
+VOICEKW = ("вызов", "минут", "звон", "голос", "разговор", "роуминг голос")
+
+def categorize(service: str, category: str, service_type: str, unit: str) -> str:
+text = " ".join(x for x in (service, category, service_type) if x).lower()
+if unit in ("мбайт", "гб") or any(k in text for k in INTERNETKW):
+return "internet"
+if any(k in text for k in SMSKW):
+return "sms"
+if unit == "мин" or any(k in text for k in VOICEKW):
+return "voice"
+return "other"
+
+def is_plan_fee(service: str) -> bool:
+"""Является ли строка абонентской платой по тарифу (базой)."""
+return "абонентская плата по тарифному плану" in (service or "").lower()
+
+def is_meta(service: str) -> bool:
+"""Служебная строка-итог, которую нельзя суммировать в расход."""
+s = (service or "").lower()
+return "итого начислено" in s or "ндс" in s
+
+# --- Превращение сырых строк БД в типизированные позиции --------------------
+def parse_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Разобрать сырые строки (из БД или из CSV) в удобные позиции."""
+items = []
+for r in rows:
+service = r.get("service") or ""
+if is_meta(service):
+continue
+
+param_id = r.get("parameter_id")
+if param_id is None:
+param_id = ""
+
+volume, unit = parse_volume(r.get("volume"))
+cat = categorize(service, r.get("category") or "", r.get("service_type") or "", unit)
+number = r.get("number") or ""
+
+limit_val = r.get("limit_numbr")
+limit = to_int(limit_val) if limit_val is not None else 0
+items.append({
+"number": str(number),
+"username": r.get("username") or "",
+"limit": limit,
+"month": r.get("report_month") or "",
+"service": service,
+"cat": cat,
+"volume": volume,
+"unit": unit,
+"cost": to_float(r.get("with_discount")),
+"parameter_id": str(param_id),
+})
+return items
+
+# --- Ключевая функция: собрать запись абонента за один месяц ----------------
+def categoryusage(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Посчитать по категориям: сколько использовано и на какую сумму начислено."""
+acc = {c: {"used": 0.0, "cost": 0.0} for c in CATEGORY_META}
+for it in items:
+c = it["cat"]
+if c not in acc:
+continue
+acc[c]["cost"] += it["cost"]
+outgoing = "исходящ" in it["service"].lower()
+if c == "voice" and it["unit"] == "мин" and outgoing:
+acc[c]["used"] += it["volume"]
+elif c == "internet":
+acc[c]["used"] += it["volume"] / 1024 if it["unit"] == "мбайт" else it["volume"]
+elif c == "sms" and it["unit"] == "шт" and outgoing:
+acc[c]["used"] += it["volume"]
+result = []
+for key, meta in CATEGORY_META.items():
+result.append({
+"key": key, "label": meta["label"], "unit": meta["unit"], "icon": meta["icon"],
+"used": round(acc[key]["used"], 2), "cost": round(acc[key]["cost"], 2),
+})
+return result
+
+def statusand_risk(total: float, limit: int) -> tuple[str, float, int]:
+if limit <= 0:
+if total <= 0:
+return "normal", 0.0, 0
+
+Хлебопашев Антон Александрович:
+return "danger", 999.0, 100
+ratio = total / limit
+if ratio >= 1.25:
+status = "danger"
+elif ratio >= 1.0:
+status = "warning"
+else:
+status = "normal"
+risk = max(0, min(100, round(ratio * 100)))
+return status, round(ratio, 3), risk
+
+def suggest_limit(usage: float) -> int:
+target = usage * 1.10
+limits = [140, 230, 400]
+for limit in limits:
+if target <= limit:
+return limit
+return 400
+
+def build_recommendation(total: float, limit: int, ratio: float, avg: float | None) -> dict[str, Any]:
+basis = avg if (avg is not None and avg > 0) else total
+lines: list[str] = []
+if limit <= 0:
+return {"action": "raise", "suggested_limit": suggest_limit(basis),
+"lines": ["Тариф для номера не задан — рекомендуется установить "
+f"около {suggest_limit(basis)} ₽ исходя из текущего расхода."]}
+if basis > limit:
+new_limit = suggest_limit(basis)
+[20.07.2026 6:17] Anikey: lines.append(f"Расход ({round(basis)} ₽) превышает лимит {limit} ₽ — "
+f"стабильный перерасход. Повысить тариф до ~{new_limit} ₽ "
+f"или разобраться с услугами перерасхода.")
+return {"action": "raise", "suggested_limit": new_limit, "lines": lines}
+if basis < limit * 0.6:
+new_limit = suggest_limit(basis)
+lines.append(f"Расход ({round(basis)} ₽) заметно ниже тарифа {limit} ₽ — "
+f"тариф завышен. Понизить до ~{new_limit} ₽ без риска перерасхода.")
+return {"action": "lower", "suggested_limit": new_limit, "lines": lines}
+lines.append(f"Расход ({round(basis)} ₽) в пределах тарифа {limit} ₽ — тариф подобран корректно.")
+return {"action": "keep", "suggested_limit": limit, "lines": lines}
+
+def build_record(items: list[dict[str, Any]], avg: float | None = None) -> dict[str, Any]:
+total = round(sum(it["cost"] for it in items), 2)
+plan_fee = round(sum(it["cost"] for it in items if is_plan_fee(it["service"])), 2)
+billable = round(sum(it["cost"] for it in items if it.get("parameter_id") in EXCLUDED), 2)
+limit = 0 + round(sum(it["cost"] for it in items if it.get("parameterid") in ("9", "10")))
+number = items[0]["number"] if items else ""
+username = items[0]["username"] if items else ""
+month = items[0]["month"] if items else ""
+status, ratio, risk = statusand_risk(billable, limit)
+overpayment = round(max(0.0, billable), 2)
+categories = categoryusage(items)
+recommendation = build_recommendation(billable, limit, ratio, avg)
+return {
+"number": number,
+"username": username,
+"limit": limit,
+"month": month,
+"total": total,
+"plan_fee": plan_fee,
+"overpayment": overpayment,
+"ratio": ratio,
+"status": status,
+"risk": risk,
+"underused": bool(limit > 0 and ratio < 0.6),
+"categories": categories,
+"recommendation": recommendation,
+}
+
+# --- Сборка представлений для эндпоинтов -----------------------------------
+def build_month_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+items = parse_rows(rows)
+by_number: dict[str, list[dict[str, Any]]] = {}
+for it in items:
+by_number.setdefault(it["number"], []).append(it)
+records = [build_record(group) for group in by_number.values()]
+records.sort(key=lambda r: (r["overpayment"], r["total"]), reverse=True)
+return records
+
+def build_number_detail(rows: list[dict[str, Any]], month: str | None = None) -> dict[str, Any]:
+items = parse_rows(rows)
+if not items:
+return {}
+by_month: dict[str, list[dict[str, Any]]] = {}
+for it in items:
+by_month.setdefault(it["month"], []).append(it)
+history = [
+{"month": m, "total": round(sum(i["cost"] for i in grp), 2)}
+for m, grp in sorted(by_month.items())
+]
+avg = sum(h["total"] for h in history) / len(history) if history else None
+current_month = month if (month in by_month) else history[-1]["month"]
+[20.07.2026 6:17] Anikey: Хлебопашев Антон Александрович:
+current_items = by_month[current_month]
+    record = build_record(current_items, avg=avg)
+    record["history"] = history
+    idx = next((i for i, h in enumerate(history) if h["month"] == current_month), len(history) - 1)
+    if idx > 0 and history[idx - 1]["total"] > 0:
+        prev = history[idx - 1]["total"]
+        record["trend"] = round((record["total"] - prev) / prev * 100, 1)
+    else:
+        record["trend"] = 0.0
+    record["services"] = [
+        {"service": it["service"], "cat": it["cat"], "unit": it["unit"],
+         "volume": round(it["volume"], 2), "cost": it["cost"]}
+        for it in sorted(current_items, key=lambda x: x["cost"], reverse=True)
+    ]
+    return record
+
+def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    total_cost = round(sum(r["total"] for r in records), 2)
+    total_overpay = round(sum(r["overpayment"] for r in records), 2)
+    critical = sum(1 for r in records if r["status"] == "danger")
+    underused = sum(1 for r in records if r["underused"])
+    count = len(records)
+    return {
+        "subscribers": count,
+        "total_cost": total_cost,
+        "total_overpay": total_overpay,
+        "economy_potential": round(total_overpay * 0.7, 2),
+        "critical": critical,
+        "underused": underused,
+        "risk_index": round(critical / count * 100) if count else 0,
+    }
+
+Хлебопашев Антон Александрович:
+"""
+domain.py — прикладная логика («что означают данные»).
+============================================================================
+ЗАДАЧИ:
+  1) Парсер CSV файла с извлечением месяца из названия файла
+  2) Прикладная логика: классификация услуг, расчеты, рекомендации
+"""
+import re
+import subprocess
+import sys
+import os
+from pathlib import Path
+import datetime
+import csv
+from decimal import Decimal, InvalidOperation
+from typing import Any, List, Dict
+
+def extract_month_from_filename(filename):    months_map = {        'январь': '01',        'февраль': '02',        'март': '03',        'апрель': '04',        'май': '05',        'июнь': '06',        'июль': '07',        'август': '08',        'сентябрь': '09',        'октябрь': '10',        'ноябрь': '11',        'декабрь': '12'    }    filename_lower = filename.lower()    for rus_month, num_month in months_map.items():        if rus_month in filename_lower:            return num_month    return None                                                                                                                                                                                                                            
+
+def convert_to_utf8(input_file, output_file=None):    """    Преобразует файл в UTF-8, автоматически определяя исходную кодировку    """    if output_file is None:        output_file = input_file.replace('.csv', '_utf8.csv')    # Сначала пробуем определить кодировку с помощью file    try:        result = subprocess.run(['file', '-i', input_file],                              capture_output=True, text=True)        mime_info = result.stdout.lower()        # Если уже UTF-8, просто копируем        if 'utf-8' in mime_info:            if input_file != output_file:                subprocess.run(['cp', input_file, output_file])            return output_file    except:        pass    # Пробуем различные кодировки    encodings = ['cp1251', 'cp866', 'koi8-r', 'iso-8859-5']    for encoding in encodings:        try:            result = subprocess.run([                'iconv', '-f', encoding, '-t', 'utf-8', input_file            ], capture_output=True, text=True)            if result.returncode == 0:                with open(output_file, 'w', encoding='utf-8') as f:                    f.write(result.stdout)                print(f"✅ Файл {input_file} успешно преобразован из {encoding} в UTF-8")                return output_file        except:            continue    # Если ничего не помогло, используем универсальный подход    try:        # Читаем с игнорированием ошибок и сохраняем как UTF-8        with open(input_file, 'r', encoding='utf-8', errors='ignore') as f:
+[20.07.2026 6:17] Anikey: content = f.read()        with open(output_file, 'w', encoding='utf-8') as f:            f.write(content)        print(f"⚠️ Файл {input_file} преобразован с игнорированием ошибок")        return output_file    except Exception as e:        print(f"❌ Не удалось преобразовать {input_file}: {e}")        return input_file  # Возвращаем оригинальный файл                                                                                                                                                                                  
+
+def clean_line(line):    """    Очищает строку от ненужных элементов и нормализует пробелы    """    # Удаляем паттерн "[число] из [число]"    line = re.sub(r'\d+\s+из\s+\d+', '', line, flags=re.IGNORECASE)    # Заменяем все запятые на точки    line = line.replace(',', '.')    # Заменяем множественные пробелы на одинарные    line = re.sub(r'\s+', ' ', line)    # Убираем лишние пробелы в начале и конце    line = line.strip()    return line                                                                                                                                                                                                                            
+
+def repair_broken_lines(lines):    """    Исправляет сломанные многострочные записи    """    repaired_lines = []    buffer = ""    for line in lines:        line = line.
+
+Хлебопашев Антон Александрович:
+strip()        if not line:            continue        # Проверяем, похожа ли строка на начало записи (имеет мало точек с запятой)        semicolon_count = line.count(';')        if semicolon_count <= 2 and not line.endswith(';'):            # Это, скорее всего, продолжение предыдущей строки            if buffer:                buffer += " " + line            else:                buffer = line        else:            # Это полноценная строка            if buffer:                # Сохраняем накопленный буфер                repaired_lines.append(buffer + '\n')                buffer = ""            repaired_lines.append(line + '\n')    # Не забываем про последний буфер    if buffer:        repaired_lines.append(buffer + '\n')    return repaired_lines                                                                                                                                                                                                                  
+
+def parse_raw_csv_file(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Читает и чистит CSV файл с использованием логики из старого парсера.
+    """
+    # Извлекаем месяц из имени файла
+    month = extract_month_from_filename(os.path.basename(file_path))
+    if not month:
+        print("⚠️ Месяц не найден в имени файла, используем 01")
+        month = "01"
+
+    # Преобразуем в UTF-8
+    utf8_filename = convert_to_utf8(file_path)
+
+    # Читаем преобразованный файл
+    with open(utf8_filename, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # Шаг 1: Заменяем ;; на ; до тех пор, пока есть вхождения
+    content = ''.join(lines)
+    while ';;' in content:
+        content = content.replace(';;', ';')
+    lines = content.splitlines(keepends=True)
+
+    # Шаг 2: Удаляем паттерн "[число] из [число]"
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'[0-9]+ из [0-9]+', '', lines[i])
+
+    # Шаг 3: Удаляем пустые строки
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого начислено\s*;', 'Итого начислено;', lines[i])
+
+    # Шаг 3: Удаляем пустые строки (повторно)
+    lines = [line for line in lines if re.search(r'[a-zA-Z0-9а-яА-Я]', line)]
+    for i in range(len(lines)):
+        lines[i] = re.sub(r'Итого  начислено;', 'Итого начислено;', lines[i])
+
+    # Шаг 4: Берем строки от "Начисления по абонентским номерам" до конца файла
+    start_index = -1
+    for i, line in enumerate(lines):
+        if 'Начисления по абонентским номерам' in line:
+            start_index = i
+            break
+
+    if start_index != -1:
+        lines = lines[start_index:]
+    else:
+        lines = []
+[20.07.2026 6:17] Anikey: # Шаг 5: Удаление лишних строк
+    patterns_to_remove = [
+        'Услуги Антифрода', 'Прочие;', 'Услуги связи в домашнем', 'Услуги связи',
+        'Услуги передачи', 'Административные услуги', 'Услуги голосовой',
+        'Абонентская плата;', 'Название услуги;', 'Услуги в расчётном периоде не потреблялись',
+        'Дополнительные услуги',
+    ]
+
+    filtered_lines = []
+    for line in lines:
+        should_remove = False
+        if line.strip() == 'Услуги связи':
+            should_remove = True
+        elif any(pattern in line for pattern in patterns_to_remove if pattern != 'Услуги связи$'):
+            should_remove = True
+        elif line.rstrip('\n\r') == 'Услуги связи':
+            should_remove = True
+        if not should_remove:
+            filtered_lines.append(line)
+
+    lines = filtered_lines
+
+    # Шаг 6: Удаление "Абонентский номер "
+    lines = [line.replace('Абонентский номер ', '') for line in lines]
+
+    # Шаг 7: Исправление ";Услуги"
+    for i in range(len(lines)):
+        if 2 <= lines[i].count(';') <= 4:
+            parts = lines[i].split(';', 1)
+            if len(parts) == 2:
+                lines[i] = parts[0] + ';1;' + parts[1]
+
+    # <<< ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+    lines = repair_broken_lines(lines)
+    # <<< /ДОБАВЛЕНА СКЛЕЙКА СЛОМАННЫХ СТРОК >>>
+
+    # Шаг 8: Берём строки от "Все суммы приведены" до конца файла
+    start_index = -1
+
+Хлебопашев Антон Александрович:
+for i, line in enumerate(lines):
+if 'Все суммы приведены' in line:
+start_index = i
+break
+if start_index != -1:
+lines = lines[start_index:]
+else:
+lines = []
+
+# <<< ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+# Применяем очистку ко всем строкам
+lines = [clean_line(line) + '\n' for line in lines]
+# Удаляем пустые строки после очистки
+lines = [line for line in lines if line.strip()]
+# <<< /ДОБАВЛЕНА ОЧИСТКА СТРОК >>>
+
+# Формируем правильный формат report_month: YYYY-MM
+current_year = datetime.datetime.now().year
+report_month = f"{current_year}-{month}"
+
+# Преобразование строк в словари (data_rows)
+data_rows = []
+current_phone = None
+
+for line in lines:
+line = line.strip()
+if not line:
+continue
+
+# Проверяем, может ли это быть номер телефона (10 цифр)
+phone_match = re.match(r'^(\d{10})(?:\s*;|$)', line)
+if phone_match:
+current_phone = phone_match.group(1)
+continue
+
+# Пропускаем заголовочные строки
+if (line.startswith("Название услуги") or
+line.startswith("Тарифный план") or
+line.startswith("Все суммы приведены") or
+"НДС" in line or
+not line or
+line.count(';') < 4):
+continue
+
+# Разбор полей
+fields = line.split(';')
+if len(fields) < 5:
+continue
+
+description = fields[0].strip().replace("'", "''")
+volume = fields[1].strip().replace("'", "''")
+
+# Пропускаем строки с описаниями услуг без числовых значений
+if not description or description in ['Название услуги', 'Все суммы приведены']:
+continue
+
+try:
+no_discount = float(fields[2]) if fields[2] and fields[2].strip() != '' else 0
+except ValueError:
+no_discount = 0
+
+try:
+discount = float(fields[3]) if len(fields) > 3 and fields[3] and fields[3].strip() != '' else 0
+except ValueError:
+discount = 0
+
+try:
+with_discount = float(fields[4]) if len(fields) > 4 and fields[4] and fields[4].strip() != '' else 0
+except ValueError:
+with_discount = 0
+
+# Только если есть текущий номер телефона и валидное описание
+if current_phone and description and description != current_phone:
+data_rows.append({
+"number": current_phone,
+"username": "",
+"service": description,
+"volume": volume,
+"with_discount": str(with_discount),
+"category": "",
+"service_type": "",
+"report_month": report_month,
+"limit_numbr": 0,
+"parameter_id": ""
+})
+
+return data_rows
+
+# Метаданные категорий: как показывать их во фронтенде.
+CATEGORY_META = {
+"voice": {"label": "Минуты", "unit": "мин", "icon": "📞"},
+"internet": {"label": "Интернет", "unit": "ГБ", "icon": "🌐"},
+[20.07.2026 6:17] Anikey: "sms": {"label": "SMS", "unit": "шт", "icon": "✉️"},
+}
+EXCLUDED_SERVICES = {
+"Абонентская плата и начисления по опции «Бизнес без границ+»", "Абонентская плата и начисления по опции «Бизнес без границ»"
+}
+EXCLUDED_PARAM_IDS = {
+"37", "38", "39", "40", "41", "42", "45", "46", "49", "50", "67", "68"
+}
+EXCLUDED = {str(x) for x in EXCLUDEDPARAM_IDS}
+
+# --- Мелкие безопасные конвертеры ------------------------------------------
+def to_float(value: Any, default: float = 0.0) -> float:
+"""Строку в число. Понимает и запятую, и точку как разделитель дробей."""
+if value is None or value == "":
+return default
+try:
+return float(Decimal(str(value).replace(",", ".").strip()))
+except (InvalidOperation, ValueError):
+return default
+
+def to_int(value: Any, default: int = 0) -> int:
+"""Строку в целое (например users_numbers.limit_numbr)."""
+try:
+return int(float(str(value).strip()))
+except (ValueError, TypeError):
+return default
+
+# --- Разбор объёма
+
+Хлебопашев Антон Александрович:
+услуги --------------------------------------------------
+VOLUMERE = re.compile(r"^\s*([\d.,]+)\s*(шт|мин|мбайт|мб|гб|гбайт|б)?", re.IGNORECASE)
+
+def parse_volume(text: Any) -> tuple[float, str]:
+"""Вернуть (объём, единица). Единицы приводим к: 'мин', 'мбайт', 'гб', 'шт'."""
+s = "" if text is None else str(text)
+m = VOLUMERE.match(s)
+if not m:
+return to_float(s), ""
+amount = to_float(m.group(1))
+unit = (m.group(2) or "").lower()
+if unit in ("мб", "мбайт"):
+unit = "мбайт"
+elif unit in ("гб", "гбайт"):
+unit = "гб"
+return amount, unit
+
+# --- Классификатор категорий ----------------------------------------------
+INTERNETKW = ("интернет", "трафик", "gprs", "data", "мбайт", "гбайт")
+SMSKW = ("sms", "смс", "сообщен", "mms", "ммс")
+VOICEKW = ("вызов", "минут", "звон", "голос", "разговор", "роуминг голос")
+
+def categorize(service: str, category: str, service_type: str, unit: str) -> str:
+text = " ".join(x for x in (service, category, service_type) if x).lower()
+if unit in ("мбайт", "гб") or any(k in text for k in INTERNETKW):
+return "internet"
+if any(k in text for k in SMSKW):
+return "sms"
+if unit == "мин" or any(k in text for k in VOICEKW):
+return "voice"
+return "other"
+
+def is_plan_fee(service: str) -> bool:
+"""Является ли строка абонентской платой по тарифу (базой)."""
+return "абонентская плата по тарифному плану" in (service or "").lower()
+
+def is_meta(service: str) -> bool:
+"""Служебная строка-итог, которую нельзя суммировать в расход."""
+s = (service or "").lower()
+return "итого начислено" in s or "ндс" in s
+
+# --- Превращение сырых строк БД в типизированные позиции --------------------
+def parse_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Разобрать сырые строки (из БД или из CSV) в удобные позиции."""
+items = []
+for r in rows:
+service = r.get("service") or ""
+if is_meta(service):
+continue
+
+param_id = r.get("parameter_id")
+if param_id is None:
+param_id = ""
+
+volume, unit = parse_volume(r.get("volume"))
+cat = categorize(service, r.get("category") or "", r.get("service_type") or "", unit)
+number = r.get("number") or ""
+
+limit_val = r.get("limit_numbr")
+limit = to_int(limit_val) if limit_val is not None else 0
+items.append({
+"number": str(number),
+"username": r.get("username") or "",
+"limit": limit,
+"month": r.get("report_month") or "",
+"service": service,
+"cat": cat,
+"volume": volume,
+"unit": unit,
+"cost": to_float(r.get("with_discount")),
+"parameter_id": str(param_id),
+})
+return items
+
+# --- Ключевая функция: собрать запись абонента за один месяц ----------------
+def categoryusage(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Посчитать по категориям: сколько использовано и на какую сумму начислено."""
+acc = {c: {"used": 0.0, "cost": 0.0} for c in CATEGORY_META}
+for it in items:
+c = it["cat"]
+if c not in acc:
+continue
+acc[c]["cost"] += it["cost"]
+[20.07.2026 6:17] Anikey: outgoing = "исходящ" in it["service"].lower()
+if c == "voice" and it["unit"] == "мин" and outgoing:
+acc[c]["used"] += it["volume"]
+elif c == "internet":
+acc[c]["used"] += it["volume"] / 1024 if it["unit"] == "мбайт" else it["volume"]
+elif c == "sms" and it["unit"] == "шт" and outgoing:
+acc[c]["used"] += it["volume"]
+result = []
+for key, meta in CATEGORY_META.items():
+result.append({
+"key": key, "label": meta["label"], "unit": meta["unit"], "icon": meta["icon"],
+"used": round(acc[key]["used"], 2), "cost": round(acc[key]["cost"], 2),
+})
+return result
+
+def statusand_risk(total: float, limit: int) -> tuple[str, float, int]:
+if limit <= 0:
+if total <= 0:
+return "normal", 0.0, 0
+[20.07.2026 6:18] Anikey: Хлебопашев Антон Александрович:
+return "danger", 999.0, 100
+ratio = total / limit
+if ratio >= 1.25:
+status = "danger"
+elif ratio >= 1.0:
+status = "warning"
+else:
+status = "normal"
+risk = max(0, min(100, round(ratio * 100)))
+return status, round(ratio, 3), risk
+
+def suggest_limit(usage: float) -> int:
+target = usage * 1.10
+limits = [140, 230, 400]
+for limit in limits:
+if target <= limit:
+return limit
+return 400
+
+def build_recommendation(total: float, limit: int, ratio: float, avg: float | None) -> dict[str, Any]:
+basis = avg if (avg is not None and avg > 0) else total
+lines: list[str] = []
+if limit <= 0:
+return {"action": "raise", "suggested_limit": suggest_limit(basis),
+"lines": ["Тариф для номера не задан — рекомендуется установить "
+f"около {suggest_limit(basis)} ₽ исходя из текущего расхода."]}
+if basis > limit:
+new_limit = suggest_limit(basis)
+lines.append(f"Расход ({round(basis)} ₽) превышает лимит {limit} ₽ — "
+f"стабильный перерасход. Повысить тариф до ~{new_limit} ₽ "
+f"или разобраться с услугами перерасхода.")
+return {"action": "raise", "suggested_limit": new_limit, "lines": lines}
+if basis < limit * 0.6:
+new_limit = suggest_limit(basis)
+lines.append(f"Расход ({round(basis)} ₽) заметно ниже тарифа {limit} ₽ — "
+f"тариф завышен. Понизить до ~{new_limit} ₽ без риска перерасхода.")
+return {"action": "lower", "suggested_limit": new_limit, "lines": lines}
+lines.append(f"Расход ({round(basis)} ₽) в пределах тарифа {limit} ₽ — тариф подобран корректно.")
+return {"action": "keep", "suggested_limit": limit, "lines": lines}
+
+def build_record(items: list[dict[str, Any]], avg: float | None = None) -> dict[str, Any]:
+total = round(sum(it["cost"] for it in items), 2)
+plan_fee = round(sum(it["cost"] for it in items if is_plan_fee(it["service"])), 2)
+billable = round(sum(it["cost"] for it in items if it.get("parameter_id") in EXCLUDED), 2)
+limit = 0 + round(sum(it["cost"] for it in items if it.get("parameterid") in ("9", "10")))
+number = items[0]["number"] if items else ""
+username = items[0]["username"] if items else ""
+month = items[0]["month"] if items else ""
+status, ratio, risk = statusand_risk(billable, limit)
+overpayment = round(max(0.0, billable), 2)
+categories = categoryusage(items)
+recommendation = build_recommendation(billable, limit, ratio, avg)
+return {
+"number": number,
+"username": username,
+"limit": limit,
+"month": month,
+"total": total,
+"plan_fee": plan_fee,
+"overpayment": overpayment,
+"ratio": ratio,
+"status": status,
+"risk": risk,
+"underused": bool(limit > 0 and ratio < 0.6),
+"categories": categories,
+"recommendation": recommendation,
+}
+
+# --- Сборка представлений для эндпоинтов -----------------------------------
+def build_month_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+items = parse_rows(rows)
+by_number: dict[str, list[dict[str, Any]]] = {}
+for it in items:
+by_number.setdefault(it["number"], []).append(it)
+records = [build_record(group) for group in by_number.values()]
+records.sort(key=lambda r: (r["overpayment"], r["total"]), reverse=True)
+return records
+
+def build_number_detail(rows: list[dict[str, Any]], month: str | None = None) -> dict[str, Any]:
+items = parse_rows(rows)
+if not items:
+return {}
+by_month: dict[str, list[dict[str, Any]]] = {}
+for it in items:
+by_month.setdefault(it["month"], []).append(it)
+history = [
+{"month": m, "total": round(sum(i["cost"] for i in grp), 2)}
+for m, grp in sorted(by_month.items())
+]
+avg = sum(h["total"] for h in history) / len(history) if history else None
+current_month = month if (month in by_month) else history[-1]["month"]
+
+Хлебопашев Антон Александрович:
+current_items = by_month[current_month]
+record = build_record(current_items, avg=avg)
+record["history"] = history
+idx = next((i for i, h in enumerate(history) if h["month"] == current_month), len(history) - 1)
+[20.07.2026 6:18] Anikey: if idx > 0 and history[idx - 1]["total"] > 0:
+prev = history[idx - 1]["total"]
+record["trend"] = round((record["total"] - prev) / prev * 100, 1)
+else:
+record["trend"] = 0.0
+record["services"] = [
+{"service": it["service"], "cat": it["cat"], "unit": it["unit"],
+"volume": round(it["volume"], 2), "cost": it["cost"]}
+for it in sorted(current_items, key=lambda x: x["cost"], reverse=True)
+]
+return record
+
+def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+total_cost = round(sum(r["total"] for r in records), 2)
+total_overpay = round(sum(r["overpayment"] for r in records), 2)
+critical = sum(1 for r in records if r["status"] == "danger")
+underused = sum(1 for r in records if r["underused"])
+count = len(records)
+return {
+"subscribers": count,
+"total_cost": total_cost,
+"total_overpay": total_overpay,
+"economy_potential": round(total_overpay * 0.7, 2),
+"critical": critical,
+"underused": underused,
+"risk_index": round(critical / count * 100) if count else 0,
+}
+akhlebopashev_sa@chqsrvap830:/opt/megafon_static_for_anton/main$ cd ../
+akhlebopashev_sa@chqsrvap830:/opt/megafon_static_for_anton$ sudo cat app.js
+'use strict';
+// ===========================================================================
+// Фронтенд «Анализ расходов на связь».
+//
+// Раньше файл со счётом парсился прямо в браузере. ТЕПЕРЬ данные приходят из
+// бэкенда (папка backend/), который берёт их из PostgreSQL. Фронтенд стал
+// «тонким»: он только запрашивает готовые цифры по HTTP и красиво их рисует.
+//
+// Все обращения к серверу идут на тот же адрес, что и сама страница (бэкенд
+// раздаёт и статику, и API), поэтому базовый URL — пустая строка.
+// ===========================================================================
+const MONTH_NAMES = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+// --- Состояние приложения --------------------------------------------------
+let currentMonth = null;
+let subscribers = [];          // список записей абонентов за выбранный месяц
+let summary = null;            // KPI за месяц
+let trendCache = null;         // динамика по месяцам (грузится лениво)
+const detailCache = {};        // number -> детальная карточка (ленивая подгрузка)
+let currentFilter = 'all';
+let currentSort = 'overpay';
+let sortDirection = 'desc';
+// ---------------------------------------------------------------------------
+// Тонкий помощник для запросов к API. Возвращает разобранный JSON или бросает
+// ошибку с понятным текстом (её ловят вызывающие и показывают баннер).
+// ---------------------------------------------------------------------------
+async function getJSON(url) {
+const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+let data = null;
+try { data = await resp.json(); } catch (_) { /* тело не JSON */ }
+if (!resp.ok) {
+const msg = (data && data.error) ? data.error :  HTTP ${resp.status} ;
+throw new Error(msg);
+}
+return data;
+}
+// ---------------------------------------------------------------------------
+// Инициализация
+// ---------------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+const $ = (id) => document.getElementById(id);
+$('monthSelect').addEventListener('change', (e) => loadMonth(e.target.value));
+$('refreshBtn').addEventListener('click', () => { if (currentMonth) { trendCache = null; loadMonth(currentMonth); } });
+$('themeBtn').addEventListener('click', toggleTheme);
+$('searchInput').addEventListener('input', renderUsers);
+document.querySelectorAll('.filter').forEach((btn) => {
+btn.addEventListener('click', () => {
+document.querySelectorAll('.filter').forEach((b) => b.classList.re
+
+Хлебопашев Антон Александрович:
+move('active'));
+btn.classList.add('active');
+currentFilter = btn.dataset.filter;
+renderUsers();
+});
+[20.07.2026 6:18] Anikey: });
+document.querySelectorAll('.sort').forEach((btn) => {
+if (btn.dataset.sort === currentSort) btn.classList.add('active');
+btn.addEventListener('click', () => {
+if (currentSort === btn.dataset.sort) sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+else { currentSort = btn.dataset.sort; sortDirection = 'desc'; }
+document.querySelectorAll('.sort').forEach((b) => b.classList.remove('active'));
+btn.classList.add('active');
+renderUsers();
+});
+});
+$('gridView').addEventListener('click', () => setView('grid'));
+$('tableView').addEventListener('click', () => setView('table'));
+// Сделать график всегда открытым
+(async () => {
+const panel = $('chartPanel');
+const toggleBtn = $('toggleChartBtn');
+
+// Открываем панель и делаем кнопку неактивной
+panel.classList.add('open');
+toggleBtn.setAttribute('aria-expanded', 'true');
+toggleBtn.style.cursor = 'default';
+toggleBtn.style.pointerEvents = 'none'; // делаем кнопку некликабельной
+
+// Рисуем график один раз
+await drawBigChart();
+})();
+// Если хотите оставить кнопку кликабельной, но без сворачивания:
+/*
+$('toggleChartBtn').addEventListener('click', async () => {
+const panel = $('chartPanel');
+// Всегда держим панель открытой
+if (!panel.classList.contains('open')) {
+panel.classList.add('open');
+$('toggleChartBtn').setAttribute('aria-expanded', 'true');
+await drawBigChart();
+}
+});
+*/
+const savedTheme = localStorage.getItem('theme');
+if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+window.addEventListener('resize', () => {
+if ($('chartPanel').classList.contains('open') && trendCache) drawBigChart();
+});
+loadMonths();
+});
+function setView(mode) {
+document.querySelectorAll('.view').forEach((b) => b.classList.remove('active'));
+document.getElementById(mode === 'table' ? 'tableView' : 'gridView').classList.add('active');
+document.getElementById('usersGrid').classList.toggle('table-view', mode === 'table');
+renderUsers();
+}
+function toggleTheme() {
+const root = document.documentElement;
+const isDark = root.getAttribute('data-theme') === 'dark'
+|| (!root.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+const next = isDark ? 'light' : 'dark';
+root.setAttribute('data-theme', next);
+localStorage.setItem('theme', next);
+if (document.getElementById('chartPanel').classList.contains('open') && trendCache) drawBigChart();
+}
+// ---------------------------------------------------------------------------
+// Загрузка данных с бэкенда
+// ---------------------------------------------------------------------------
+async function loadMonths() {
+showLoading('Получение списка периодов…', 30);
+try {
+const data = await getJSON('/api/months');
+const months = data.months || [];
+const select = document.getElementById('monthSelect');
+if (!months.length) {
+hideLoading();
+showBanner('В базе нет ни одного отчёта. Проверьте наполнение таблицы reports и связи (GET /api/diagnostics).');
+return;
+}
+select.innerHTML = months
+.map((m) =>  <option value="${m.report_month}">${monthLabel(m.report_month)} · ${m.report_count} счёт(ов)</option> )
+.join('');
+hideBanner();
+await loadMonth(months[0].report_month); // самый свежий месяц
+} catch (err) {
+hideLoading();
+showBanner( Не удалось получить данные: ${err.message}. Бэкенд запущен и БД доступна? Проверьте GET /api/health. );
+}
+}
+async function loadMonth(month) {
+currentMonth = month;
+document.getElementById('monthSelect').value = month;
+showLoading('Загрузка данных за период…', 55);
+try {
+const data = await getJSON( /api/subscribers?month=${encodeURIComponent(month)} );
+subscribers = data.subscribers || [];
+summary = data.summary || null;
+for (const k of Object.keys(detailCache)) delete detailCache[k]; // сброс кэша деталей
+updateKpis();
+
+Хлебопашев Антон Александрович:
+updateRankList();
+renderUsers();
+document.getElementById('kpiPanel').style.display = 'grid';
+[20.07.2026 6:18] Anikey: document.getElementById('analyticsPanel').style.display = 'flex';
+document.getElementById('filtersPanel').style.display = 'flex';
+hideBanner();
+// Если график открыт — перерисуем его под новый период.
+if (document.getElementById('chartPanel').classList.contains('open')) { trendCache = null; await drawBigChart(); }
+} catch (err) {
+showBanner( Ошибка загрузки за ${monthLabel(month)}: ${err.message} );
+} finally {
+hideLoading();
+}
+}
+// ---------------------------------------------------------------------------
+// KPI и рейтинг
+// ---------------------------------------------------------------------------
+function updateKpis() {
+if (!summary) return;
+document.getElementById('totalCount').innerText = summary.subscribers;
+document.getElementById('totalCost').innerText = money(summary.total_cost);
+document.getElementById('totalOverpay').innerText = money(summary.total_overpay);
+document.getElementById('totalEconomy').innerText = money(summary.economy_potential);
+document.getElementById('criticalCount').innerText = summary.critical;
+const r = summary.risk_index;
+const cls = r >= 60 ? 'danger' : (r >= 30 ? 'warning' : 'good');
+document.getElementById('riskDonut').innerHTML = donutSvg(r, cls);
+document.getElementById('riskNote').innerText = r >= 60 ? 'высокий риск' : (r >= 30 ? 'средний риск' : 'низкий риск');
+}
+function updateRankList() {
+const rankList = document.getElementById('rankList');
+const top = [...subscribers].sort((a, b) => b.overpayment - a.overpayment).slice(0, 5);
+if (!top.length) { rankList.innerHTML = '<div class="rank-item">нет данных</div>'; return; }
+rankList.innerHTML = top.map((s, i) =>  <button class="rank-item" data-goto="${s.number}"> <span class="rank-pos">${i + 1}</span> <span class="rank-name">${escapeHtml(s.username || s.number)}</span> <span class="rank-val">${money(s.overpayment)}</span> </button> ).join('');
+rankList.querySelectorAll('[data-goto]').forEach((el) => {
+el.addEventListener('click', () => {
+const card = document.querySelector( .user-card[data-number="${el.dataset.goto}"] );
+if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); card.classList.add('flash'); setTimeout(() => card.classList.remove('flash'), 1200); }
+});
+});
+}
+// ---------------------------------------------------------------------------
+// Рендер карточек (список — лёгкий; детали грузятся по клику)
+// ---------------------------------------------------------------------------
+function renderUsers() {
+const grid = document.getElementById('usersGrid');
+const term = document.getElementById('searchInput').value.trim().toLowerCase();
+let list = subscribers.filter((s) => {
+if (term && !(String(s.number).includes(term)  (s.username  '').toLowerCase().includes(term))) return false;
+if (currentFilter === 'all') return true;
+if (currentFilter === 'overpay') return s.overpayment > 0;
+if (currentFilter === 'underused') return s.underused;
+return s.status === currentFilter;
+});
+const dir = sortDirection === 'desc' ? -1 : 1;
+const keys = {
+overpay: (a, b) => a.overpayment - b.overpayment,
+total: (a, b) => a.total - b.total,
+risk: (a, b) => a.risk - b.risk,
+number: (a, b) => String(a.number).localeCompare(String(b.number)),
+};
+list.sort((a, b) => dir * (keys[currentSort] || keys.overpay)(a, b));
+document.getElementById('resultCount').innerText =  ${list.length} из ${subscribers.length} ;
+if (!list.length) { grid.innerHTML = '<div class="empty-state">Нет данных для отображения</div>'; return; }
+grid.innerHTML = list.map(renderCard).join('');
+}
+function renderCard(sub) {
+const pct = sub.limit ? Math.min(100, (sub.total / sub.limit) * 100) : 0;
+const rec = recPill(sub.recommendation.action);
+const teaser = (sub.recommendation.lines && sub.recommendation.lines[0]) || '';
+return  <article class="user-card card-${sub. 
+
+Хлебопашев Антон Александрович:
+[20.07.2026 6:18] Anikey: status}" data-number="${sub.number}">
+      <header class="card-header">
+        <div class="card-id">
+          <div class="user-name">${escapeHtml(sub.username || 'Абонент ' + sub.number)}</div>
+          <div class="user-sub">${sub.username ? sub.number : ''}</div>
+        </div>
+        <span class="badge badge-${sub.status}">${statusText(sub.status)}</span>
+      </header>
+      <div class="cost-row">
+        <div>
+          <div class="cost-main">${money(sub.overpayment)}</div>
+          <div class="cost-sub">Можно было покрыть тарифом, полная сумма к оплате -  <b>${money(sub.total)}</b></div>
+        </div>
+        <span class="pill pill-${rec.cls}" title="Рекомендация по тарифа">${rec.lbl}</span>
+      </div>
+      <div class="bar" title="Расход относительно тарифа"><div class="bar-fill fill-${sub.status}" style="width:${pct}%"></div></div>
+      <div class="cat-chips">${sub.categories.map(catChip).join('')}</div>
+      ${teaser ?
+      <div class="card-actions">
+        <button class="act" data-act="details">Подробнее ▾</button>
+        <button class="act act-limits" data-act="limits">Детально по тарифам ▾</button>
+      </div>
+      <div class="panel panel-details"></div>
+      <div class="panel panel-limits"></div>
+    </article>
+;
+}
+function catChip(c) {
+  const has = c.cost > 0;
+  return
+      <span class="chip-ico">${c.icon}</span>
+      <span class="chip-num">${fmtUsed(c)}<small> ${c.unit}</small></span>
+    </div>
+;
+}
+// ---------------------------------------------------------------------------
+// Детали абонента — ленивая подгрузка по клику
+// ---------------------------------------------------------------------------
+// --- Обработка загрузки CSV ---
+document.addEventListener('DOMContentLoaded', () => {
+  const uploadBtn = document.getElementById('uploadCsvBtn');
+  const fileInput = document.getElementById('fileInput');
+
+  if (uploadBtn && fileInput) {
+    // Клик по кнопке открывает диалог выбора файла
+    uploadBtn.addEventListener('click', () => {
+      fileInput.click();
+    });
+    // Обработка выбора файла
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.csv')) {
+        showBanner('Ошибка: Пожалуйста, выберите файл с расширением .csv');
+        fileInput.value = ''; // Сброс
+        return;
+      }
+
+      // Извлекаем месяц из названия файла
+      const month = extractMonthFromFilename(file.name);
+      if (!month) {
+        showBanner('Не удалось определить месяц из названия файла. Используйте формат: "Счет Апатить_май"');
+        fileInput.value = '';
+        return;
+      }
+
+      // Показываем загрузку
+      showLoading('Загрузка и обработка файла...', 40);
+      hideBanner();
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('month', month); // Передаем месяц на сервер
+
+      try {
+        const response = await fetch('/api/upload-csv', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Ошибка сервера при обработке файла');
+        }
+        // Успех: данные получены
+        hideLoading();
+        showBanner(
+        // Опционально: перезагрузить данные, если нужно сразу обновить таблицу
+        // Если бэкенд сразу вернул данные в формате, понятном фронтенду, можно обновить состояние:
+        // subscribers = data.subscribers; 
+        // summary = data.summary;
+        // renderUsers();
+        // updateKpis();
+
+        console.log('Данные загружены:', data);
+      } catch (err) {
+        hideLoading();
+        showBanner(
+Ошибка загрузки: ${err.message}```);
+        console.error(err);

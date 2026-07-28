@@ -1,0 +1,317 @@
+> Anikey:
+Table "public.pname" Column | Type | Collation | Nullable | Default
+--------------+---------+-----------+----------+----------------------------------id
+| integer |
+description | text | category | text | service_type | text |
+Indexes:
+"pname_pkey" PRIMARY KEY, btree (id) "pname_description_key" UNIQUE CONSTRAINT, btree (description) Referenced by: TABLE "pvalues" CONSTRAINT "pvalues_parameter_id_fkey" FOREIGN KEY (parameter_id) REFERENCES pname(id)
+Table "public.pvalues" Column | Type | Collation | Nullable | Default
+------------------+-----------------------+-----------+----------+-------------------------------------id
+| integer |
+nextval('pvalues_id_seq1'::regclass) report_id
+| not null | | character varying(10) |
+parameter_id | integer volume
+| text | |
+no_discount | numeric(18,4) | numeric(18,4)
+| discount
+with_discount | numeric(18,4) report_idt | bigint
+|
+volume_numeric | numeric calculated_price | numeric(15,4)
+Indexes:
+"pvalues_pkey" PRIMARY KEY, btree (id) Foreign-key constraints: "pvalues_parameter_id_fkey" FOREIGN KEY (parameter_id) REFERENCES pname(id)
+Table "public.reports" Column | Type | Collation | Nullable | Default | | | | | | | | | | | | | | | | | | | | | | | not null | nextval('pname_id_seq'::regclass) | not null | | | | |---------------+-----------------------------+-----------+----------+-
+------------------------------------
+id
+| bigint
+|
+| not null |
+nextval('reports_id_seq'::regclass)
+report_month | character varying(7) |
+subscriber_id | character varying(50) |
+created_at | timestamp without time zone |
+CURRENT_TIMESTAMP
+report_date | date
+tariff_id | integer
+check_abon | integer
+Indexes:
+| not null |
+|
+|
+|
+|
+|
+|
+|
+| not null |
+|
+|
+| 0
+"reports_pkey" PRIMARY KEY, btree (id)
+"idx_reports_month" btree (report_month)
+"idx_reports_subscriber" btree (subscriber_id)
+"idx_reports_subscriber_month" UNIQUE, btree (subscriber_id, report_month)
+Table "public.tariff_plans"
+Column |
+Type
+| Collation | Nullable |
+----------------+-----------------------------+-----------+----------+-
+-----------------------------------------
+id
+| integer
+|
+| not null |
+nextval('tariff_plans_id_seq'::regclass)
+plan_name | character varying(100) |
+internet_limit | numeric(10,2)
+|
+voice_limit | integer
+sms_limit | integer
+base_cost | numeric(10,2)
+|
+|
+|
+created_at | timestamp without time zone |
+CURRENT_TIMESTAMP
+is_flex
+| boolean
+Indexes:
+"tariff_plans_pkey" PRIMARY KEY, btree (id)
+"tariff_plans_plan_name_key" UNIQUE CONSTRAINT, btree (plan_name)
+Table "public.invoice_meta"
+|
+|
+|
+|
+|
+|
+| false
+|
+|
+|
+|
+|
+| not null |
+|
+Default
+|Column | Type | Collation | Nullable |
+Default
+-----------------------+---------------+-----------+----------+------------------------------------------
+id
+| integer |
+| not null |
+nextval('invoice_meta_id_seq'::regclass)
+report_month
+| text
+subscriber_id
+| text
+invoice_number | text
+invoice_date
+| text
+period_start
+period_end
+| text
+| text
+invoice_factura_list | text
+| text
+qr_text
+operator_name | text
+operator_address | text
+subscriber_name | text
+subscriber_address | text
+account_number | text
+contract_number | text
+payment_form
+| text
+inn_kpp
+receiver_name
+bank_name
+rs_number
+ks_number
+bik
+balance_start
+balance_end
+total_charged
+total_paid
+penies_start
+| text
+| text
+| text
+| text
+| text
+| text
+|
+|
+|
+|
+| numeric(18,4) |
+| numeric(18,4) |
+| numeric(18,4) |
+| numeric(18,4) |
+| numeric(15,2) |
+penies_accrued | numeric(15,2) |
+| numeric(15,2) |
+penies_end
+total_due_no_penies | numeric(18,4) |
+total_due_with_penies | numeric(18,4) |
+days_to_pay
+| integer |
+unpaid_previous | numeric(15,2) |
+| numeric(18,4) |
+| text
+|
+|
+vat_amount
+director_name
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+| not null |
+| not null |
+
+> Anikey:
+|
+|
+|Indexes:
+"invoice_meta_pkey" PRIMARY KEY, btree (id)
+"invoice_meta_report_month_subscriber_id_key" UNIQUE CONSTRAINT,
+btree (report_month, subscriber_id)
+"invoice_meta_report_month_unique" UNIQUE CONSTRAINT, btree
+(report_month)
+Column |
+Type
+Table "public.blacklisted_persons"
+| Collation | Nullable |
+------------+-----------------------------+-----------+----------+-
+------------------------------------------------
+id
+| integer
+|
+| not null |
+nextval('blacklisted_persons_id_seq'::regclass)
+person_id | integer
+|
+status | smallint
+|
+|
+created_at | timestamp without time zone |
+Indexes:
+| not null |
+|
+|
+| now()
+"blacklisted_persons_pkey" PRIMARY KEY, btree (id)
+"blacklisted_persons_person_id_key" UNIQUE CONSTRAINT, btree
+(person_id)
+Check constraints:
+"blacklisted_persons_status_check" CHECK (status >= 0 AND status <= 9)
+Default
+Table "public.users_numbers"
+Column | Type
+| Collation | Nullable |
+------------------+-----------------------+-----------+----------+-
+------------------------------------------
+number
+| bigint
+limit_numbr | integer
+username | text
+id
+| integer
+|
+|
+|
+|
+|
+| not null |
+nextval('users_numbers_id_seq'::regclass)
+status
+| character varying(20) |
+|
+| 'normal'::character varying
+|
+|
+|
+|
+|
+Defaultstatus_color | character varying(20) | is_business_trip | boolean
+|
+trip_start_date | date trip_end_date | date
+Indexes:
+"users_numbers_pkey" PRIMARY KEY, btree (id) "idx_users_business_trip" btree (is_business_trip) "idx_users_status" btree (status)
+| | | | | | | | | 'normal'::character varying | false
+
+
+Gggggg

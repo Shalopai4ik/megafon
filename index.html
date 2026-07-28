@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Анализ расходов на связь</title>
+<title>Анализ тарифных планов — МегаФон B2B</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,21 +11,33 @@
 <header class="app-header">
   <div class="brand">
     <span class="brand-mark">₽</span>
-    <h1>Анализ расходов на связь</h1>
+    <div>
+      <h1>Анализ тарифных планов</h1>
+      <div class="brand-sub">МЕГАФОН · B2B</div>
+    </div>
   </div>
+
   <div class="upload-controls">
-    <button id="workersBtn" class="btn btn-ghost">Список сотрудников</button>
-    <input type="file" id="workersFile" accept=".csv,.txt" hidden>
-    <button id="billsBtn" class="btn btn-primary">Загрузить счета</button>
+    <label class="month-picker" id="monthPickerWrap" hidden>
+      <span class="month-picker-label">Период</span>
+      <select id="monthSelect" class="month-select" aria-label="Расчётный период"></select>
+    </label>
+    <button id="statsBtn" class="btn btn-ghost" hidden title="Полный отчёт по счёту">Общая статистика</button>
+    <button id="rosterBtn" class="btn btn-ghost" title="Список абонентов: номер, лимит, ФИО, должность">Список абонентов</button>
+    <input type="file" id="rosterFile" accept=".csv,.txt,.tsv" hidden>
+    <button id="tripsBtn" class="btn btn-ghost" title="Список командировок: номер, ФИО, период, страна, утверждение">Командировки</button>
+    <input type="file" id="tripsFile" accept=".csv,.txt,.tsv" hidden>
+    <button id="billsBtn" class="btn btn-primary" title="Выгрузка «Начисления по абонентским номерам»">Загрузить счёт</button>
     <input type="file" id="billsFile" accept=".csv,.txt" hidden>
-    <button id="demoBtn" class="btn btn-outline">Демо-данные</button>
+    <button id="downloadBtn" class="btn btn-ghost" hidden title="Скачать отчёт CSV">Отчёт CSV</button>
+    <button id="settingsBtn" class="btn btn-icon" title="Настройки" aria-label="Настройки">⚙</button>
     <button id="themeBtn" class="btn btn-icon" title="Светлая / тёмная тема" aria-label="Сменить тему">◐</button>
   </div>
 </header>
 
-<div id="hint" class="hint"></div>
+<div id="hint" class="hint" role="status" aria-live="polite"></div>
 
-<div id="loading" class="loading-overlay" style="display:none">
+<div id="loading" class="loading-overlay" hidden>
   <div class="loading-box">
     <div id="loadingText" class="loading-text">Обработка файла…</div>
     <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
@@ -34,94 +46,299 @@
 
 <main class="app-main">
 
-  <section id="kpiPanel" class="kpi-panel" style="display:none">
-    <div class="kpi-card">
-      <div class="kpi-ico">👥</div>
-      <div><div class="kpi-label">Абонентов</div><div id="totalCount" class="kpi-value">0</div></div>
+  <!-- ═══ ПРИВЕТСТВИЕ ═══ -->
+  <section id="welcomeSection" class="welcome">
+    <div class="welcome-ico" aria-hidden="true"></div>
+    <h2>Анализ тарифных планов по абонентам</h2>
+    <p class="welcome-lead">
+      Система разбирает счёт оператора, считает фактическое потребление каждого номера
+      (минуты, интернет, SMS) и подбирает тариф, на котором тот же месяц обошёлся бы дешевле.
+    </p>
+
+    <div class="welcome-steps">
+      <div class="welcome-step">
+        <div class="welcome-step-num">1</div>
+        <div>
+          <b>Загрузите счёт</b>
+          <span>Выгрузка «Начисления по абонентским номерам» в CSV. Отсюда берутся услуги, объёмы и суммы.</span>
+        </div>
+      </div>
+      <div class="welcome-step">
+        <div class="welcome-step-num">2</div>
+        <div>
+          <b>Загрузите список абонентов</b>
+          <span>Колонки «Абонентский номер», «Лимит», «ФИО», «Должность» и помесячные расходы. Даёт лимиты, имена и историю.</span>
+        </div>
+      </div>
+      <div class="welcome-step">
+        <div class="welcome-step-num">3</div>
+        <div>
+          <b>Загрузите командировки</b>
+          <span>Номер, ФИО, период, страна, утверждение. Роуминг за эти дни перестаёт считаться перерасходом сотрудника.</span>
+        </div>
+      </div>
+      <div class="welcome-step">
+        <div class="welcome-step-num">4</div>
+        <div>
+          <b>Получите рекомендации</b>
+          <span>Кто пользуется слишком большим пакетом, кому не хватает тарифа и сколько компания платит впустую.</span>
+        </div>
+      </div>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-ico">💳</div>
-      <div><div class="kpi-label">Итого начислено</div><div id="totalCost" class="kpi-value">0 ₽</div></div>
-    </div>
-    <div class="kpi-card kpi-danger">
-      <div class="kpi-ico">📈</div>
-      <div><div class="kpi-label">Переплата</div><div id="totalOverpay" class="kpi-value">0 ₽</div></div>
-    </div>
-    <div class="kpi-card kpi-accent">
-      <div class="kpi-ico">💡</div>
-      <div><div class="kpi-label">Потенциал экономии</div><div id="totalEconomy" class="kpi-value">0 ₽</div></div>
-    </div>
-    <div class="kpi-card kpi-danger">
-      <div class="kpi-ico">⚠️</div>
-      <div><div class="kpi-label">Критичных абонентов</div><div id="criticalCount" class="kpi-value">0</div></div>
+
+    <div class="welcome-actions">
+      <button class="btn btn-primary" id="welcomeBillBtn">Загрузить счёт</button>
+      <button class="btn btn-soft" id="welcomeRosterBtn">Список абонентов</button>
+      <button class="btn btn-soft" id="welcomeTripsBtn">Командировки</button>
     </div>
   </section>
 
-  <section id="analyticsPanel" class="analytics-panel" style="display:none">
-    <div class="card risk-block">
+  <!-- ═══ KPI ═══ -->
+  <!-- Показатели. Без эмодзи: вместо иконок — тонкая цветная риска слева,
+       она задаёт смысл (нейтрально / выгода / риск) и не рябит в глазах. -->
+  <section id="kpiPanel" class="kpi-panel" hidden>
+    <div class="kpi-card" data-widget="kpiCountCard">
+      <div class="kpi-label">Абонентов</div><div id="kpiCount" class="kpi-value">0</div>
+      <div id="kpiCountSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card" data-widget="kpiCostCard">
+      <div class="kpi-label">Начислено за период</div><div id="kpiCost" class="kpi-value">0 ₽</div>
+      <div id="kpiCostSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-brand" data-widget="kpiCompanyCard">
+      <div class="kpi-label">Платит компания</div><div id="kpiCompany" class="kpi-value">0 ₽</div>
+      <div id="kpiCompanySub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card" data-widget="kpiEmployeeCard">
+      <div class="kpi-label">Платит сотрудник</div><div id="kpiEmployee" class="kpi-value">0 ₽</div>
+      <div id="kpiEmployeeSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-danger" data-widget="kpiWasteCard">
+      <div class="kpi-label">Платим впустую</div><div id="kpiWaste" class="kpi-value">0 ₽</div>
+      <div id="kpiWasteSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-accent" data-widget="kpiEconomyCard">
+      <div class="kpi-label">Потенциал экономии</div><div id="kpiEconomy" class="kpi-value">0 ₽</div>
+      <div id="kpiEconomySub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-accent" data-widget="kpiYearCard">
+      <div class="kpi-label">Экономия за год</div><div id="kpiYear" class="kpi-value">0 ₽</div>
+      <div id="kpiYearSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-danger" data-widget="kpiOverpayCard">
+      <div class="kpi-label">Перерасход лимита</div><div id="kpiOverpay" class="kpi-value">0 ₽</div>
+      <div id="kpiOverpaySub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-danger" data-widget="kpiCriticalCard">
+      <div class="kpi-label">Требуют внимания</div><div id="kpiCritical" class="kpi-value">0</div>
+      <div id="kpiCriticalSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card kpi-tone-danger" data-widget="kpiRoamingCard">
+      <div class="kpi-label">Роуминг за период</div><div id="kpiRoaming" class="kpi-value">0 ₽</div>
+      <div id="kpiRoamingSub" class="kpi-sub"></div>
+    </div>
+    <div class="kpi-card" data-widget="kpiIdleCard">
+      <div class="kpi-label">Неиспользуемые SIM</div><div id="kpiIdle" class="kpi-value">0</div>
+      <div id="kpiIdleSub" class="kpi-sub"></div>
+    </div>
+  </section>
+
+  <!-- ═══ АНАЛИТИКА ═══ -->
+  <section id="analyticsPanel" class="analytics-panel" hidden>
+    <div class="card risk-block" data-widget="riskBlock">
       <div class="block-title">Индекс риска</div>
       <div id="riskDonut" class="risk-donut"></div>
       <div id="riskNote" class="risk-note">низкий риск</div>
+      <div id="riskBreak" class="risk-break"></div>
     </div>
-    <div class="card rank-block">
-      <div class="block-title">Топ по расходам</div>
+
+    <div class="card rank-block" data-widget="rankBlock">
+      <div class="block-title">Наибольшая экономия</div>
       <div id="rankList" class="rank-list"></div>
     </div>
-    <div class="card chart-block">
-      <button id="toggleChartBtn" class="block-title toggle" aria-expanded="false">Динамика по месяцам <span class="chev">▾</span></button>
-      <div id="chartPanel" class="chart-panel">
-        <div id="bigChart" class="big-chart"></div>
-      </div>
+
+    <div class="card actions-block" data-widget="actionsBlock">
+      <div class="block-title">Что делать с тарифами</div>
+      <div id="actionsChart" class="actions-chart"></div>
+    </div>
+
+    <div class="card usage-block" data-widget="usageBlock">
+      <div class="block-title">Потребление по компании</div>
+      <div id="usageTotals" class="usage-totals"></div>
+    </div>
+
+    <div class="card chart-block" data-widget="chartBlock">
+      <div class="block-title">Динамика расходов по месяцам</div>
+      <div id="bigChart" class="big-chart"></div>
     </div>
   </section>
 
-  <section id="filtersPanel" class="filters-panel" style="display:none">
-    <div class="filters-group">
+  <!-- ═══ РАСШИРЕННАЯ АНАЛИТИКА ═══
+       Все блоки считаются на клиенте из уже загруженного списка абонентов —
+       дополнительных запросов к серверу они не делают. Лишнее выключается
+       в «Настройки → Виджеты». -->
+  <section id="extraPanel" class="extra-panel" hidden>
+    <!-- Главный блок: за кого мы платим больше всего впустую. -->
+    <div class="card span-6" data-widget="exOversized">
+      <div class="block-title">Слишком большой пакет — платим впустую</div>
+      <div id="exOversized"></div>
+    </div>
+
+    <div class="card span-6" data-widget="exPayers">
+      <div class="block-title">Кто за что платит</div>
+      <div id="exPayers"></div>
+    </div>
+
+    <div class="card span-6" data-widget="exStructure">
+      <div class="block-title">Структура расходов компании</div>
+      <div id="exStructure"></div>
+    </div>
+
+    <div class="card span-6" data-widget="exDistribution">
+      <div class="block-title">Распределение расходов по номерам</div>
+      <div id="exDistribution"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exPareto">
+      <div class="block-title">ABC-анализ расходов</div>
+      <div id="exPareto"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exTopCost">
+      <div class="block-title">Топ-10 по расходам</div>
+      <div id="exTopCost"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exIdle">
+      <div class="block-title">Неиспользуемые номера</div>
+      <div id="exIdle"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exLimits">
+      <div class="block-title">Освоение лимитов</div>
+      <div id="exLimits"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exRoaming">
+      <div class="block-title">Роуминг и командировки</div>
+      <div id="exRoaming"></div>
+    </div>
+
+    <div class="card span-4" data-widget="exAnomalies">
+      <div class="block-title">Аномалии месяца</div>
+      <div id="exAnomalies"></div>
+    </div>
+
+    <div class="card span-6" data-widget="exPositions">
+      <div class="block-title">Расходы по должностям</div>
+      <div id="exPositions"></div>
+    </div>
+
+    <div class="card span-6" data-widget="exHeat">
+      <div class="block-title">Категории × вердикт</div>
+      <div id="exHeat"></div>
+    </div>
+
+    <div class="card span-12" data-widget="exTrips">
+      <div class="block-title">Командировки</div>
+      <div id="exTrips"></div>
+    </div>
+
+    <div class="card span-12" data-widget="exMatrix">
+      <div class="block-title">Матрица «расход × риск»</div>
+      <div id="exMatrix"></div>
+    </div>
+  </section>
+
+  <!-- ═══ СРАВНЕНИЕ ТАРИФОВ ═══ -->
+  <section id="tariffCompareSection" class="collapsible" data-widget="tariffCompareSection" hidden>
+    <button class="collapsible-toggle" id="tariffCompareBtn" aria-expanded="false">
+      <span class="collapsible-arrow">▶</span>
+      Тарифы в счёте: кто на чём сидит и что это стоит
+      <span class="collapsible-hint" id="tariffCompareHint"></span>
+    </button>
+    <div class="collapsible-body" id="tariffCompareBody">
+      <div id="tariffCompareContent" class="tariff-compare-content"></div>
+    </div>
+  </section>
+
+  <!-- ═══ ФИЛЬТРЫ ═══ -->
+  <section id="filtersPanel" class="filters-panel" data-widget="filtersPanel" hidden>
+    <div class="filters-group" id="filtersGroup">
+      <span class="group-label">Фильтр</span>
       <button class="filter active" data-filter="all">Все</button>
-      <button class="filter" data-filter="normal">Норма</button>
-      <button class="filter" data-filter="warning">Внимание</button>
-      <button class="filter" data-filter="danger">Критично</button>
-      <button class="filter" data-filter="growing">С переплатой</button>
-      <button class="filter" data-filter="overpay">Переплата > 100 ₽</button>
+      <button class="filter" data-filter="raise">Повысить тариф</button>
+      <button class="filter" data-filter="lower">Понизить тариф</button>
+      <button class="filter" data-filter="over">Перерасход пакета</button>
+      <button class="filter" data-filter="oversized">Пакет избыточен</button>
+      <button class="filter" data-filter="overlimit">Превышен лимит ₽</button>
+      <button class="filter" data-filter="trip">В командировке</button>
+      <button class="filter" data-filter="roaming">Роуминг</button>
+      <button class="filter" data-filter="paid-by-us">Платим мы</button>
+      <button class="filter" data-filter="paid-by-user">Платит сотрудник</button>
+      <button class="filter" data-filter="excluded">Исключённые</button>
+      <button class="filter" data-filter="noted">С заметкой</button>
     </div>
     <div class="spacer"></div>
     <div class="sort-group">
       <span class="group-label">Сортировка</span>
-      <button class="sort" data-sort="overpay">Переплата</button>
+      <button class="sort active" data-sort="waste">Невыгодность</button>
+      <button class="sort" data-sort="idle">Впустую ₽</button>
+      <button class="sort" data-sort="saving">Экономия</button>
+      <button class="sort" data-sort="company">Платим мы</button>
       <button class="sort" data-sort="cost">Сумма</button>
+      <button class="sort" data-sort="overpay">Перерасход</button>
       <button class="sort" data-sort="risk">Риск</button>
-      <button class="sort" data-sort="number">№</button>
+      <button class="sort" data-sort="number">Номер</button>
     </div>
     <div class="view-group">
-      <button id="gridView" class="view active" title="Плитки">▦</button>
-      <button id="tableView" class="view" title="Список">☰</button>
+      <button id="gridView" class="view active" title="Плитки" aria-label="Плитки">▦</button>
+      <button id="tableView" class="view" title="Список" aria-label="Список">☰</button>
     </div>
-    <input type="text" id="searchInput" class="search-input" placeholder="Поиск по номеру или имени…">
+    <input type="search" id="searchInput" class="search-input" placeholder="Номер, ФИО или должность…">
     <span id="resultCount" class="result-count"></span>
   </section>
 
-  <section id="welcomeSection" class="empty-state" style="display:block">
-    <div style="margin-bottom:20px;font-size:48px">📊</div>
-    <h2 style="margin:0 0 8px;font-size:20px">Анализ расходов на связь</h2>
-    <p style="color:var(--text-muted);max-width:480px;margin:0 auto 24px">
-      Загрузите файл-счет в формате CSV для анализа расходов абонентов,
-      или нажмите <strong>Демо-данные</strong> для просмотра работы системы.
-    </p>
-    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-      <button class="btn btn-primary" onclick="document.getElementById('billsFile').click()">Загрузить CSV</button>
-      <button class="btn btn-outline" style="color:var(--primary);border-color:var(--primary)" onclick="document.getElementById('demoBtn').click()">Демо-данные</button>
-    </div>
-  </section>
-
-  <section id="usersGrid" class="users-grid"></section>
+  <section id="usersGrid" class="users-grid" aria-live="polite"></section>
 
 </main>
 
-<!-- Модалка абонента -->
-<div id="subModal" class="modal" style="display:none">
-  <div class="modal-backdrop" onclick="closeSubModal()"></div>
-  <div class="modal-body modal-lg">
-    <button class="modal-close" onclick="closeSubModal()">✕</button>
+<!-- ═══ ОБЩАЯ СТАТИСТИКА ═══ -->
+<div id="statsModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close="stats"></div>
+  <div class="modal-body modal-xl" role="dialog" aria-label="Общая статистика">
+    <button class="modal-close" data-close="stats" aria-label="Закрыть">✕</button>
+    <div id="statsContent"></div>
+  </div>
+</div>
+
+<!-- ═══ НАСТРОЙКИ ═══ -->
+<div id="settingsPanel" class="modal" hidden>
+  <div class="modal-backdrop" data-close="settings"></div>
+  <div class="modal-body modal-xl settings-box" role="dialog" aria-label="Настройки">
+    <div class="settings-header">
+      <span class="settings-title">⚙ Настройки</span>
+      <button class="modal-close modal-close-static" data-close="settings" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-tab="subscribers">Абоненты</button>
+      <button class="settings-tab" data-tab="colors">Цвета-правила</button>
+      <button class="settings-tab" data-tab="marks">Пометки</button>
+      <button class="settings-tab" data-tab="rules">Правила оплаты</button>
+      <button class="settings-tab" data-tab="trips">Командировки</button>
+      <button class="settings-tab" data-tab="statuses">Статусы</button>
+      <button class="settings-tab" data-tab="tariffs">Каталог тарифов</button>
+      <button class="settings-tab" data-tab="widgets">Виджеты</button>
+    </div>
+    <div id="settingsContent" class="settings-content"></div>
+  </div>
+</div>
+
+<!-- ═══ КАРТОЧКА АБОНЕНТА ═══ -->
+<div id="subModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close="modal"></div>
+  <div class="modal-body modal-lg" role="dialog" aria-label="Карточка абонента">
+    <button class="modal-close" data-close="modal" aria-label="Закрыть">✕</button>
     <div id="subModalContent"></div>
   </div>
 </div>

@@ -1,0 +1,448 @@
+[16.07.2026 12:54] Anikey: Хлебопашев Антон Александрович:
+[sudo] password for akhlebopashev_sa: 
+"""
+diagnostics.py — проверка связи с БД и корректности предположений о схеме.
+============================================================================
+
+ЗАПУСК:   python3 diagnostics.py
+
+Этот скрипт НИЧЕГО не меняет в базе — только читает. Он нужен, чтобы за 5
+секунд понять:
+
+доходит ли вообще запрос до БД (правильно ли заданы PG*/DATABASE_DSN);
+есть ли данные в ключевых таблицах;
+«сходятся» ли JOIN'ы между таблицами (главная точка риска, см.
+SCHEMA_ASSUMPTIONS.md). Если pvalues не приклеиваются к reports —
+здесь вы увидите ноль и поймёте, что предположение о связи неверно;
+какие значения лежат в pname.category / service_type (для настройки
+классификатора категорий в domain.categorize).
+
+Если что-то не сходится — правьте выражения связей в config.Schema и
+запускайте диагностику снова.
+"""
+
+import db
+import queries
+from config import Schema
+
+def _rule(title: str) -> None:
+print("\n" + title)
+print("-" * len(title))
+
+def main() -> None:
+print("Диагностика подключения и схемы БД")
+print("==================================")
+
+# 1) Связь + количество строк.
+try:
+health = db.healthcheck()
+except db.DbError as exc:
+print(f"\n[FAIL] Нет связи с БД или ошибка запроса:\n  {exc}")
+print("\nПроверьте переменные PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD "
+"или DATABASE_DSN, и что клиент psql доступен.")
+return
+
+_rule("1. Количество строк в таблицах")
+for table, n in health["counts"].items():
+print(f"  {table:16} {n:>10}")
+
+# 2) Проверка связей (JOIN sanity).
+rule("2. Сходятся ли связи между таблицами")
+sanity = db.query(queries.JOINSANITY)[0]
+pv_total = int(sanity["pvalues_total"])
+pv_join = int(sanity["pvalues_joined_reports"])
+rep_total = int(sanity["reports_total"])
+rep_join = int(sanity["reports_joined_users"])
+print(f"  Предположения (из config.Schema):")
+print(f"    pvalues -> reports :  {Schema.PVALUES_TO_REPORT}")
+print(f"    reports -> users   :  {Schema.REPORT_TO_USER}")
+print(f"  pvalues строк всего:              {pv_total}")
+print(f"  из них приклеились к reports:     {pv_join}   {_verdict(pv_join, pv_total)}")
+print(f"  reports строк всего:              {rep_total}")
+print(f"  из них нашли абонента:            {rep_join}   {_verdict(rep_join, rep_total)}")
+if pv_total and pv_join == 0:
+print("  [!] pvalues НЕ связываются с reports — почти наверняка неверно")
+print("      выражение Schema.PVALUES_TO_REPORT. Посмотрите примеры значений")
+print("      pvalues.report_id и reports.id и поправьте связь.")
+if rep_total and rep_join == 0:
+print("  [!] reports НЕ связываются с users_numbers — проверьте")
+print("      Schema.REPORT_TO_USER (subscriber_id vs number).")
+
+# 3) Категории услуг — для настройки классификатора.
+rule("3. Значения pname.category / servicetype (топ-20)")
+cats = db.query(queries.DISTINCT_CATEGORIES)
+if not cats:
+print("  (пусто)")
+for row in cats[:20]:
+print(f"  category={row.get('category')!r:30} type={row.get('service_type')!r:20} n={row.get('n')}")
+
+# 4) Пример: несколько строк report_id / reports.id, чтобы глазами сверить
+#    формат связи pvalues<->reports.
+rule("4. Примеры ключей для сверки связи pvalues <-> reports")
+try:
+samples = db.query(
+"SELECT (SELECT id FROM reports LIMIT 1) AS samplereport_id, "
+"(SELECT report_id FROM pvalues LIMIT 1) AS sample_pvalues_report_id;"
+)
+if samples:
+print(f"  reports.id пример:        {samples[0].get('sample_report_id')!r}")
+print(f"  pvalues.report_id пример: {samples[0].get('sample_pvalues_report_id')!r}")
+print("  -> Эти два значения должны соответствовать друг другу по вашей связи.")
+except db.DbError as exc:
+print(f"  (не удалось получить примеры: {exc})")
+
+print("\nГотово.")
+
+def _verdict(part: int, total: int) -> str:
+if total == 0:
+
+Хлебопашев Антон Александрович:
+return "(таблица пуста)"
+if part == 0:
+return "<-- ПРОБЛЕМА: связь не работает"
+if part < total:
+return "(частично — возможно, это норма)"
+return "OK"
+
+if name == "main":
+main()
+[16.07.2026 12:54] Anikey: Хлебопашев Антон Александрович:
+"""
+domain.py — прикладная логика («что означают данные»).
+============================================================================
+
+Здесь нет ни SQL, ни HTTP — только чистые функции, которые превращают сырые
+строки из БД в осмысленный отчёт: разбирают объём услуги, относят услугу к
+категории (минуты/интернет/SMS), считают суммы, сравнивают с лимитом абонента
+и формируют рекомендацию «повысить / понизить / оставить лимит».
+
+Почему это вынесено отдельно:
+
+такие функции легко читать и тестировать — они не зависят от базы и сети;
+если завтра данные придут из другого места, эта логика не изменится.
+
+Единица истины про лимит: users_numbers.limit_numbr трактуется как МЕСЯЧНЫЙ
+ЛИМИТ РАСХОДА В РУБЛЯХ (см. config.Schema.LIMIT_UNIT). Всё сравнение расхода
+идёт именно с ним.
+"""
+
+import re
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+# Метаданные категорий: как показывать их во фронтенде.
+CATEGORY_META = {
+"voice": {"label": "Минуты", "unit": "мин", "icon": "📞"},
+"internet": {"label": "Интернет", "unit": "ГБ", "icon": "🌐"},
+"sms": {"label": "SMS", "unit": "шт", "icon": "✉️"},
+}
+
+EXCLUDED_SERVICES = {
+"Абонентская плата и начисления по опции «Бизнес без границ+»", "Абонентская плата и начисления по опции «Бизнес без границ»"
+}
+
+EXCLUDED_PARAM_IDS = {
+"1", "2", "3", "4", "5", "6", "7", "8", "11", "12", "13", "14", "15", "16", "17", "18", "28", "29", "30", "32", "33", "34", "53", "54", "55", "56", "57", "58", "59", "60", "61", "62", "63", "64", "65", "74", "75", "76", "77", "83"
+}
+EXCLUDED = {str(x) for x in EXCLUDEDPARAM_IDS}
+# --- Мелкие безопасные конвертеры ------------------------------------------
+# Значения из CSV приходят строками и иногда пустыми. Эти функции превращают
+# их в числа, никогда не падая (на мусоре возвращают 0 / значение по умолчанию).
+
+def to_float(value: Any, default: float = 0.0) -> float:
+"""Строку в число. Понимает и запятую, и точку как разделитель дробей."""
+if value is None or value == "":
+return default
+try:
+return float(Decimal(str(value).replace(",", ".").strip()))
+except (InvalidOperation, ValueError):
+return default
+
+def to_int(value: Any, default: int = 0) -> int:
+"""Строку в целое (например users_numbers.limit_numbr)."""
+try:
+return int(float(str(value).strip()))
+except (ValueError, TypeError):
+return default
+
+# --- Разбор объёма услуги --------------------------------------------------
+# В БД volume хранится текстом: "320 мин", "3800 Мбайт", "31 шт", иногда просто
+# число. Достаём численный объём и нормализованную единицу измерения.
+VOLUMERE = re.compile(r"^\s*([\d.,]+)\s*(шт|мин|мбайт|мб|гб|гбайт|б)?", re.IGNORECASE)
+
+def parse_volume(text: Any) -> tuple[float, str]:
+"""Вернуть (объём, единица). Единицы приводим к: 'мин', 'мбайт', 'гб', 'шт'."""
+s = "" if text is None else str(text)
+m = VOLUMERE.match(s)
+if not m:
+return to_float(s), ""
+amount = to_float(m.group(1))
+unit = (m.group(2) or "").lower()
+if unit in ("мб", "мбайт"):
+unit = "мбайт"
+elif unit in ("гб", "гбайт"):
+unit = "гб"
+return amount, unit
+
+# --- Классификатор категорий ----------------------------------------------
+# Относим услугу к одной из корзин: voice / internet / sms / other.
+# Схема даёт нам pname.category и pname.service_type, но их точные значения нам
+# заранее неизвестны, поэтому решаем по ключевым словам во ВСЕХ доступных полях
+# (название + категория + тип) и, как подсказку, по единице измерения.
+# Порядок проверок важен: интернет проверяем ДО голоса, потому что «интернет в
+# роуминге» содержит слово, пересекающееся с голосовыми услугами.
+
+INTERNETKW = ("интернет", "трафик", "gprs", "data", "мбайт", "гбайт")
+SMSKW = ("sms", "смс", "сообщен", "mms", "ммс")
+VOICEKW = ("вызов", "минут", "звон", "голос", "разговор", "роуминг голос")
+
+def categorize(service: str, category: str, service_type: str, unit: str) -> str:
+text = " ".join(x for x in (service, category, service_type) if x).lower()
+[16.07.2026 12:54] Anikey: Хлебопашев Антон Александрович:
+if unit in ("мбайт", "гб") or any(k in text for k in INTERNETKW):
+return "internet"
+if any(k in text for k in SMSKW):
+return "sms"
+if unit == "мин" or any(k in text for k in VOICEKW):
+return "voice"
+return "other"
+
+def is_plan_fee(service: str) -> bool:
+"""Является ли строка абонентской платой по тарифу (базой)."""
+return "абонентская плата по тарифному плану" in (service or "").lower()
+
+def is_meta(service: str) -> bool:
+"""Служебная строка-итог, которую нельзя суммировать в расход."""
+s = (service or "").lower()
+return "итого начислено" in s or "ндс" in s
+
+# --- Превращение сырых строк БД в типизированные позиции --------------------
+
+def parse_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Разобрать «плоские» строки из БД в удобные позиции с числами и категорией."""
+items = []
+for r in rows:
+service = r.get("service") or ""
+if is_meta(service):
+continue  # страховка: итоги исключаются и в SQL, но подстрахуемся
+volume, unit = parse_volume(r.get("volume"))
+cat = categorize(service, r.get("category") or "", r.get("service_type") or "", unit)
+# Номер абонента: берём из справочника (number); если его нет —
+# используем subscriber_id из отчёта как запасной ключ.
+number = r.get("number") or r.get("subscriber_id") or ""
+items.append({
+"number": str(number),
+"username": r.get("username") or "",
+"limit": to_int(r.get("limit_numbr")),
+"month": r.get("report_month") or "",
+"service": service,
+"cat": cat,
+"volume": volume,
+"unit": unit,
+"cost": to_float(r.get("with_discount")),
+"parameter_id": str(r.get("parameter_id") or ""),
+})
+return items
+
+# --- Ключевая функция: собрать запись абонента за один месяц ----------------
+
+def categoryusage(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Посчитать по категориям: сколько использовано и на какую сумму начислено."""
+acc = {c: {"used": 0.0, "cost": 0.0} for c in CATEGORY_META}
+for it in items:
+c = it["cat"]
+if c not in acc:
+continue  # 'other' в разбивку по пакетам не показываем отдельно
+acc[c]["cost"] += it["cost"]
+outgoing = "исходящ" in it["service"].lower()
+if c == "voice" and it["unit"] == "мин" and outgoing:
+acc[c]["used"] += it["volume"]
+elif c == "internet":
+# Мбайт -> ГБ; гигабайты оставляем как есть.
+acc[c]["used"] += it["volume"] / 1024 if it["unit"] == "мбайт" else it["volume"]
+elif c == "sms" and it["unit"] == "шт" and outgoing:
+acc[c]["used"] += it["volume"]
+
+result = []
+for key, meta in CATEGORY_META.items():
+result.append({
+"key": key, "label": meta["label"], "unit": meta["unit"], "icon": meta["icon"],
+"used": round(acc[key]["used"], 2), "cost": round(acc[key]["cost"], 2),
+})
+return result
+
+def statusand_risk(total: float, limit: int) -> tuple[str, float, int]:
+"""Определить критичность абонента по расходу относительно лимита.
+
+Возвращает (статус, доля расхода к лимиту, индекс риска 0..100).
+
+Логика намеренно простая и объяснимая:
+* нет лимита (0)         -> считаем 'normal', риск 0 (не с чем сравнивать);
+* расход >= 125% лимита  -> 'danger'  (существенный перерасход);
+* расход >= 100% лимита  -> 'warning' (вышел за лимит);
+* иначе                  -> 'normal'.
+"""
+if limit <= 0:
+if total <= 0:
+return "normal", 0.0, 0
+return "danger", 999.0, 100
+ratio = total / limit
+if ratio >= 1.25:
+status = "danger"
+elif ratio >= 1.0:
+status = "warning"
+else:
+status = "normal"
+risk = max(0, min(100, round(ratio * 100)))
+return status, round(ratio, 3), risk
+
+def suggest_limit(usage: float) -> int:
+"""Подсказать «круглый» лимит под фактический расход, с запасом ~10%.
+
+Например
+
+Хлебопашев Антон Александрович:
+, при расходе 863 ₽ вернём 950 (округление вверх до 50 от 863*1.1).
+Используется в рекомендациях «повысить/понизить лимит».
+"""
+target = usage * 1.10
+step = 50 if target < 1000 else 100
+return max(step, int((target + step - 1) // step) * step)
+
+def build_recommendation(total: float, limit: int, ratio: float, avg: float | None) -> dict[str, Any]:
+"""Сформировать рекомендацию по лимиту.
+[16.07.2026 12:54] Anikey: Если известно среднее по истории (avg) — опираемся на него (устойчивее к
+случайному всплеску одного месяца); иначе на текущий расход total.
+"""
+basis = avg if (avg is not None and avg > 0) else total
+lines: list[str] = []
+
+if limit <= 0:
+return {"action": "keep", "suggested_limit": suggest_limit(basis),
+"lines": ["Лимит для номера не задан — рекомендуется установить "
+f"около {suggest_limit(basis)} ₽ исходя из текущего расхода."]}
+
+if basis > limit:
+new_limit = suggest_limit(basis)
+lines.append(f"Расход ({round(basis)} ₽) превышает лимит {limit} ₽ — "
+f"стабильный перерасход. Повысить лимит до ~{new_limit} ₽ "
+f"или разобраться с услугами перерасхода.")
+return {"action": "raise", "suggested_limit": new_limit, "lines": lines}
+
+if basis < limit * 0.6:
+new_limit = suggest_limit(basis)
+lines.append(f"Расход ({round(basis)} ₽) заметно ниже лимита {limit} ₽ — "
+f"лимит завышен. Понизить до ~{new_limit} ₽ без риска перерасхода.")
+return {"action": "lower", "suggested_limit": new_limit, "lines": lines}
+
+lines.append(f"Расход ({round(basis)} ₽) в пределах лимита {limit} ₽ — лимит подобран корректно.")
+return {"action": "keep", "suggested_limit": limit, "lines": lines}
+
+def build_record(items: list[dict[str, Any]], avg: float | None = None) -> dict[str, Any]:
+"""Собрать итоговую запись абонента из его позиций за один месяц."""
+total = round(sum(it["cost"] for it in items), 2)
+plan_fee = round(sum(it["cost"] for it in items if is_plan_fee(it["service"])), 2)
+billable = round(sum(it["cost"] for it in items if it.get("parameter_id") not in EXCLUDED), 2)
+limit = 0 + round(sum(it["cost"] for it in items if it.get("parameterid") in ("9", "10")))
+number = items[0]["number"] if items else ""
+username = items[0]["username"] if items else ""
+month = items[0]["month"] if items else ""
+
+status, ratio, risk = statusand_risk(billable, limit)
+overpayment = round(max(0.0, billable - limit), 2)
+categories = categoryusage(items)
+recommendation = build_recommendation(billable, limit, ratio, avg)
+
+return {
+"number": number,
+"username": username,
+"limit": limit,
+"month": month,
+"total": total,
+"plan_fee": plan_fee,
+"overpayment": overpayment,
+"ratio": ratio,
+"status": status,
+"risk": risk,
+"underused": bool(limit > 0 and ratio < 0.6),
+"categories": categories,
+"recommendation": recommendation,
+}
+
+# --- Сборка представлений для эндпоинтов -----------------------------------
+
+def build_month_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+"""Из строк за месяц собрать список записей по абонентам (для /api/subscribers)."""
+items = parse_rows(rows)
+by_number: dict[str, list[dict[str, Any]]] = {}
+for it in items:
+by_number.setdefault(it["number"], []).append(it)
+records = [build_record(group) for group in by_number.values()]
+# Сортируем по переплате убыв. — сверху самые «дорогие» отклонения.
+records.sort(key=lambda r: (r["overpayment"], r["total"]), reverse=True)
+return records
+
+def build_number_detail(rows: list[dict[str, Any]], month: str | None = None) -> dict[str, Any]:
+"""Детальная карточка абонента: разбивка за месяц + РЕАЛЬНАЯ история.
+
+rows — все позиции абонента по всем месяцам. Мы:
+1) считаем суммарный расход по каждому месяцу (это и есть история —
+без всякого моделирования, чистый факт из reports);
+
+Хлебопашев Антон Александрович:
+2) выбираем «текущий» месяц (переданный month или самый свежий);
+      3) собираем детальную запись за этот месяц, подмешивая средний расход
+         по истории в рекомендацию.
+    """
+    items = parse_rows(rows)
+    if not items:
+        return {}
+
+    # 1) История: суммарный расход по месяцам.
+    by_month: dict[str, list[dict[str, Any]]] = {}
+    for it in items:
+        by_month.setdefault(it["month"], []).append(it)
+    history = [
+        {"month": m, "total": round(sum(i["cost"] for i in grp), 2)}
+        for m, grp in sorted(by_month.items())
+    ]
+    avg = sum(h["total"] for h in history) / len(history) if history else None
+
+    # 2) Какой месяц показываем детально.
+    current_month = month if (month in by_month) else history[-1]["month"]
+    current_items = by_month[current_month]
+[16.07.2026 12:54] Anikey: # 3) Запись за текущий месяц + история и тренд к предыдущему месяцу.
+    record = build_record(current_items, avg=avg)
+    record["history"] = history
+
+    idx = next((i for i, h in enumerate(history) if h["month"] == current_month), len(history) - 1)
+    if idx > 0 and history[idx - 1]["total"] > 0:
+        prev = history[idx - 1]["total"]
+        record["trend"] = round((record["total"] - prev) / prev * 100, 1)
+    else:
+        record["trend"] = 0.0
+
+    # Полный список услуг за текущий месяц — для детальной таблицы на карточке.
+    record["services"] = [
+        {"service": it["service"], "cat": it["cat"], "unit": it["unit"],
+         "volume": round(it["volume"], 2), "cost": it["cost"]}
+        for it in sorted(current_items, key=lambda x: x["cost"], reverse=True)
+    ]
+    return record
+
+def build_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """KPI для верхней панели: считаются из уже собранного списка записей."""
+    total_cost = round(sum(r["total"] for r in records), 2)
+    total_overpay = round(sum(r["overpayment"] for r in records), 2)
+    critical = sum(1 for r in records if r["status"] == "danger")
+    underused = sum(1 for r in records if r["underused"])
+    count = len(records)
+    return {
+        "subscribers": count,
+        "total_cost": total_cost,
+        "total_overpay": total_overpay,
+        "economy_potential": round(total_overpay * 0.7, 2),
+        "critical": critical,
+        "underused": underused,
+        "risk_index": round(critical / count * 100) if count else 0,
+    }
