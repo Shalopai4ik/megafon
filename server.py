@@ -1592,8 +1592,39 @@ def _setup_console() -> None:
 
 def main() -> None:
     _setup_console()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"\n  Анализ тарифных планов -> http://localhost:{PORT}\n", flush=True)
+
+    # ПОРТ МОЖНО ЗАДАТЬ АРГУМЕНТОМ: python server.py 8080
+    #
+    # Раньше он брался ТОЛЬКО из переменной окружения PORT, а аргумент
+    # командной строки молча игнорировался. Человек запускал
+    # `python server.py 8080`, видел в логе 3001 и не понимал, почему сайт
+    # не открывается по нужному адресу. В закрытом контуре, где занятые
+    # порты обычное дело, такая ловушка особенно неприятна.
+    #
+    # Порядок теперь очевидный: аргумент важнее переменной окружения,
+    # переменная важнее значения по умолчанию.
+    port = PORT
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+            if not (1 <= port <= 65535):
+                raise ValueError
+        except ValueError:
+            print(f"  Порт «{sys.argv[1]}» не похож на число от 1 до 65535.")
+            print(f"  Запускаю на {PORT}.", flush=True)
+            port = PORT
+
+    try:
+        server = ThreadingHTTPServer((HOST, port), Handler)
+    except OSError as err:
+        # Занятый порт — самая частая причина «не запускается». Раньше в
+        # ответ прилетала голая трассировка, по которой непонятно, что делать.
+        print(f"\n  Не удалось занять порт {port}: {err}")
+        print("  Скорее всего он уже занят другим экземпляром.")
+        print(f"  Попробуйте другой: python server.py {port + 1}\n", flush=True)
+        raise SystemExit(1)
+
+    print(f"\n  Анализ тарифных планов -> http://localhost:{port}\n", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
