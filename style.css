@@ -290,9 +290,16 @@ button { font-family: inherit; }
   font-size: 21px; font-weight: 680; letter-spacing: -.5px; line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
+/* Подпись под цифрой.
+   БЫЛО в одну строку с многоточием — и половина плиток теряла смысл:
+   «84 208 ₽ в год · пакеты не выб…», «при сохранении текущего пот…».
+   СТАЛО до двух строк с переносом. Обрезка осталась как страховка от
+   совсем длинного текста, но срабатывает уже на второй строке, а не на
+   первой, так что читается всё. */
 .kpi-sub {
   font-size: 10.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.35;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; min-height: 2.7em;
 }
 
 /* ═══════════════════════════ НАСТРОЙКА ЧИПСА ═══════════════════════════
@@ -304,8 +311,33 @@ button { font-family: inherit; }
   text-transform: uppercase; color: var(--text-muted);
 }
 
+/* ПРАВИЛА НОМЕРА — единый блок.
+   Цвета и пометки теперь в одной секции (в базе это одна таблица chip_rules).
+   Чтобы объединение не превратилось в кашу, слева у каждой строки стоит
+   подпись вида «цвет — один» / «пометки — любое число»: она и разделяет
+   группы визуально, и снимает главный вопрос администратора. */
+.chip-rules {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 11px 12px; border-radius: var(--radius-sm); background: var(--surface-2);
+}
+.chip-rules-line { display: flex; align-items: flex-start; gap: 12px; }
+.chip-rules-kind {
+  flex: none; width: 92px; padding-top: 6px;
+  font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--text-muted); line-height: 1.35;
+}
+/* Уточнение «один / любое число» — тише подписи, но читаемо. */
+.chip-rules-kind em {
+  display: block; font-style: normal; font-weight: 600;
+  text-transform: none; letter-spacing: 0; opacity: .7;
+}
+@media (max-width: 620px) {
+  .chip-rules-line { flex-direction: column; gap: 5px; }
+  .chip-rules-kind { width: auto; padding-top: 0; }
+}
+
 /* Палитра-правило: каждая кнопка — это готовый набор эффектов. */
-.chip-colors { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-colors { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
 .chip-color {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 6px 11px 6px 8px; border-radius: 999px; cursor: pointer;
@@ -325,7 +357,7 @@ button { font-family: inherit; }
 .chip-color-label { white-space: nowrap; }
 
 /* Пометки — теги, можно навесить несколько. */
-.chip-marks { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-marks { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
 .chip-mark {
   padding: 5px 11px; border-radius: 999px; cursor: pointer; font-size: 12px;
   font-family: inherit; border: 1px dashed var(--border-strong);
@@ -453,6 +485,26 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 }
 .rule-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 .rule-count { font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+/* Ноль номеров — правило заведено, но не используется. Гасим, чтобы взгляд
+   цеплялся за живые правила, а не за пустые строки. */
+.rule-count.is-zero { font-weight: 500; color: var(--text-muted); opacity: .55; }
+
+/* ГРУППЫ ПРАВИЛ ЧИПСА.
+   Одна вкладка «Правила чипсов» вместо двух («Цвета-правила» и «Пометки»):
+   таблицы у них были одинаковые, различие описано подписью группы. */
+.rule-group + .rule-group { margin-top: 22px; }
+.rule-group-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.rule-group-head h4 { font-size: 13px; font-weight: 700; margin: 0; }
+.rule-group-n {
+  display: inline-block; min-width: 20px; padding: 1px 6px; margin-left: 4px;
+  border-radius: 999px; background: var(--surface-3); color: var(--text-muted);
+  font-size: 11px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.rule-group-hint { flex: 1; min-width: 180px; font-size: 11.5px; color: var(--text-muted); }
+.btn-sm { padding: 5px 11px; font-size: 12px; }
 .rule-del {
   border: none; background: none; color: var(--text-muted); cursor: pointer;
   font-size: 13px; padding: 3px 5px; border-radius: 6px;
@@ -537,6 +589,26 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .actions-block { grid-column: span 3; }
 .usage-block { grid-column: span 4; }
 .chart-block { grid-column: span 12; }
+/* Схлопнутый вид карточки без данных: подложка глушится, отступы режутся,
+   чтобы пустой блок не занимал столько же места, сколько полноценный график. */
+.chart-block.is-empty {
+  background: var(--surface-2); box-shadow: none; padding-top: 14px; padding-bottom: 14px;
+}
+.chart-block.is-empty .card-title { margin-bottom: 8px; }
+
+/* Компактное пустое состояние: значок-полукруг + одна строка с подсказкой.
+   Значок функциональный, не украшение — тот же ◐ используется как «нет данных»
+   в остальных блоках. */
+.empty-inline {
+  display: flex; align-items: flex-start; gap: 10px;
+  font-size: 12.5px; color: var(--text-muted); line-height: 1.5;
+}
+.empty-inline-mark {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px;
+  background: var(--surface-3); color: var(--text-muted);
+}
+.empty-inline b { color: var(--text); font-weight: 600; }
 .span-4 { grid-column: span 4; }
 .span-6 { grid-column: span 6; }
 .span-12 { grid-column: span 12; }

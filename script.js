@@ -978,14 +978,24 @@ function cardChipPanel(s) {
   const trip = s.trip;
 
   return `<div class="chip-setup" data-number="${esc(s.number)}">
+    <!-- ПРАВИЛА НОМЕРА — одна секция вместо бывших «Цвет» и «Пометки».
+         В базе это уже одна таблица chip_rules, и админ думает так же:
+         «навесить правило», а не «покрасить, а потом ещё пометить».
+         Разница осталась одна и она подписана прямо в интерфейсе:
+         цвет ровно один, пометок сколько угодно. -->
     <div class="chip-setup-row">
-      <div class="chip-setup-title">Цвет — это правило</div>
-      <div class="chip-colors">${colorSwatches}</div>
-    </div>
-
-    <div class="chip-setup-row">
-      <div class="chip-setup-title">Пометки</div>
-      <div class="chip-marks">${markChips || '<span class="txt-muted">Пометок нет</span>'}</div>
+      <div class="chip-setup-title">Правила номера</div>
+      <div class="chip-rules">
+        <div class="chip-rules-line">
+          <span class="chip-rules-kind">цвет <em>один</em></span>
+          <div class="chip-colors">${colorSwatches}</div>
+        </div>
+        <div class="chip-rules-line">
+          <span class="chip-rules-kind">пометки <em>любое число</em></span>
+          <div class="chip-marks">${markChips
+            || '<span class="txt-muted">Пометок нет</span>'}</div>
+        </div>
+      </div>
     </div>
 
     <div class="chip-setup-row">
@@ -1533,10 +1543,20 @@ function drawTrendChart() {
   const data = state.trend || [];
 
   if (data.length < 2) {
-    host.innerHTML = '<div class="empty">Для графика нужен счёт минимум за два месяца '
-      + 'или список абонентов с помесячными расходами.</div>';
+    // ПУСТОЕ СОСТОЯНИЕ.
+    // Раньше здесь висела строка текста внутри карточки во всю ширину — дыра
+    // на пол-экрана посреди отчёта. Теперь блок схлопывается в узкую полосу и
+    // сразу говорит, что сделать, чтобы график появился.
+    host.closest('.chart-block')?.classList.add('is-empty');
+    host.innerHTML = `<div class="empty-inline">
+      <span class="empty-inline-mark">◐</span>
+      <span>График появится, когда будет счёт минимум за два месяца.
+        <b>Загрузите ещё один счёт</b> — или список абонентов с помесячными расходами.</span>
+    </div>`;
     return;
   }
+  // Данные появились — снимаем схлопнутое состояние.
+  host.closest('.chart-block')?.classList.remove('is-empty');
 
   // viewBox подгоняется под фактическую ширину блока, а высота фиксирована.
   // Так график занимает ровно 200 px по вертикали и подписи не масштабируются:
@@ -2483,8 +2503,8 @@ function openSettings() {
 // добавить вкладку теперь значит дописать одну строку.
 const SETTINGS_TABS = {
   subscribers: renderSubscriberSettings,
-  colors: renderColorSettings,
-  marks: renderMarkSettings,
+  // Одна вкладка вместо бывших «Цвета-правила» и «Пометки» — внутри две группы.
+  chiprules: renderChipRuleSettings,
   rules: renderRuleSettings,
   trips: renderTripSettings,
   statuses: renderStatusSettings,
@@ -2527,127 +2547,116 @@ async function saveDictionary(url, payload, onDone) {
   }
 }
 
-/* ── Цвета-правила ───────────────────────────────────────────────────────── */
-function renderColorSettings(el) {
-  const counts = {};
-  state.subscribers.forEach((s) => {
-    const code = ((s.chip || {}).color_code) || 'normal';
-    counts[code] = (counts[code] || 0) + 1;
-  });
+/* ── Правила чипсов: цвета и пометки в одном месте ───────────────────────────
+ *
+ * БЫЛО две вкладки-близнеца с одинаковыми таблицами. Разница между ними ровно
+ * одна: цвет у номера ОДИН и красит карточку, пометок можно навесить сколько
+ * угодно. Всё остальное — те же поля, те же эффекты на деньги.
+ *
+ * СТАЛО одна вкладка с двумя группами. В базе они тоже уже одна таблица
+ * chip_rules с полем kind ('color' | 'mark'), так что интерфейс наконец
+ * повторяет то, как данные лежат на самом деле.
+ *
+ * Сохранение по-прежнему идёт на /api/chip-colors и /api/chip-marks — эти
+ * ручки пишут в chip_rules, менять их не понадобилось.
+ * ────────────────────────────────────────────────────────────────────────── */
 
+// Всё, что отличает цвет от пометки — собрано в одном месте, чтобы обе группы
+// рисовались одним кодом и не разъезжались при правках.
+const CHIP_RULE_KINDS = [
+  {
+    kind: 'color', list: () => state.chipColors,
+    title: 'Цвета', api: '/api/chip-colors',
+    hint: 'У номера действует один. Красит карточку на главной.',
+    addLabel: '+ Цвет', addName: 'Новый цвет', badge: 'базовый',
+    confirm: 'Удалить цвет? Номера с ним станут обычными.',
+    // Сколько номеров носит этот цвет.
+    count: (counts, s) => { const c = (s.chip || {}).color_code || 'normal';
+      counts[c] = (counts[c] || 0) + 1; },
+  },
+  {
+    kind: 'mark', list: () => state.chipMarks,
+    title: 'Пометки', api: '/api/chip-marks',
+    hint: 'Навешиваются поверх цвета, их может быть несколько. Приоритет ниже цвета.',
+    addLabel: '+ Пометка', addName: 'Новая пометка', badge: 'базовая',
+    confirm: 'Удалить пометку? Она снимется со всех номеров.',
+    count: (counts, s) => ((s.chip || {}).marks || [])
+      .forEach((m) => { counts[m] = (counts[m] || 0) + 1; }),
+  },
+];
+
+function renderChipRuleSettings(el) {
   el.innerHTML = `
-    <div class="settings-note">Цвет номера — это правило. Покрасили абонента —
-      на него применился весь набор эффектов ниже. Здесь задаётся, что именно
-      значит каждый цвет: кто платит за абонплату, опции, перерасход и роуминг,
-      исключать ли номер из сводок и считать ли пакет безлимитным.</div>
-    <div class="rule-table" id="colorRows"></div>
-    <div class="settings-actions">
-      <button class="btn btn-soft" id="colorAdd">+ Добавить цвет</button>
-    </div>`;
+    <div class="settings-note">Правило — это набор эффектов: кто платит за
+      абонплату, опции, перерасход и роуминг, убирать ли номер из сводок и
+      считать ли его пакет безлимитным. Навесили правило на номер — эффекты
+      применились, отчёт пересчитался сразу.</div>
+    <div id="chipRuleGroups"></div>`;
 
   const draw = () => {
-    $('colorRows').innerHTML = `
-      <div class="rule-head">
-        <span>Цвет</span><span>Название</span><span>Абонплата</span><span>Опции</span>
-        <span>Перерасход</span><span>Роуминг</span><span>Искл.</span><span>Безлим.</span>
-        <span>Номеров</span><span></span>
-      </div>
-      ${state.chipColors.map((c) => `
-        <div class="rule-row" data-code="${esc(c.code)}">
-          <input type="color" data-f="hex" value="${esc(c.hex)}">
-          <input type="text" data-f="label" value="${esc(c.label)}" maxlength="40">
-          ${payerSelect('payer_tariff', c.payer_tariff)}
-          ${payerSelect('payer_options', c.payer_options)}
-          ${payerSelect('payer_overage', c.payer_overage)}
-          ${payerSelect('payer_roaming', c.payer_roaming)}
-          <input type="checkbox" data-f="is_excluded"${c.is_excluded ? ' checked' : ''}
-                 title="Убрать номера этого цвета из всех сводок">
-          <input type="checkbox" data-f="is_unlimited"${c.is_unlimited ? ' checked' : ''}
-                 title="Пакет безлимитный — перерасхода по нему не бывает">
-          <span class="rule-count">${counts[c.code] || 0}</span>
-          ${c.builtin ? '<span class="pill pill-muted">базовый</span>'
-            : `<button class="rule-del" data-del="${esc(c.code)}" title="Удалить">✕</button>`}
-        </div>`).join('')}`;
+    // Считаем, сколько номеров носит каждое правило — админу важно видеть,
+    // что он правит: мёртвую строку или правило на половину парка.
+    const counts = {};
+    CHIP_RULE_KINDS.forEach((k) => state.subscribers.forEach((s) => k.count(counts, s)));
 
+    $('chipRuleGroups').innerHTML = CHIP_RULE_KINDS.map((k) => `
+      <section class="rule-group" data-kind="${k.kind}">
+        <div class="rule-group-head">
+          <h4>${k.title} <span class="rule-group-n">${k.list().length}</span></h4>
+          <span class="rule-group-hint">${k.hint}</span>
+          <button class="btn btn-soft btn-sm" data-add="${k.kind}">${k.addLabel}</button>
+        </div>
+        <div class="rule-table">
+          <div class="rule-head">
+            <span>Цвет</span><span>Название</span><span>Абонплата</span><span>Опции</span>
+            <span>Перерасход</span><span>Роуминг</span><span>Искл.</span><span>Безлим.</span>
+            <span>Номеров</span><span></span>
+          </div>
+          ${k.list().map((r) => `
+            <div class="rule-row" data-code="${esc(r.code)}" data-kind="${k.kind}">
+              <input type="color" data-f="hex" value="${esc(r.hex || '#6b7a74')}">
+              <input type="text" data-f="label" value="${esc(r.label)}" maxlength="40">
+              ${payerSelect('payer_tariff', r.payer_tariff)}
+              ${payerSelect('payer_options', r.payer_options)}
+              ${payerSelect('payer_overage', r.payer_overage)}
+              ${payerSelect('payer_roaming', r.payer_roaming)}
+              <input type="checkbox" data-f="is_excluded"${r.is_excluded ? ' checked' : ''}
+                     title="Убрать номера с этим правилом из всех сводок">
+              <input type="checkbox" data-f="is_unlimited"${r.is_unlimited ? ' checked' : ''}
+                     title="Пакет безлимитный — перерасхода по нему не бывает">
+              <span class="rule-count${counts[r.code] ? '' : ' is-zero'}">${counts[r.code] || 0}</span>
+              ${r.builtin ? `<span class="pill pill-muted">${k.badge}</span>`
+                : `<button class="rule-del" data-del="${esc(r.code)}" title="Удалить">✕</button>`}
+            </div>`).join('')}
+        </div>
+      </section>`).join('');
+
+    // Правка любого поля строки сразу летит на сервер: отдельной кнопки
+    // «сохранить» нет намеренно — она только плодит несохранённые состояния.
     $$('.rule-row', el).forEach((row) => {
+      const k = CHIP_RULE_KINDS.find((x) => x.kind === row.dataset.kind);
       $$('input, select', row).forEach((input) => input.addEventListener('change', () => {
-        const source = state.chipColors.find((x) => x.code === row.dataset.code) || {};
+        const source = k.list().find((x) => x.code === row.dataset.code) || {};
         const payload = { ...source, code: row.dataset.code };
         $$('input, select', row).forEach((f) => {
           payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
         });
-        saveDictionary('/api/chip-colors', payload);
+        saveDictionary(k.api, payload);
       }));
     });
+
     $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm('Удалить цвет? Номера с ним станут обычными.')) return;
-      saveDictionary('/api/chip-colors/delete', { code: btn.dataset.del });
+      const k = CHIP_RULE_KINDS.find((x) => x.kind === btn.closest('.rule-row').dataset.kind);
+      if (!confirm(k.confirm)) return;
+      saveDictionary(`${k.api}/delete`, { code: btn.dataset.del });
+    }));
+
+    $$('[data-add]', el).forEach((btn) => btn.addEventListener('click', () => {
+      const k = CHIP_RULE_KINDS.find((x) => x.kind === btn.dataset.add);
+      saveDictionary(k.api, { label: k.addName, hex: '#6b7a74', sort_order: 900 });
     }));
   };
   draw();
-
-  $('colorAdd').onclick = () => saveDictionary('/api/chip-colors', {
-    label: 'Новый цвет', hex: '#6b7a74', sort_order: 900,
-  });
-}
-
-/* ── Пометки ─────────────────────────────────────────────────────────────── */
-function renderMarkSettings(el) {
-  const counts = {};
-  state.subscribers.forEach((s) => ((s.chip || {}).marks || [])
-    .forEach((m) => { counts[m] = (counts[m] || 0) + 1; }));
-
-  el.innerHTML = `
-    <div class="settings-note">Пометки навешиваются поверх цвета, их может быть
-      несколько на одном номере. Работают точечно: меняют одну корзину и не
-      трогают остальные. Приоритет у пометок ниже, чем у цвета.</div>
-    <div class="rule-table" id="markRows"></div>
-    <div class="settings-actions">
-      <button class="btn btn-soft" id="markAdd">+ Добавить пометку</button>
-    </div>`;
-
-  const draw = () => {
-    $('markRows').innerHTML = `
-      <div class="rule-head">
-        <span>Цвет</span><span>Название</span><span>Абонплата</span><span>Опции</span>
-        <span>Перерасход</span><span>Роуминг</span><span>Искл.</span><span>Безлим.</span>
-        <span>Номеров</span><span></span>
-      </div>
-      ${state.chipMarks.map((m) => `
-        <div class="rule-row" data-code="${esc(m.code)}">
-          <input type="color" data-f="hex" value="${esc(m.hex || '#6b7a74')}">
-          <input type="text" data-f="label" value="${esc(m.label)}" maxlength="40">
-          ${payerSelect('payer_tariff', m.payer_tariff)}
-          ${payerSelect('payer_options', m.payer_options)}
-          ${payerSelect('payer_overage', m.payer_overage)}
-          ${payerSelect('payer_roaming', m.payer_roaming)}
-          <input type="checkbox" data-f="is_excluded"${m.is_excluded ? ' checked' : ''}>
-          <input type="checkbox" data-f="is_unlimited"${m.is_unlimited ? ' checked' : ''}>
-          <span class="rule-count">${counts[m.code] || 0}</span>
-          ${m.builtin ? '<span class="pill pill-muted">базовая</span>'
-            : `<button class="rule-del" data-del="${esc(m.code)}" title="Удалить">✕</button>`}
-        </div>`).join('')}`;
-
-    $$('.rule-row', el).forEach((row) => {
-      $$('input, select', row).forEach((input) => input.addEventListener('change', () => {
-        const source = state.chipMarks.find((x) => x.code === row.dataset.code) || {};
-        const payload = { ...source, code: row.dataset.code };
-        $$('input, select', row).forEach((f) => {
-          payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
-        });
-        saveDictionary('/api/chip-marks', payload);
-      }));
-    });
-    $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm('Удалить пометку? Она снимется со всех номеров.')) return;
-      saveDictionary('/api/chip-marks/delete', { code: btn.dataset.del });
-    }));
-  };
-  draw();
-
-  $('markAdd').onclick = () => saveDictionary('/api/chip-marks', {
-    label: 'Новая пометка', hex: '#6b7a74', sort_order: 900,
-  });
 }
 
 /* ── Правила по услугам ──────────────────────────────────────────────────── */
