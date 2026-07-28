@@ -947,18 +947,30 @@ function cardChipPanel(s) {
   const marks = chip.marks || [];
   const colorCode = chip.color_code || 'normal';
 
-  const colorSwatches = (state.chipColors || []).map((c) => `
-    <button type="button" class="chip-color${c.code === colorCode ? ' is-active' : ''}"
-      data-color="${esc(c.code)}" style="--swatch:${esc(c.hex)}"
-      title="${esc(c.label)}${c.description ? ' — ' + esc(c.description) : ''}">
-      <span class="chip-color-dot"></span>
-      <span class="chip-color-label">${esc(c.label)}</span>
-    </button>`).join('');
-
-  const markChips = (state.chipMarks || []).map((m) => `
-    <button type="button" class="chip-mark${marks.includes(m.code) ? ' is-active' : ''}"
-      data-mark="${esc(m.code)}" style="--swatch:${esc(m.hex || 'var(--border-strong)')}"
-      title="${esc(m.description || m.label)}">${esc(m.label)}</button>`).join('');
+  // ОДИН СПИСОК ПРАВИЛ.
+  // Цвета и пометки — по сути одно и то же: набор эффектов, который вешают
+  // на номер. Держать их двумя списками значило заставлять человека помнить,
+  // в каком из двух рядов искать нужное. Теперь ряд один.
+  //
+  // Разница осталась только в поведении при нажатии, и она естественная:
+  //   цвет  — заменяет предыдущий цвет (карточка красится в один тон);
+  //   пометка — просто включается и выключается.
+  // Объяснять это словами не нужно: нажал — увидел.
+  const allRules = [
+    ...(state.chipColors || []).map((r) => ({ ...r, kind: 'color' })),
+    ...(state.chipMarks || []).map((r) => ({ ...r, kind: 'mark' })),
+  ];
+  const ruleButtons = allRules.map((r) => {
+    const on = r.kind === 'color' ? r.code === colorCode : marks.includes(r.code);
+    return `<button type="button" class="chip-rule${on ? ' is-on' : ''}"
+      data-rule="${esc(r.code)}" data-kind="${r.kind}"
+      style="--swatch:${esc(r.hex || '#8a9a94')}"
+      aria-pressed="${on ? 'true' : 'false'}"
+      title="${esc(r.description || r.label)}">
+      <span class="chip-rule-dot"></span>
+      <span class="chip-rule-label">${esc(r.label)}</span>
+    </button>`;
+  }).join('');
 
   const payerRows = PAYER_BUCKETS.map(([field, label]) => {
     const value = chip[field] || 'auto';
@@ -978,30 +990,22 @@ function cardChipPanel(s) {
   const trip = s.trip;
 
   return `<div class="chip-setup" data-number="${esc(s.number)}">
-    <!-- ПРАВИЛА НОМЕРА — одна секция вместо бывших «Цвет» и «Пометки».
-         В базе это уже одна таблица chip_rules, и админ думает так же:
-         «навесить правило», а не «покрасить, а потом ещё пометить».
-         Разница осталась одна и она подписана прямо в интерфейсе:
-         цвет ровно один, пометок сколько угодно. -->
+    <!-- ПРАВИЛА НОМЕРА — один список, без деления на цвета и пометки. -->
     <div class="chip-setup-row">
-      <div class="chip-setup-title">Правила номера</div>
-      <div class="chip-rules">
-        <div class="chip-rules-line">
-          <span class="chip-rules-kind">цвет <em>один</em></span>
-          <div class="chip-colors">${colorSwatches}</div>
-        </div>
-        <div class="chip-rules-line">
-          <span class="chip-rules-kind">пометки <em>любое число</em></span>
-          <div class="chip-marks">${markChips
-            || '<span class="txt-muted">Пометок нет</span>'}</div>
-        </div>
-      </div>
+      <div class="chip-setup-title">Нажмите правило, чтобы включить</div>
+      <div class="chip-rules">${ruleButtons
+        || '<span class="txt-muted">Правил нет</span>'}</div>
     </div>
 
-    <div class="chip-setup-row">
-      <div class="chip-setup-title">Кто платит</div>
+    <!-- КТО ПЛАТИТ — свёрнуто по умолчанию.
+         Это ручное переопределение поверх правил, нужно оно редко, а места
+         занимало больше всего: четыре выпадающих списка сразу под правилами.
+         Сложили в раскрывающийся блок — на экране осталась одна строка
+         вместо четырёх, а кому надо, тот развернёт. -->
+    <details class="chip-advanced">
+      <summary>Переопределить вручную, кто платит</summary>
       <div class="chip-payers">${payerRows}</div>
-    </div>
+    </details>
 
     <div class="chip-setup-row chip-setup-grid">
       <label class="chip-field">
@@ -1061,16 +1065,28 @@ function bindChipPanel(panel) {
     }
   };
 
-  $$('.chip-color', root).forEach((btn) => btn.addEventListener('click', (e) => {
+  // Один обработчик на весь список правил. Что делать — решает вид правила:
+  //   цвет   — заменяет прежний цвет; повторное нажатие снимает его ('normal');
+  //   пометка — просто включается и выключается.
+  $$('.chip-rule', root).forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    save({ color_code: btn.dataset.color });
-  }));
+    const on = btn.classList.contains('is-on');
 
-  $$('.chip-mark', root).forEach((btn) => btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    btn.classList.toggle('is-active');
-    const active = $$('.chip-mark.is-active', root).map((b) => b.dataset.mark);
-    save({ marks: active });
+    if (btn.dataset.kind === 'color') {
+      // Гасим остальные цвета сразу, не дожидаясь ответа сервера — иначе
+      // кнопка «залипает» на время запроса и человек жмёт второй раз.
+      $$('.chip-rule[data-kind="color"]', root).forEach((b) => {
+        b.classList.remove('is-on');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      if (!on) { btn.classList.add('is-on'); btn.setAttribute('aria-pressed', 'true'); }
+      save({ color_code: on ? 'normal' : btn.dataset.rule });
+      return;
+    }
+
+    btn.classList.toggle('is-on');
+    btn.setAttribute('aria-pressed', on ? 'false' : 'true');
+    save({ marks: $$('.chip-rule[data-kind="mark"].is-on', root).map((b) => b.dataset.rule) });
   }));
 
   $$('.chip-payer-select', root).forEach((sel) => sel.addEventListener('change', (e) => {

@@ -228,7 +228,18 @@ button { font-family: inherit; }
 .progress-track { height: 7px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .progress-fill { height: 100%; width: 0; border-radius: 4px; background: var(--primary); transition: width .3s ease; }
 
-.app-main { max-width: 1380px; margin: 0 auto; padding: 16px 20px 72px; }
+/* РЕЗИНОВАЯ ОСНОВА.
+   Ширина и отступы заданы через clamp(), а не фиксированными пикселями:
+   при крупном системном масштабе или на узком экране страница ужимается
+   плавно и НИКОГДА не уезжает вбок. Правило простое — горизонтальной
+   прокрутки у страницы быть не должно ни при каком масштабе. */
+.app-main {
+  max-width: 1380px; margin: 0 auto;
+  padding: clamp(10px, 1.2vw, 16px) clamp(10px, 1.6vw, 20px) 72px;
+}
+/* Страховка от вылезающего вбок содержимого. Широкие блоки (таблицы,
+   графики) прокручиваются внутри себя, а не тянут за собой всю страницу. */
+html, body { max-width: 100%; overflow-x: hidden; }
 
 /* ═══════════════════════════ ПРИВЕТСТВИЕ ═══════════════════════════ */
 .welcome {
@@ -242,7 +253,7 @@ button { font-family: inherit; }
   font-size: 14px; line-height: 1.6;
 }
 .welcome-steps {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 16px; max-width: 940px; margin: 0 auto 30px; text-align: left;
 }
 .welcome-step {
@@ -261,7 +272,7 @@ button { font-family: inherit; }
 
 /* ═══════════════════════════ KPI ═══════════════════════════ */
 .kpi-panel {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
   gap: 10px; margin-bottom: 12px;
 }
 /* Показатель без иконки: смысл несёт тонкая риска слева и типографика.
@@ -311,64 +322,71 @@ button { font-family: inherit; }
   text-transform: uppercase; color: var(--text-muted);
 }
 
-/* ПРАВИЛА НОМЕРА — единый блок.
-   Цвета и пометки теперь в одной секции (в базе это одна таблица chip_rules).
-   Чтобы объединение не превратилось в кашу, слева у каждой строки стоит
-   подпись вида «цвет — один» / «пометки — любое число»: она и разделяет
-   группы визуально, и снимает главный вопрос администратора. */
-.chip-rules {
-  display: flex; flex-direction: column; gap: 9px;
-  padding: 11px 12px; border-radius: var(--radius-sm); background: var(--surface-2);
-}
-.chip-rules-line { display: flex; align-items: flex-start; gap: 12px; }
-.chip-rules-kind {
-  flex: none; width: 92px; padding-top: 6px;
-  font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
-  color: var(--text-muted); line-height: 1.35;
-}
-/* Уточнение «один / любое число» — тише подписи, но читаемо. */
-.chip-rules-kind em {
-  display: block; font-style: normal; font-weight: 600;
-  text-transform: none; letter-spacing: 0; opacity: .7;
-}
-@media (max-width: 620px) {
-  .chip-rules-line { flex-direction: column; gap: 5px; }
-  .chip-rules-kind { width: auto; padding-top: 0; }
-}
+/* ПРАВИЛА НОМЕРА — ОДИН СПИСОК.
+   Раньше здесь было два ряда: цвета отдельно, пометки отдельно. Человеку
+   приходилось помнить, в каком из рядов искать нужное, хотя по сути это
+   одно и то же — набор эффектов, который вешают на номер.
+   Теперь ряд один. Разницу видно по поведению: цвет заменяет предыдущий,
+   пометка просто включается. Объяснять словами не нужно — нажал и увидел.
 
-/* Палитра-правило: каждая кнопка — это готовый набор эффектов. */
-.chip-colors { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
-.chip-color {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 6px 11px 6px 8px; border-radius: 999px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--surface-2);
-  font-size: 12px; font-family: inherit; color: var(--text);
-  transition: border-color .15s ease, background .15s ease;
+   Размеры кнопок заданы через clamp(): интерфейсом пользуются на разном
+   масштабе, и при крупном зуме кнопка обязана расти вместе с текстом,
+   а не расползаться в кашу. */
+.chip-rules {
+  display: flex; flex-wrap: wrap; gap: clamp(5px, .55vw, 8px);
+  padding: clamp(9px, 1vw, 13px); border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
-.chip-color:hover { border-color: var(--border-strong); }
-.chip-color.is-active {
-  border-color: var(--swatch); background: color-mix(in srgb, var(--swatch) 12%, var(--surface));
+.chip-rule {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: clamp(7px, .75vw, 10px) clamp(11px, 1.1vw, 15px);
+  border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface);
+  font-size: clamp(12px, .85vw, 14px); font-family: inherit; color: var(--text-muted);
+  /* Палец и неточная мышь: цель не меньше 34px по высоте. */
+  min-height: 34px;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.chip-rule:hover { border-color: var(--swatch); color: var(--text); }
+.chip-rule:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* Включённое правило — заливка своим цветом. Никаких галочек и подписей:
+   включено оно или нет, видно с другого конца стола. */
+.chip-rule.is-on {
+  color: var(--text); font-weight: 600;
+  border-color: var(--swatch);
+  background: color-mix(in srgb, var(--swatch) 18%, var(--surface));
   box-shadow: inset 0 0 0 1px var(--swatch);
 }
-.chip-color-dot {
-  width: 12px; height: 12px; border-radius: 50%; flex: none;
-  background: var(--swatch); box-shadow: 0 0 0 2px color-mix(in srgb, var(--swatch) 25%, transparent);
+.chip-rule-dot {
+  width: 11px; height: 11px; border-radius: 50%; flex: none;
+  background: var(--swatch); opacity: .45; transition: opacity .15s ease;
 }
-.chip-color-label { white-space: nowrap; }
+.chip-rule.is-on .chip-rule-dot { opacity: 1; }
+.chip-rule-label { white-space: nowrap; }
 
-/* Пометки — теги, можно навесить несколько. */
-.chip-marks { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
-.chip-mark {
-  padding: 5px 11px; border-radius: 999px; cursor: pointer; font-size: 12px;
-  font-family: inherit; border: 1px dashed var(--border-strong);
-  background: transparent; color: var(--text-muted);
-  transition: all .15s ease;
+/* РУЧНОЕ ПЕРЕОПРЕДЕЛЕНИЕ — свёрнуто.
+   Четыре выпадающих списка «кто платит» нужны редко, а занимали больше
+   всего места. Свернули: на экране одна строка вместо четырёх. */
+.chip-advanced {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
-.chip-mark:hover { color: var(--text); border-color: var(--swatch); }
-.chip-mark.is-active {
-  border-style: solid; border-color: var(--swatch); color: var(--text);
-  background: color-mix(in srgb, var(--swatch) 14%, transparent);
+.chip-advanced > summary {
+  padding: 10px 13px; cursor: pointer; font-size: 12px; color: var(--text-muted);
+  list-style: none; user-select: none; min-height: 34px; display: flex; align-items: center;
 }
+.chip-advanced > summary::-webkit-details-marker { display: none; }
+.chip-advanced > summary::before {
+  content: '▸'; margin-right: 8px; font-size: 10px; transition: transform .15s ease;
+}
+.chip-advanced[open] > summary::before { transform: rotate(90deg); }
+.chip-advanced > summary:hover { color: var(--text); }
+.chip-advanced .chip-payers { padding: 0 13px 12px; }
+/* Явно гасим содержимое закрытого блока.
+   На родное поведение <details> полагаться нельзя: у .chip-payers задан
+   собственный display:flex, и браузер оставлял блок на экране даже когда
+   он закрыт — четыре списка висели там, где их быть не должно. */
+.chip-advanced:not([open]) .chip-payers { display: none; }
 
 /* Кто платит: по строке на корзину + пояснение, какое правило сработало. */
 .chip-payers { display: flex; flex-direction: column; gap: 5px; }
@@ -436,7 +454,27 @@ button.chip-gear.open { opacity: 1; color: var(--primary); }
 button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); outline-offset: 1px; }
 
 /* Карточка с назначенным цветом-правилом: полоса слева и бейдж. */
-.user-card.has-chip-color { border-left: 3px solid var(--chip); }
+/* ЦВЕТ ПРАВИЛА ЗАЛИВАЕТ ВСЮ КАРТОЧКУ.
+   Раньше правило обозначала полоска в три пикселя слева — её просто не
+   замечали в списке из сотни номеров. Теперь карточка целиком получает
+   полупрозрачный оттенок своего правила: видно с любого расстояния и
+   без всякого вглядывания.
+   Прозрачность низкая (10%) намеренно — текст поверх обязан оставаться
+   читаемым, а десяток залитых карточек не должен превращаться в радугу. */
+.user-card.has-chip-color {
+  border-left: 3px solid var(--chip);
+  background: color-mix(in srgb, var(--chip) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--chip) 28%, var(--border));
+}
+.user-card.has-chip-color:hover {
+  background: color-mix(in srgb, var(--chip) 15%, var(--surface));
+}
+/* Вложенные блоки внутри залитой карточки подкрашиваем в тон, иначе они
+   выглядят белыми заплатками на цветном фоне. */
+.user-card.has-chip-color .card-metrics,
+.user-card.has-chip-color .chip-rules {
+  background: color-mix(in srgb, var(--chip) 7%, var(--surface-2));
+}
 .badge-chip {
   background: color-mix(in srgb, var(--chip) 16%, transparent);
   color: var(--text); border: 1px solid var(--chip);
@@ -445,7 +483,7 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 
 /* Строка «платим впустую» в карточке — сразу видно масштаб потери. */
 .waste-line {
-  display: grid; grid-template-columns: auto minmax(40px, 1fr) auto;
+  display: grid; grid-template-columns: auto minmax(min(100%, 40px), 1fr) auto;
   align-items: center; gap: 9px; margin-bottom: 10px;
   font-size: 11.5px; color: var(--text-muted);
 }
@@ -463,11 +501,11 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 }
 .rule-head, .rule-row {
   display: grid; align-items: center; gap: 8px; padding: 7px 10px;
-  grid-template-columns: 44px minmax(150px, 1.4fr) repeat(4, minmax(96px, 1fr)) 44px 52px 62px 44px;
+  grid-template-columns: 44px minmax(150px, 1.4fr) repeat(4, minmax(min(100%, 96px), 1fr)) 44px 52px 62px 44px;
 }
 .rule-table-payment .rule-head,
 .rule-table-payment .rule-row {
-  grid-template-columns: 40px 60px minmax(96px, 1fr) minmax(170px, 1.6fr) minmax(104px, 1fr) minmax(150px, 1.6fr) 34px;
+  grid-template-columns: 40px 60px minmax(min(100%, 96px), 1fr) minmax(170px, 1.6fr) minmax(min(100%, 104px), 1fr) minmax(150px, 1.6fr) 34px;
 }
 .rule-head {
   background: var(--surface-2); font-size: 10px; letter-spacing: .3px;
@@ -654,7 +692,7 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 
 .actions-chart { display: flex; flex-direction: column; gap: 4px; }
 .action-row {
-  display: grid; grid-template-columns: minmax(0, auto) minmax(30px, 1fr) auto;
+  display: grid; grid-template-columns: minmax(0, auto) minmax(min(100%, 30px), 1fr) auto;
   align-items: center; gap: 8px; width: 100%;
   background: none; border: none; padding: 3px 5px; border-radius: 7px;
   cursor: pointer; color: var(--text); text-align: left; font-size: 12px;
@@ -724,7 +762,7 @@ button.ex-row:hover { background: var(--surface-2); }
 .ex-stack { display: flex; height: 20px; border-radius: 7px; overflow: hidden; background: var(--surface-2); }
 .ex-stack-seg { height: 100%; transition: width .4s ease; }
 .ex-stack-legend {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 3px 18px; margin-top: 9px; font-size: 12px;
 }
 .ex-legend-item { display: flex; align-items: center; gap: 7px; min-width: 0; }
@@ -807,7 +845,7 @@ button.ex-row:hover { background: var(--surface-2); }
 .collapsible-body.show { display: block; }
 
 .tariff-compare-content {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 12px;
 }
 .tariff-card {
   padding: 15px; border: 1px solid var(--border); border-radius: var(--radius);
@@ -857,7 +895,7 @@ button.ex-row:hover { background: var(--surface-2); }
 .result-count { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
 
 /* ═══════════════════════════ КАРТОЧКИ АБОНЕНТОВ ═══════════════════════════ */
-.users-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.users-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; }
 .empty-state {
   grid-column: 1 / -1; text-align: center; padding: 50px 20px;
   color: var(--text-muted); background: var(--surface);
@@ -963,7 +1001,7 @@ button.ex-row:hover { background: var(--surface-2); }
 /* ── Табличный вид ── */
 .users-grid.table-view { display: flex; flex-direction: column; gap: 8px; }
 .users-grid.table-view .user-card {
-  display: grid; grid-template-columns: minmax(190px, 1.6fr) minmax(150px, 1fr) minmax(180px, 1.2fr) minmax(160px, 1fr);
+  display: grid; grid-template-columns: minmax(190px, 1.6fr) minmax(min(100%, 150px), 1fr) minmax(180px, 1.2fr) minmax(min(100%, 160px), 1fr);
   align-items: center; gap: 16px; padding: 12px 16px;
   border-top: 1px solid var(--border); border-left: 3px solid var(--good);
 }
@@ -1016,7 +1054,7 @@ button.ex-row:hover { background: var(--surface-2); }
   font-weight: 700; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid var(--border);
 }
 
-.limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
 .limits-list { display: flex; flex-direction: column; gap: 8px; }
 .limit-row {
   background: var(--surface-2); border: 1px solid var(--border);
@@ -1073,7 +1111,7 @@ button.ex-row:hover { background: var(--surface-2); }
 
 .alt-list { display: flex; flex-direction: column; gap: 7px; }
 .alt-row {
-  display: grid; grid-template-columns: minmax(200px, 1.4fr) minmax(160px, 1fr) auto;
+  display: grid; grid-template-columns: minmax(200px, 1.4fr) minmax(min(100%, 160px), 1fr) auto;
   gap: 12px; align-items: center; padding: 10px 13px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
 }
@@ -1260,7 +1298,7 @@ button.ex-row:hover { background: var(--surface-2); }
 .panel { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-strong); }
 .panel.show { display: block; animation: reveal .2s ease; }
 @keyframes reveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-.panel-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.panel-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
 .panel-section { min-width: 0; }
 .panel-wide { grid-column: 1 / -1; }
 .panel-title {
@@ -1411,7 +1449,7 @@ button.ex-row:hover { background: var(--surface-2); }
 .stats-header-value { font-size: 22px; font-weight: 750; letter-spacing: -.4px; color: var(--primary); }
 
 .stats-tiles {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 124px), 1fr));
   gap: 7px; margin-bottom: 12px;
 }
 .stats-tile {
@@ -1431,7 +1469,7 @@ button.ex-row:hover { background: var(--surface-2); }
 
 /* Реквизиты — в колонки: весь «паспорт» счёта помещается в один экран. */
 .stats-blocks {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
   gap: 8px; align-items: start; margin-bottom: 12px;
 }
 .stats-block {
@@ -1457,7 +1495,7 @@ button.ex-row:hover { background: var(--surface-2); }
 
 .stats-services { max-height: 320px; overflow-y: auto; }
 .stats-svc {
-  display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, auto) minmax(50px, 1fr) minmax(0, auto);
+  display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, auto) minmax(min(100%, 50px), 1fr) minmax(0, auto);
   gap: 10px; align-items: center; padding: 4px 0;
   border-bottom: 1px solid var(--border); font-size: 11.5px;
 }
@@ -1481,7 +1519,7 @@ button.ex-row:hover { background: var(--surface-2); }
 
 .subscribers-list { display: flex; flex-direction: column; gap: 8px; max-height: 56vh; overflow-y: auto; padding-right: 4px; }
 .subscriber-item {
-  display: grid; grid-template-columns: minmax(160px, 1fr) minmax(300px, 2fr);
+  display: grid; grid-template-columns: minmax(min(100%, 160px), 1fr) minmax(300px, 2fr);
   gap: 14px; align-items: center; padding: 11px 13px;
   background: var(--surface-2); border: 1px solid var(--border);
   border-left: 4px solid var(--border); border-radius: var(--radius-sm);
