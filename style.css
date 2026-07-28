@@ -270,12 +270,24 @@ button { font-family: inherit; }
   .menu-drop { right: 10px; left: 10px; width: auto; }
 }
 
+/* ВЫБОР ПЕРИОДА В ШАПКЕ.
+   ЗДЕСЬ БЫЛ БАГ: цвета подбирались под ТЁМНУЮ шапку — белый текст на
+   полупрозрачной белой подложке. Когда шапку перекрасили в светлую,
+   получилось белым по белому, и выбранный месяц стало не видно совсем.
+   Текст был на месте, просто невидимый.
+   Теперь цвета берутся из общих переменных темы: на светлой шапке текст
+   тёмный, на тёмной — светлый, и переключение темы это не ломает. */
 .month-picker { display: flex; align-items: center; gap: 7px; margin-right: 4px; }
-.month-picker-label { font-size: 12px; text-transform: none; letter-spacing: .2px; opacity: .8; }
-.month-select {
-  background: rgba(255, 255, 255, .16); color: #fff; border: 1px solid rgba(255, 255, 255, .3);
-  border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; cursor: pointer;
+.month-picker-label {
+  font-size: 12px; letter-spacing: .2px; color: var(--text-muted); font-weight: 600;
 }
+.month-select {
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; cursor: pointer;
+  font-family: inherit; min-height: 38px;
+}
+.month-select:hover { border-color: var(--primary); }
+.month-select:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .month-select option { color: var(--text); background: var(--surface); }
 
 .btn {
@@ -294,12 +306,21 @@ button { font-family: inherit; }
   box-shadow: 0 2px 8px rgba(0, 140, 66, .28);
 }
 .btn-primary:hover { filter: brightness(1.06); }
-.btn-outline { background: transparent; color: #fff; border-color: rgba(255, 255, 255, .55); }
-.btn-outline:hover { background: rgba(255, 255, 255, .13); }
-.btn-ghost { background: rgba(255, 255, 255, .16); color: #fff; }
-.btn-ghost:hover { background: rgba(255, 255, 255, .27); }
-.btn-icon { background: rgba(255, 255, 255, .16); color: #fff; padding: 9px 12px; font-size: 16px; line-height: 1; }
-.btn-icon:hover { background: rgba(255, 255, 255, .27); }
+/* ОСТАТКИ ТЁМНОЙ ШАПКИ. Эти три вида кнопок стояли в шапке до того, как всё
+   свернули в одно меню. Сейчас их никто не использует, но цвета у них были
+   рассчитаны на тёмный фон: белый текст на полупрозрачной белой подложке.
+   Ровно так же был испорчен выбор периода — белым по белому, ничего не
+   видно. Удалять не стали (класс может всплыть где-то ещё), а перевели на
+   переменные темы: теперь они читаются на любом фоне. */
+.btn-outline { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn-outline:hover { background: var(--surface-2); border-color: var(--primary); }
+.btn-ghost { background: var(--surface-2); color: var(--text); }
+.btn-ghost:hover { background: var(--surface-3); }
+.btn-icon {
+  background: var(--surface-2); color: var(--text);
+  padding: 9px 12px; font-size: 16px; line-height: 1;
+}
+.btn-icon:hover { background: var(--surface-3); }
 .btn-soft {
   background: var(--surface-2); color: var(--text); border-color: var(--border);
 }
