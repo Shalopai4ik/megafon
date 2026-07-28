@@ -881,14 +881,26 @@ def parse_trips(text: str) -> dict[str, Any]:
         return {"rows": [], "stats": {"rows": 0, "skipped": 0}}
 
     delim = detect_delimiter(lines[:200])
+    # Шапка ДВУХСТРОЧНАЯ: в первой строке «Примечание» на две колонки, во
+    # второй — подписи «Номер заказа | Дата». Поэтому не выбираем одну лучшую
+    # строку, а СКЛАДЫВАЕМ находки со всех строк шапки: первая найденная
+    # колонка для каждого поля побеждает. Без этого «Номер заказа» терялся.
     columns: dict[str, int] = {}
+    header_rows = 0
     for line in lines[:20]:
-        if _is_trip_header(line) and delim in line:
-            found = _trip_header_map(line, delim)
-            # Берём самый «богатый» заголовок: шапка бывает двухстрочной,
-            # и подзаголовки дополняют основную строку.
-            if len(found) > len(columns):
-                columns = found
+        if delim not in line:
+            continue
+        found = _trip_header_map(line, delim)
+        if not found:
+            continue
+        # Строка шапки — либо явная (два ключевых слова), либо строка
+        # подзаголовков сразу под ней.
+        if _is_trip_header(line) or header_rows:
+            header_rows += 1
+            for key, idx in found.items():
+                columns.setdefault(key, idx)
+        if header_rows >= 2:
+            break
 
     rows: list[dict[str, Any]] = []
     skipped = 0

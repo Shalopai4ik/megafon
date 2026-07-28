@@ -3112,7 +3112,11 @@ function renderWidgetSettings(el) {
         ${group.items.map((w) => {
           const isOn = widgetOn(w.id);
           return `<div class="settings-item${isOn ? '' : ' is-off'}">
-            <span class="settings-item-icon">${w.icon}</span>
+            <!-- ИСПРАВЛЕНО: раньше здесь выводилось ${w.icon}. После того как
+                 эмодзи убрали из реестра виджетов, поле стало пустым и в
+                 настройках печаталось слово «undefined». Вместо иконки —
+                 точка-маркер: она же показывает, включён блок или нет. -->
+            <span class="settings-item-icon" aria-hidden="true"></span>
             <span class="settings-item-label">${esc(w.label)}
               ${w.note ? `<small>${esc(w.note)}</small>` : ''}</span>
             <button class="settings-toggle${isOn ? ' on' : ''}" data-toggle="${esc(w.id)}"

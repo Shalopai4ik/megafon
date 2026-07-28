@@ -1069,7 +1069,16 @@ button.ex-row:hover { background: var(--surface-2); }
   font-size: 12.5px; border-bottom: 1px solid var(--border);
 }
 .settings-item:last-child { border-bottom: none; }
-.settings-item-icon { font-size: 16px; width: 24px; text-align: center; }
+/* Маркер строки виджета вместо эмодзи: закрашен — блок включён,
+   полый — выключен. Состояние читается без чтения текста. */
+.settings-item-icon {
+  width: 8px; height: 8px; flex: none; margin: 0 8px 0 2px;
+  border-radius: 50%; background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+.settings-item.is-off .settings-item-icon {
+  background: transparent; box-shadow: inset 0 0 0 1.5px var(--border-strong);
+}
 .settings-item-label { flex: 1; }
 .settings-toggle {
   width: 38px; height: 21px; border-radius: 11px; background: var(--border-strong);
