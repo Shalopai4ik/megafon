@@ -21,3 +21,37 @@ otche.*.csv
 *.subscribers.csv
 *.services.csv
 *.invoice.csv
+
+# ═══ РАБОЧИЕ МАТЕРИАЛЫ, В РЕПОЗИТОРИЙ НЕ ЕДУТ ═══
+# В репозитории лежит только то, что нужно для прода: код, установщик,
+# инструменты, схема, README. Всё перечисленное ниже — черновики, снимки
+# старых версий кода, образцы выгрузок и картинки-референсы. На диске они
+# остаются, в архив для развёртывания не попадают.
+
+# Снимки старых версий кода — история и так есть в git
+*.py.txt
+app.js.txt
+code.txt
+style.css.txt
+tablica.txt.txt
+
+# Черновики и описания форматов
+logic.txt
+prompts.txt
+stolbs.txt
+users.txt
+vigryzka.txt
+format_file_csv.txt
+primer_file_for_load.txt
+database.txt.txt
+
+# Образцы выгрузок оператора — в них абонентские данные
+otche.txt
+otche.csv
+test_*.csv
+vigryzka*.txt
+
+# Картинки-референсы и скриншоты
+*.jpg
+*.jpeg
+*.png
