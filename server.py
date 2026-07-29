@@ -197,7 +197,8 @@ def _is_garbage(line: str) -> bool:
     for pat in GARBAGE_PATTERNS:
         if pat.match(line):
             return True
-    lo = line.lower()
+    # squash: в выгрузке из PDF пробелы какие угодно, вплоть до неразрывных.
+    lo = domain.squash(line)
     return any(s in lo for s in GARBAGE_SUBSTRINGS)
 
 
@@ -279,6 +280,32 @@ def _split_service_row(parts: list[str]) -> dict[str, Any] | None:
     }
 
 
+# Следы мессенджера. Выгрузки доезжают до нас пересланными в чате, и в тексте
+# остаются служебные вставки: штамп «[15.07.2026 6:45] Имя:» перед строкой и
+# отдельная строка-подпись «> Имя:».
+#
+# Это не косметика. Штамп приклеивается К НАЧАЛУ строки счёта, и она перестаёт
+# быть строкой счёта: у одного абонента так потерялись 90 ₽ «Защиты
+# сотрудников», у другого — 29,32 ₽ за интернет. Подпись же встаёт ПОСРЕДИ
+# разорванной записи и мешает склеить её половинки.
+#
+# Шаблоны намеренно узкие: штамп обязан начинаться с даты в квадратных
+# скобках, подпись — с «>» и состоять только из имени. Обычные строки счёта
+# («Абонент:», «МИ.Детализация счета») под них не попадают.
+_CHAT_STAMP = re.compile(r"^\s*\[\d{1,2}\.\d{1,2}\.\d{4}[^\]]{0,20}\]\s*[^:;]{1,40}:\s*")
+_CHAT_SENDER = re.compile(r"^\s*>\s*[^:;]{1,40}:\s*$")
+
+
+def _strip_chat_noise(lines: list[str]) -> list[str]:
+    """Убрать вставки мессенджера, не трогая содержимое строк счёта."""
+    out: list[str] = []
+    for line in lines:
+        if _CHAT_SENDER.match(line):
+            continue                     # подпись отправителя, данных в ней нет
+        out.append(_CHAT_STAMP.sub("", line))
+    return out
+
+
 def _unwrap_lines(lines: list[str], delim: str) -> list[str]:
     """Склеить строки, разорванные посередине записи.
 
@@ -311,10 +338,13 @@ def _unwrap_lines(lines: list[str], delim: str) -> list[str]:
     buffer = ""
     for line in lines:
         if not line.strip():
-            if buffer:
-                out.append(buffer)
-                buffer = ""
-            out.append(line)
+            # ПУСТАЯ СТРОКА НЕ ЗАКАНЧИВАЕТ ЗАПИСЬ. В таких выгрузках пустой
+            # ряд выглядит как «;;;;;;», а по-настоящему пустая строка — это
+            # след пересылки файла. Раньше она обрывала склейку: у номера
+            # 9111111122 «Исходящие вызовы внутри сети;;;31» и «мин;0,00…»
+            # так и остались двумя кусками, и «31» ушло в расход как 31 ₽.
+            if not buffer:
+                out.append(line)
             continue
         if buffer:
             # Перенос обычно рвёт слово или пару «число + единица», поэтому
@@ -346,17 +376,23 @@ def _split_records(lines: list[str], delim: str) -> list[str]:
     из объёма соседней услуги (у одного номера — 36 ₽ вместо 490 ₽).
 
     КАК ОТЛИЧИТЬ ГРАНИЦУ ЗАПИСЕЙ ОТ ПУСТЫХ КОЛОНОК ВНУТРИ ЗАПИСИ.
-    Внутри записи после разделителей сразу идёт значение:
-        «Итого начислено;;;;;;490,00»  → после «;» стоит цифра.
-    А на стыке двух записей после хвоста разделителей идёт ПРОБЕЛ и только
-    потом новое название:
-        «…;;;;;;;;;;; Исходящие вызовы…»
-    Поэтому режем только по «длинный хвост разделителей + пробел + текст».
+    Внутри записи после разделителей сразу идёт ЧИСЛО — это значение колонки:
+        «Итого начислено;;;;;;490,00»  → после «;» стоит цифра, не режем.
+    А на стыке двух записей после хвоста разделителей начинается НАЗВАНИЕ
+    следующей услуги, то есть буква. Пробел на стыке бывает, но не всегда:
+        «…;;;;;;;;;;; Исходящие вызовы…»      ← с пробелом
+        «…;;543,32;;;;;;в том числе НДС (22%)» ← без пробела
+    Второй случай стоил нам суммы счёта: строка не резалась, «в том числе
+    НДС (22%)» оставалась хвостом записи «Итого начислено», и разборщик
+    колонок брал из неё «22» — итогом абонента становилось 22 ₽ вместо 543.
+    Поэтому режем и по пробелу, и по букве сразу за хвостом разделителей.
     """
     if not delim:
         return lines
-    # {5,} — хвост из пустых колонок Excel; \s+ — тот самый пробел на стыке.
-    boundary = re.compile(rf"{re.escape(delim)}{{5,}}\s+(?=\S)")
+    # {5,} — хвост из пустых колонок Excel; дальше либо пробел и текст, либо
+    # сразу буква (кириллица или латиница) — начало названия услуги.
+    boundary = re.compile(
+        rf"{re.escape(delim)}{{5,}}(?:\s+(?=\S)|(?=[A-Za-zА-Яа-яЁё]))")
     out: list[str] = []
     for line in lines:
         out.extend(part for part in boundary.split(line) if part.strip())
@@ -369,9 +405,13 @@ def parse_bill(text: str) -> dict[str, Any]:
     Возвращает {'month', 'invoice', 'subscribers': {номер: {...}}, 'stats'}.
     """
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # Порядок важен и выстрадан:
+    #   1. убрать следы мессенджера — иначе они приклеены к строкам счёта и
+    #      мешают всему остальному;
+    #   2. склеить разорванные записи;
+    #   3. разрезать слипшиеся. В этом файле встречается и то, и другое.
+    lines = _strip_chat_noise(lines)
     delim = detect_delimiter(lines[:400])
-    # Порядок важен: сначала склеиваем разорванные записи, потом разрезаем
-    # слипшиеся. В этом файле встречается и то, и другое одновременно.
     lines = _unwrap_lines(lines, delim)
     lines = _split_records(lines, delim)
 
@@ -379,17 +419,21 @@ def parse_bill(text: str) -> dict[str, Any]:
     subscribers: dict[str, dict[str, Any]] = {}
     current: str | None = None
     bill_month: str | None = None
+    in_summary = False          # дошли ли до сводного блока по организации
     skipped, parsed_rows = 0, 0
 
     for raw_line in lines:
         line = raw_line.strip()
         if _is_garbage(line):
             # Реквизиты счёта всё же вытащим до того, как выбросить строку.
-            _sniff_invoice(line, invoice)
+            _sniff_invoice(line, invoice, current is not None)
             continue
-        _sniff_invoice(line, invoice)
+        _sniff_invoice(line, invoice, current is not None)
 
-        lo = line.lower()
+        # Схлопнутый текст строки. Именно из-за сравнения «как есть» строка
+        # «Итого  начислено» (в счёте два пробела) не опознавалась итоговой
+        # и ложилась в расходы обычной услугой — расход абонента удваивался.
+        lo = domain.squash(line)
 
         # --- Начало блока абонента -----------------------------------------
         if "абонентский номер" in lo:
@@ -408,6 +452,16 @@ def parse_bill(text: str) -> dict[str, Any]:
             if month:
                 subscribers[current]["month"] = month
                 bill_month = bill_month or month
+            continue
+
+        # --- Начало сводного блока по всей организации ----------------------
+        # После этого заголовка идут те же услуги, но суммами по ВСЕЙ
+        # организации — это и есть содержимое окна «Общая статистика».
+        # А ВЫШЕ него лежит шапка счёта: балансы, пени, «Абонент:», название
+        # оператора. Без этой отсечки шапка уезжала в статистику услугами —
+        # «Баланс на начало периода» на два миллиона и «Руководитель» на ноль.
+        if "начислено за расчетный период" in lo:
+            in_summary = True
             continue
 
         # --- Расчётный период счёта ----------------------------------------
@@ -438,7 +492,7 @@ def parse_bill(text: str) -> dict[str, Any]:
             # те же услуги, но суммы по ВСЕЙ организации. В разрезе абонентов
             # его использовать нельзя — итоги задвоились бы. Зато он и есть
             # содержимое окна «Общая статистика», поэтому складываем отдельно.
-            row = _split_service_row(parts)
+            row = _split_service_row(parts) if in_summary else None
             if row and not domain.is_meta(row["service"]) and row["service"]:
                 invoice.setdefault("services", []).append({
                     "name": row["service"],
@@ -511,6 +565,23 @@ def parse_bill(text: str) -> dict[str, Any]:
         ]
         invoice["services_derived"] = True
 
+    # СВОДНЫЕ СУММЫ, ЕСЛИ ИХ В СЧЁТЕ НЕТ.
+    # Часть выгрузок приходит без шапки со сводкой — сразу блоками абонентов.
+    # Раньше окно реквизитов в таком случае показывало итог ПЕРВОГО абонента
+    # (111,36 ₽ вместо 14 952,93 ₽ по счёту): строка «Итого начислено» есть у
+    # каждого номера, и разборщик хватал первую попавшуюся. Брать эти суммы
+    # изнутри блоков запрещено, поэтому недостающее складываем сами — из
+    # итогов абонентов, и честно помечаем, что это наш подсчёт, а не счёт.
+    amounts = invoice.setdefault("amounts", {})
+    if "total_charged" not in amounts and subscribers:
+        amounts["total_charged"] = round(
+            sum(s["total_charged"] or sum(i["cost"] for i in s["items"])
+                for s in subscribers.values()), 2)
+        vat = round(sum(s["vat"] for s in subscribers.values()), 2)
+        if vat:
+            amounts.setdefault("vat_total", vat)
+        invoice["amounts_derived"] = True
+
     return {
         "month": fallback_month,
         "invoice": invoice,
@@ -531,6 +602,19 @@ def _normalize_number(digits: str) -> str:
     if len(d) == 11 and d[0] in "78":
         d = d[1:]
     return d[-10:] if len(d) > 10 else d
+
+
+def _is_mobile(number: str) -> bool:
+    """Похоже ли это на абонентский номер: десять цифр, первая — девятка.
+
+    ЗАЧЕМ ПРОВЕРКА. В файлах полно чисел, которые «выглядят как номер»:
+    даты («31.01.2026» → 310120262), постраничные сноски («113 из 1052026»),
+    лицевые счета. Раньше в список абонентов проходило всё, что длиннее
+    девяти цифр, — и достаточно было по ошибке загрузить счёт как список
+    сотрудников, чтобы в базе навсегда осели восемь десятков номеров-призраков.
+    Корпоративные SIM в России — все 9xx, поэтому правило простое и жёсткое.
+    """
+    return len(number) == 10 and number.startswith("9")
 
 
 # --- Реквизиты и сводные суммы счёта («Общая статистика») -------------------
@@ -583,8 +667,16 @@ def _first_amount(line: str) -> float | None:
     return domain.to_float(m.group(1)) if m else None
 
 
-def _sniff_invoice(line: str, invoice: dict[str, Any]) -> None:
-    """Реквизиты и сводные суммы счёта — для окна «Общая статистика»."""
+def _sniff_invoice(line: str, invoice: dict[str, Any],
+                  inside_subscriber: bool = False) -> None:
+    """Реквизиты и сводные суммы счёта — для окна «Общая статистика».
+
+    `inside_subscriber` — разбор идёт внутри блока конкретного номера.
+    Тогда сводные суммы НЕ берём: строка «Итого начислено» там своя,
+    абонентская. Без этой оговорки итогом всего счёта становился итог
+    ПЕРВОГО абонента — в выгрузке за январь окно реквизитов показывало
+    111,36 ₽ вместо 14 952,93 ₽ по счёту.
+    """
     for key, pattern in INVOICE_FIELDS:
         if key in invoice:
             continue
@@ -594,6 +686,8 @@ def _sniff_invoice(line: str, invoice: dict[str, Any]) -> None:
             if value:
                 invoice[key] = value
 
+    if inside_subscriber:
+        return
     lo = " ".join(line.lower().replace("ё", "е").split())
     amounts = invoice.setdefault("amounts", {})
     for key, marker in INVOICE_AMOUNTS:
@@ -656,7 +750,7 @@ def _match_column(header: str) -> str | None:
 
 
 def _looks_like_header(line: str) -> bool:
-    lo = line.lower()
+    lo = domain.squash(line)
     return ("номер" in lo and ("лимит" in lo or "фио" in lo)) or ("лимит" in lo and "фио" in lo)
 
 
@@ -747,7 +841,8 @@ def _parse_delimited_row(line: str, delim: str, columns: dict[str, int],
     cells = [c.strip() for c in line.split(delim)]
     number_raw = _cell(cells, columns.get("number", 0))
     digits = re.sub(r"\D", "", number_raw)
-    if len(digits) < 9:
+    number = _normalize_number(digits)
+    if not _is_mobile(number):
         return None
     history = {}
     for idx, month in month_columns:
@@ -757,7 +852,7 @@ def _parse_delimited_row(line: str, delim: str, columns: dict[str, int],
             if amount:
                 history[month] = amount
     return {
-        "number": _normalize_number(digits),
+        "number": number,
         "limit": domain.to_int(_cell(cells, columns.get("limit"))),
         "username": _cell(cells, columns.get("username")),
         "position": _cell(cells, columns.get("position")),
@@ -778,8 +873,8 @@ def _parse_spaced_row(line: str, month_columns: list[tuple[int, str]]) -> dict[s
     tokens = line.split()
     if len(tokens) < 2:
         return None
-    digits = re.sub(r"\D", "", tokens[0])
-    if len(digits) < 9:
+    number = _normalize_number(re.sub(r"\D", "", tokens[0]))
+    if not _is_mobile(number):
         return None
 
     limit = domain.to_int(tokens[1]) if MONEY_TOKEN.match(tokens[1]) else 0
@@ -803,7 +898,7 @@ def _parse_spaced_row(line: str, month_columns: list[tuple[int, str]]) -> dict[s
             history[month] = amount
 
     return {
-        "number": _normalize_number(digits),
+        "number": number,
         "limit": limit,
         "username": username,
         "position": position,

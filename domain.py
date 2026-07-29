@@ -64,6 +64,13 @@ def to_float(value: Any, default: float = 0.0) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     s = _NUM_CLEAN_RE.sub("", str(value).replace(" ", " ")).strip()
+    # Хвостовой разделитель — это не разряд, а остаток выброшенного слова:
+    # «-2372683,10 руб.» после чистки превращается в «-2372683,10.», и точка
+    # от «руб.» начинает выглядеть десятичной. Дальше срабатывало правило
+    # «есть и точка, и запятая»: запятая выбрасывалась как разделитель
+    # разрядов, и баланс счёта вырастал в сто раз. Отрезаем такой хвост
+    # до всякого разбора.
+    s = s.rstrip(".,")
     if not s or s in {"-", ".", ","}:
         return default
     # «1 086 101,86» → «1086101.86»; «1,234.56» → «1234.56»
@@ -177,33 +184,51 @@ ADDON_KW = (
 )
 
 
+def squash(text: Any) -> str:
+    """Привести название услуги к виду, по которому можно искать подстроку.
+
+    ЗАЧЕМ. Названия в счёте приходят из PDF, и пробелы там какие угодно:
+    «Итого  начислено» с двумя пробелами, неразрывные пробелы вместо
+    обычных, переносы строк внутри названия. Сравнение «как есть» на таком
+    ломается молча — и это уже стоило нам денег: в выгрузке за январь строка
+    «Итого  начислено» не опозналась как итоговая, не отфильтровалась и
+    легла в расходы обычной услугой. Расход каждого из сорока абонентов
+    удвоился.
+
+    `str.split()` режет по любому пробельному символу, включая неразрывный,
+    поэтому склейка через него чинит все три случая разом. Заодно приводим
+    «ё» к «е»: в счетах встречается и так, и так.
+    """
+    return " ".join(str(text or "").lower().replace("ё", "е").split())
+
+
 def is_meta(service: str) -> bool:
     """Служебная строка-итог, которую нельзя суммировать в расход."""
-    s = (service or "").lower()
+    s = squash(service)
     return any(k in s for k in META_KW)
 
 
 def is_plan_fee(service: str) -> bool:
     """Является ли строка абонентской платой по тарифу (базой тарифа)."""
-    s = (service or "").lower()
+    s = squash(service)
     return any(k in s for k in PLAN_FEE_KW)
 
 
 def is_daily_plan_fee(service: str) -> bool:
     """Абонплата списана посуточно, а не за месяц целиком."""
-    s = (service or "").lower()
+    s = squash(service)
     return is_plan_fee(s) and any(k in s for k in DAILY_FEE_KW)
 
 
 def is_addon(service: str) -> bool:
     """Опция/сервис, не зависящий от тарифного плана."""
-    s = (service or "").lower()
+    s = squash(service)
     return any(k in s for k in ADDON_KW)
 
 
 def is_outgoing(service: str) -> bool:
     """Исходящая ли услуга. Входящие вызовы и SMS пакет не расходуют."""
-    s = (service or "").lower()
+    s = squash(service)
     if "входящ" in s:
         return False
     return True
@@ -229,13 +254,13 @@ ROAMING_KW = (
 
 def is_roaming(service: str) -> bool:
     """Связь вне домашнего региона (роуминг), а не просто «международная»."""
-    s = (service or "").lower()
+    s = squash(service)
     return any(k in s for k in ROAMING_KW)
 
 
 def categorize(service: str, category: str = "", service_type: str = "", unit: str = "") -> str:
     """Отнести услугу к корзине voice / internet / sms / other."""
-    text = " ".join(x for x in (service, category, service_type) if x).lower()
+    text = squash(" ".join(x for x in (service, category, service_type) if x))
     if is_plan_fee(text) or is_meta(text):
         return "other"
     if any(k in text for k in INTERNET_KW) or unit in ("мбайт", "гбайт", "кбайт", "байт"):
@@ -560,6 +585,25 @@ def match_tariff(plan_name: str, plan_fee: float,
             tn = _norm_name(t["name"])
             if tn and (tn in name or name in tn):
                 return t
+        # ПО БАЗЕ ТАРИФА, без надстроек — но только когда среди кандидатов
+        # НЕТ простого пакета с такой же ценой.
+        #
+        # Осторожность здесь выстрадана. Цена — главный признак, и 400 ₽ это
+        # «Пакет 400»: 4 000 мин, 1 000 SMS, 70 000 МБ по тарифной сетке.
+        # Сверка по базе названия сама по себе перебивала это и подсовывала
+        # «Федеральный Специальный + Интернет 400» с нулевым пакетом минут —
+        # потому что в счёте план подписан «Федеральный Специальный B2B».
+        # Название плана оператор пишет одно на всю компанию, а что к нему
+        # докуплено, видно только по абонплате.
+        #
+        # Поэтому база названия работает лишь там, где простого пакета за
+        # такие деньги в сетке нет вовсе: 220 ₽ голосовым пакетом не бывает,
+        # значит это интернет-пакет поверх основного тарифа.
+        if not any(" + " not in t["name"] and t["kind"] == "voice" for t in pool):
+            for t in pool:
+                base = _norm_name(t["name"].split(" + ")[0])
+                if base and (base in name or name in base):
+                    return t
         return None
 
     def pick(pool: list[dict[str, Any]], kind: str) -> dict[str, Any]:
