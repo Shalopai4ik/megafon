@@ -217,14 +217,45 @@ HEADER_ROW_MARKERS = ("название услуги", "наименование
 
 _PAGE_FOOTER = re.compile(r"^\s*\d+\s+из\s+\d+\s*$")
 
+# Разделители колонок — чтобы отличить «строка целиком колонтитул» от
+# «колонтитул приклеился к настоящей строке счёта».
+_DELIM_CHARS = re.compile(r"[;|\t]+")
+
+
+def _is_page_footer_line(line: str) -> bool:
+    """Строка целиком колонтитул — даже с хвостом пустых колонок.
+
+    В выгрузке колонтитул занимает СВОЙ РЯД, а у ряда из Excel есть хвост
+    пустых ячеек:
+
+        1411  из  1422;;;;;;;;;;;;;
+
+    Сравнивать с шаблоном «как есть» тут бесполезно: строка не кончается на
+    цифре. Поэтому разделители сначала считаем пробелами, а потом смотрим,
+    осталось ли что-нибудь кроме самого «N из M». Если нет — строку выкидываем
+    целиком, она пустая по смыслу.
+
+    Настоящую строку счёта это не заденет: у «Итого начислено;;;;1411 из 1422»
+    после замены разделителей останется ещё и название, и шаблон не совпадёт.
+    """
+    return bool(_PAGE_FOOTER.match(_DELIM_CHARS.sub(" ", line)))
+
 
 def _blank_page_footers(parts: list[str]) -> list[str]:
-    """Обнулить ячейки-колонтитулы. Остальные не трогаем."""
+    """Обнулить ячейки-колонтитулы. Остальные не трогаем.
+
+    Второй заслон — на случай, когда Excel положил колонтитул в ячейку ЧУЖОГО
+    ряда, к настоящей строке счёта. Тогда всю строку выкидывать нельзя, в ней
+    есть деньги; гасим только саму ячейку.
+    """
     return ["" if _PAGE_FOOTER.match(p) else p for p in parts]
 
 
 def _is_garbage(line: str) -> bool:
-    if not line.strip():
+    line = line.strip()
+    if not line:
+        return True
+    if _is_page_footer_line(line):
         return True
     for pat in GARBAGE_PATTERNS:
         if pat.match(line):
@@ -451,7 +482,7 @@ def parse_bill(text: str) -> dict[str, Any]:
     # «1411 из 1422» не кончается разделителем, поэтому _unwrap_lines считает
     # её продолжением оборванной записи и вклеивает внутрь чужих колонок.
     # Ячейку внутри строки гасит _split_service_row — там своя защита.
-    lines = [ln for ln in lines if not _PAGE_FOOTER.match(ln)]
+    lines = [ln for ln in lines if not _is_page_footer_line(ln)]
     delim = detect_delimiter(lines[:400])
     lines = _unwrap_lines(lines, delim)
     lines = _split_records(lines, delim)
