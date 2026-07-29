@@ -66,27 +66,11 @@ def fix_sequences() -> None:
     на единице. Первая же вставка из приложения возьмёт id=1, наткнётся на
     занятый ключ и упадёт. И так до тех пор, пока счётчик не догонит.
 
-    Список счётчиков спрашиваем у самой базы, а не строим по именам таблиц:
-    в app_settings и roster_history колонки id нет вообще.
+    Сама операция живёт в db.sync_sequences: здесь она нужна после переноса,
+    а в db.ensure_schema — как страховка для баз, которые перенесли раньше,
+    когда этого шага ещё не было. Две копии одного DO-блока разошлись бы.
     """
-    db.run_script("""
-DO $$
-DECLARE r record;
-BEGIN
-  FOR r IN
-    SELECT c.relname AS tbl, a.attname AS col,
-           pg_get_serial_sequence(c.relname, a.attname) AS seq
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-     WHERE c.relkind = 'r' AND n.nspname = current_schema()
-       AND pg_get_serial_sequence(c.relname, a.attname) IS NOT NULL
-  LOOP
-    EXECUTE format('SELECT setval(%L, COALESCE((SELECT MAX(%I) FROM %I), 0) + 1, false)',
-                   r.seq, r.col, r.tbl);
-  END LOOP;
-END $$;
-""")
+    db.sync_sequences()
 
 
 def copy_table(src: sqlite3.Connection, table: str) -> int:

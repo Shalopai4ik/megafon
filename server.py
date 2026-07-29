@@ -1115,6 +1115,9 @@ def apply_roster(parsed: dict[str, Any]) -> dict[str, Any]:
     строк поштучная запись превращается в минуты ожидания.
     """
     applied, with_limit, with_history = 0, 0, 0
+    # Справочники материализуются ДО транзакции, а не внутри: заливка сама
+    # читает базу после записи, а внутри блока команды ещё не отправлены.
+    queries.ensure_reference_data()
     with db.transaction():
         for row in parsed["rows"]:
             queries.upsert_user(
@@ -1144,6 +1147,16 @@ def apply_bill(parsed: dict[str, Any]) -> dict[str, Any]:
     история. Повторная загрузка того же месяца перезаписывает его целиком.
     """
     saved = 0
+    # СНАЧАЛА СПРАВОЧНИКИ, ПОТОМ ДАННЫЕ. Это и есть момент, когда база
+    # перестаёт быть пустой: до первой загрузки в ней нет ни одной строки,
+    # ни данных, ни справочников. Здесь ложатся оба разом — расчёт без
+    # правил чипса и правил оплаты посчитал бы не то.
+    #
+    # Обязательно ДО транзакции: заливка справочников сама читает базу между
+    # записями, а внутри db.transaction() команды только копятся в буфере и
+    # своих же незакоммиченных строк не видят.
+    queries.ensure_reference_data()
+
     # Весь счёт — одна транзакция: и целостнее, и на порядок быстрее, чем
     # отдельный поход в базу на каждого абонента.
     with db.transaction():
@@ -1563,6 +1576,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:               # noqa: N802
         self.do_GET()
 
+    # Браузер имеет полное право уйти, не дочитав ответ: человек закрыл
+    # вкладку, нажал F5 на медленном отчёте, свернул ноутбук. Для сокета это
+    # обрыв, и запись в него бросает ConnectionError.
+    #
+    # ОТВЕЧАТЬ НА ЭТО ОШИБКОЙ 500 НЕЛЬЗЯ — писать всё равно некуда, вторая
+    # запись бросит то же самое уже мимо обработчика, и в консоль уедет
+    # двухэкранная трассировка. В закрытом контуре, где консоль сервера и есть
+    # единственный признак жизни, это выглядит как падение приложения, хотя
+    # не случилось ровно ничего.
     def do_GET(self) -> None:                # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
@@ -1574,20 +1596,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path.startswith("/api/"):
                 return self._api_get(path, query)
             return self._static(path)
+        except ConnectionError:
+            return self._client_gone("GET", path)
         except Exception as exc:                          # noqa: BLE001
             self.log_error("GET %s failed: %s", path, exc)
-            self._error(500, f"Внутренняя ошибка: {exc}")
+            self._reply_error(500, f"Внутренняя ошибка: {exc}")
 
     def do_POST(self) -> None:               # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
         try:
             self._api_post(path)
+        except ConnectionError:
+            return self._client_gone("POST", path)
         except ValueError as exc:
-            self._error(400, str(exc))
+            self._reply_error(400, str(exc))
         except Exception as exc:                          # noqa: BLE001
             self.log_error("POST %s failed: %s", path, exc)
-            self._error(500, f"Внутренняя ошибка: {exc}")
+            self._reply_error(500, f"Внутренняя ошибка: {exc}")
+
+    def _client_gone(self, method: str, path: str) -> None:
+        """Клиент отвалился. Это не ошибка сервера — строчкой в лог и всё."""
+        self.close_connection = True
+        self.log_message("%s %s — клиент закрыл соединение", method, path)
+
+    def _reply_error(self, code: int, message: str) -> None:
+        """Отправить ошибку, пережив обрыв соединения на самой отправке."""
+        try:
+            self._error(code, message)
+        except ConnectionError:
+            self.close_connection = True
 
     # --- сырые строки счёта ----------------------------------------------
     def _raw_filters(self, query: dict[str, list[str]]) -> dict[str, Any]:

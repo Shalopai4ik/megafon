@@ -159,13 +159,73 @@ def _norm(text: str) -> str:
     return " ".join(str(text or "").lower().replace("ё", "е").split())
 
 
+# ensure_reference_data() уже отработал в этом процессе — второй раз не ходим.
+_reference_ready = False
+
+# Кэш ответа на вопрос «эту базу когда-нибудь наполняли». None — не спрашивали.
+_ever_seeded: bool | None = None
+
+
 def init() -> None:
-    """Создать схему, залить справочники. Безопасно вызывать повторно."""
+    """Поднять схему. РОВНО ЭТО И НИЧЕГО БОЛЬШЕ.
+
+    Раньше здесь же заливались справочники, и старт сервера сам по себе
+    писал в базу сотню строк: цвета, пометки, 28 правил оплаты, 53 тарифа,
+    85 названий услуг. Пустая база переставала быть пустой без единой
+    загрузки файла, и по её содержимому нельзя было отличить «загружено»
+    от «приложение придумало само».
+
+    Теперь старт только создаёт таблицы (строк это не пишет) и читает
+    справочник услуг в память. Наполнение — в ensure_reference_data(),
+    и вызывается оно перед ЗАПИСЬЮ, а не при запуске.
+    """
+    db.connect()
+    _reload_param_index()
+
+
+def ensure_reference_data() -> None:
+    """Материализовать справочники в базе. Вызывать ПЕРЕД записью данных.
+
+    Точки вызова ровно две по смыслу:
+
+      * загрузка файла — счёт, список сотрудников, командировки. Расчёт без
+        правил чипса и правил оплаты посчитает не то, поэтому справочники
+        обязаны лечь в базу одновременно с первыми данными;
+      * правка справочника в настройках — администратор редактирует строку,
+        которую до этого видел из памяти, и она должна стать настоящей.
+
+    Повторный вызов бесплатен: в процессе стоит флаг, в базе — отметка
+    seeds_version.
+    """
+    global _reference_ready, _ever_seeded
+    if _reference_ready:
+        return
     db.connect()
     seeds.ensure_seeds()
     _seed_parameters()
     _seed_tariffs()
     _reload_param_index()
+    _reference_ready = True
+    _ever_seeded = True
+
+
+def reference_materialized() -> bool:
+    """Наполняли ли справочники ЭТОЙ базы хоть раз.
+
+    От ответа зависит, что вернёт чтение пустого справочника:
+
+        нет  — умолчания из памяти (seeds.default_*). Установка свежая,
+               загрузок ещё не было, показывать пустой экран настроек нельзя;
+        да   — ровно то, что в базе, даже если это ноль строк. Иначе
+               администратор, удаливший все правила, увидел бы их снова —
+               ту же яму мы уже проходили с посевом на каждом старте.
+
+    Ответ кэшируется: он меняется ровно один раз за жизнь базы.
+    """
+    global _ever_seeded
+    if _ever_seeded is None:
+        _ever_seeded = db.get_setting(seeds.SEEDED_FLAG) == seeds.SEEDS_VERSION
+    return _ever_seeded
 
 
 def _seed_parameters() -> None:
@@ -404,6 +464,8 @@ def users_count() -> int:
 
 def get_statuses() -> list[dict[str, Any]]:
     rows = db.query("SELECT id, label, color, builtin FROM app_statuses ORDER BY sort_order, id")
+    if not rows and not reference_materialized():
+        return seeds.default_statuses()      # база ещё пуста — см. seeds.py
     return [{**r, "builtin": bool(r["builtin"])} for r in rows]
 
 
@@ -432,6 +494,9 @@ def save_status(status: dict[str, Any], previous_id: str = "") -> list[dict[str,
     color = str(status.get("color") or "#6b7a74")
     if not label:
         raise ValueError("Название статуса не может быть пустым")
+    # Встроенные статусы могли показываться из памяти — материализуем их,
+    # иначе в базе останется один новый, а «Норма» и «Уволен» исчезнут.
+    ensure_reference_data()
 
     with _LOCK:
         if previous_id:
@@ -460,6 +525,7 @@ def save_status(status: dict[str, Any], previous_id: str = "") -> list[dict[str,
 
 def delete_status(status_id: str) -> list[dict[str, Any]]:
     """Удалить пользовательский статус. Абоненты с ним переходят в «Норма»."""
+    ensure_reference_data()
     row = db.query_one("SELECT * FROM app_statuses WHERE id = ?", (status_id,))
     if not row:
         raise ValueError("Статус не найден")
@@ -829,8 +895,16 @@ def history_rows(bundles: list[dict[str, Any]],
 # ═══════════════════════════════════════════════════════════════════════════
 
 def get_tariffs() -> list[dict[str, Any]]:
-    """Каталог в том виде, в каком его ждут domain и фронтенд."""
+    """Каталог в том виде, в каком его ждут domain и фронтенд.
+
+    Пока в базу ничего не загружали, таблица пуста — отдаём каталог из
+    памяти. Он же ляжет в базу при первой загрузке счёта. Расчёт на это не
+    завязан: domain.normalize_catalog подставляет тот же набор сам.
+    """
     rows = db.query("SELECT * FROM tariff_plans ORDER BY sort_order, id")
+    if not rows and not reference_materialized():
+        return [{**t, "is_flex": False}
+                for t in domain.normalize_catalog(domain.DEFAULT_TARIFFS)]
     return [{
         "id": r["plan_name"],           # исторически id == имя тарифа
         "name": r["plan_name"],
@@ -1139,6 +1213,8 @@ def get_chip_rules(kind: str = "") -> list[dict[str, Any]]:
         params.append(kind)
     sql += " ORDER BY (kind <> 'color'), sort_order, code"
     rows = db.query(sql, params)
+    if not rows and not reference_materialized():
+        return seeds.default_chip_rules(kind)     # база ещё пуста — см. seeds.py
     return [_bools(r, "is_excluded", "is_unlimited", "builtin") for r in rows]
 
 
@@ -1154,6 +1230,9 @@ def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]
     Если kind не передан, а правило уже есть, вид НЕ меняем: администратор
     редактирует существующее правило, а не превращает пометку в цвет.
     """
+    # Правило могли показать из памяти — до правки его надо сделать настоящим,
+    # иначе сохранение одного правила оставило бы в базе ровно его одно.
+    ensure_reference_data()
     code = str(data.get("code") or "").strip() or _slug(str(data.get("label") or "rule"))
     existing = db.query_one("SELECT kind FROM chip_rules WHERE code = ?", (code,))
     kind = kind or str(data.get("kind") or "") or (existing["kind"] if existing else "mark")
@@ -1193,6 +1272,7 @@ def save_chip_color(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def delete_chip_rule(code: str) -> list[dict[str, Any]]:
     """Удалить правило. Встроенные не трогаем — их можно только переименовать."""
+    ensure_reference_data()
     row = db.query_one("SELECT kind, builtin FROM chip_rules WHERE code = ?", (code,))
     if not row:
         raise ValueError("Правило не найдено")
@@ -1310,6 +1390,10 @@ def all_chips() -> dict[str, dict[str, Any]]:
 def save_chip(number: str, data: dict[str, Any]) -> dict[str, Any]:
     """Сохранить настройки чипса. Меняются только переданные поля."""
     number = str(number)
+    # Покраска номера — это ссылка на строку chip_rules, и внешний ключ у
+    # chip_rule_links настоящий. Если правила ещё не материализованы, вставка
+    # связи упадёт: «ключ (rule_code) отсутствует в таблице chip_rules».
+    ensure_reference_data()
     with db.transaction() as conn:
         conn.execute(
             "INSERT INTO chip_settings (number) VALUES (?) ON CONFLICT (number) DO NOTHING",
@@ -1385,10 +1469,43 @@ def _bools(row: dict[str, Any], *fields: str) -> dict[str, Any]:
 def get_payment_rules(only_enabled: bool = False) -> list[dict[str, Any]]:
     where = "WHERE enabled = 1" if only_enabled else ""
     rows = db.query(f"SELECT * FROM payment_rules {where} ORDER BY priority, id")
+    if not rows and not reference_materialized():
+        return seeds.default_payment_rules()      # база ещё пуста — см. seeds.py
     return [_bools(r, "enabled", "builtin") for r in rows]
 
 
+def _payment_rule_id(raw_id: Any) -> int | None:
+    """Настоящий id правила по тому, что прислал фронтенд. None — правила нет.
+
+    У правил, в отличие от цветов и статусов, нет естественного ключа: их
+    различает только числовой id, который выдаёт база. А список правил могли
+    показать ещё до первой загрузки, когда строк в базе не было вовсе, — тогда
+    id пришёл ОТРИЦАТЕЛЬНЫЙ, из seeds.default_payment_rules.
+
+    Такой id — это номер строки в seeds.PAYMENT_RULES. По ней и находим
+    настоящую строку, которая к этому моменту уже лежит в базе. Искать по
+    тому, что пришло из формы, нельзя: в форме условие могли как раз и
+    поменять, и правка ушла бы мимо, создав дубликат.
+    """
+    n = domain.to_int(raw_id, 0)
+    if n > 0:
+        row = db.query_one("SELECT id FROM payment_rules WHERE id = ?", (n,))
+    elif n < 0 and -n <= len(seeds.PAYMENT_RULES):
+        seed = seeds.PAYMENT_RULES[-n - 1]
+        row = db.query_one(
+            "SELECT id FROM payment_rules "
+            " WHERE scope = ? AND match_kind = ? AND match_value = ?",
+            (seed["scope"], seed["match_kind"], seed["match_value"]))
+    else:
+        return None
+    return int(row["id"]) if row else None
+
+
 def save_payment_rule(data: dict[str, Any]) -> list[dict[str, Any]]:
+    # Правило могли увидеть в списке ещё до первой загрузки — тогда оно
+    # пришло из памяти и в базе его нет. Материализуем справочник целиком,
+    # иначе правка одной строки стёрла бы остальные 27.
+    ensure_reference_data()
     fields = {
         "priority": domain.to_int(data.get("priority"), 100),
         "enabled": 1 if data.get("enabled", True) else 0,
@@ -1398,10 +1515,11 @@ def save_payment_rule(data: dict[str, Any]) -> list[dict[str, Any]]:
         "payer": "employee" if str(data.get("payer")) == "employee" else "company",
         "note": str(data.get("note") or ""),
     }
-    rule_id = domain.to_int(data.get("id"), 0)
-    if rule_id and db.query_one("SELECT id FROM payment_rules WHERE id = ?", (rule_id,)):
+    target = _payment_rule_id(data.get("id"))
+    if target is not None:
         sets = ", ".join(f"{k} = ?" for k in fields)
-        db.execute(f"UPDATE payment_rules SET {sets} WHERE id = ?", [*fields.values(), rule_id])
+        db.execute(f"UPDATE payment_rules SET {sets} WHERE id = ?",
+                   [*fields.values(), target])
     else:
         columns = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
@@ -1411,7 +1529,13 @@ def save_payment_rule(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def delete_payment_rule(rule_id: int) -> list[dict[str, Any]]:
-    db.execute("DELETE FROM payment_rules WHERE id = ?", (domain.to_int(rule_id),))
+    # Удалить можно и правило, которое ещё не лежит в базе, — его сначала
+    # надо туда положить, иначе оставшиеся 27 так и останутся «из памяти»
+    # и вернутся на экран все вместе с удалённым.
+    ensure_reference_data()
+    target = _payment_rule_id(rule_id)
+    if target is not None:
+        db.execute("DELETE FROM payment_rules WHERE id = ?", (target,))
     return get_payment_rules()
 
 
@@ -1430,6 +1554,8 @@ _ROAMING_RATES = ("incoming", "call_home", "call_local", "call_other",
 
 def get_roaming_zones() -> list[dict[str, Any]]:
     rows = db.query("SELECT * FROM roaming_zones ORDER BY sort_order, code")
+    if not rows and not reference_materialized():
+        rows = seeds.default_roaming_zones()      # база ещё пуста — см. seeds.py
     return [{**r, **{k: float(r.get(k) or 0.0) for k in _ROAMING_RATES},
              "builtin": bool(r.get("builtin"))} for r in rows]
 
@@ -1445,6 +1571,7 @@ def save_roaming_zone(data: dict[str, Any]) -> list[dict[str, Any]]:
     code = str(data.get("code") or "").strip().lower()
     if not code:
         raise ValueError("У зоны роуминга должен быть код")
+    ensure_reference_data()
     old = db.query_one("SELECT * FROM roaming_zones WHERE code = ?", (code,)) or {}
 
     def keep(field: str, default: Any) -> Any:
@@ -1470,6 +1597,7 @@ def save_roaming_zone(data: dict[str, Any]) -> list[dict[str, Any]]:
 def delete_roaming_zone(code: str) -> list[dict[str, Any]]:
     """Удалить зону. Встроенные не трогаем: это данные из тарифной сетки."""
     code = str(code or "").strip().lower()
+    ensure_reference_data()
     row = db.query_one("SELECT builtin FROM roaming_zones WHERE code = ?", (code,))
     if not row:
         raise ValueError("Зона роуминга не найдена")
@@ -1489,6 +1617,7 @@ def save_trips(rows: list[dict[str, Any]]) -> int:
     ключ — (номер, дата начала, дата конца)."""
     if not rows:
         return 0
+    ensure_reference_data()      # первая загрузка наполняет и справочники
     db.execute_many(
         "INSERT INTO business_trips (number, username, date_start, date_end, country, "
         "  order_no, order_date, approved, memo_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -1552,5 +1681,7 @@ def delete_trips() -> None:
     db.execute("DELETE FROM business_trips")
 
 
-# Схема и справочники должны существовать до первого запроса.
+# Схема должна существовать до первого запроса — таблицы, и только таблицы.
+# Справочники здесь НЕ заливаются: база наполняется при первой загрузке файла
+# (см. ensure_reference_data). Импорт модуля в базу ничего не пишет.
 init()

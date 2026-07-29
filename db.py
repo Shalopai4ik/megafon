@@ -931,10 +931,81 @@ DROP_OBSOLETE_SQL = """
 ALTER TABLE chip_settings DROP CONSTRAINT IF EXISTS chip_settings_color_code_fkey;
 """
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  СЧЁТЧИКИ BIGSERIAL
+#
+#  ЧТО ЛОМАЛОСЬ. Все первичные ключи у нас BIGSERIAL: id берётся из
+#  последовательности. Но перелив из SQLite (import_sqlite.py) вставляет
+#  строки С ГОТОВЫМИ id — их надо сохранить, иначе развалятся ссылки
+#  pvalues.report_id на reports.id. Последовательность при явной вставке НЕ
+#  двигается: в таблице сто строк, а счётчик по-прежнему показывает единицу.
+#
+#  Дальше первая же обычная вставка просит следующий id, получает 1 и падает:
+#
+#      ОШИБКА: повторяющееся значение ключа нарушает ограничение
+#      ПОДРОБНОСТИ: Ключ "(id)=(1)" уже существует.
+#
+#  Ловушка тихая и отложенная: перелив проходит успешно, приложение читает,
+#  считает и рисует отчёты — а разваливается ПОТОМ, на первой же загрузке
+#  счёта, и текст ошибки на перелив ничем не указывает.
+#
+#  ЛЕЧЕНИЕ. Прогнать счётчики по максимуму, который реально лежит в таблице.
+#  Делается это в самом PostgreSQL одним блоком, без перечисления таблиц
+#  руками: список берётся из системного каталога, поэтому новая таблица в
+#  схеме подхватится сама.
+#
+#      setval(seq, GREATEST(max, 1), max > 0)
+#
+#  Третий аргумент — «значение уже использовано». На пустой таблице он false,
+#  и следующий id будет 1, а не 2; на заполненной true, и следующий id идёт
+#  сразу за максимальным. Операция идемпотентна: на здоровой базе она просто
+#  переставляет счётчик туда, где он и так стоял.
+# ═══════════════════════════════════════════════════════════════════════════
+
+SYNC_SEQUENCES_SQL = """
+DO $$
+DECLARE
+    rec  record;
+    top  bigint;
+BEGIN
+    FOR rec IN
+        SELECT c.table_name AS tbl,
+               c.column_name AS col,
+               pg_get_serial_sequence(c.table_name, c.column_name) AS seq
+          FROM information_schema.columns c
+          JOIN information_schema.tables t
+            ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+         WHERE c.table_schema = current_schema()
+           AND t.table_type = 'BASE TABLE'
+           AND pg_get_serial_sequence(c.table_name, c.column_name) IS NOT NULL
+    LOOP
+        EXECUTE format('SELECT COALESCE(MAX(%I), 0) FROM %I', rec.col, rec.tbl)
+           INTO top;
+        PERFORM setval(rec.seq, GREATEST(top, 1), top > 0);
+    END LOOP;
+END $$;
+"""
+
+
+def sync_sequences() -> None:
+    """Догнать счётчики BIGSERIAL до фактических максимумов в таблицах.
+
+    Безопасно вызывать когда угодно и сколько угодно раз. Обязательно — после
+    любой массовой вставки с явными id (см. import_sqlite.py).
+    """
+    rc, out, err = _run(SYNC_SEQUENCES_SQL, one_transaction=True)
+    if rc != 0:
+        _fail("синхронизация счётчиков id", err or out)
+
+
 # Версия схемы. Меняется, когда правится DDL выше. Пока номер в базе совпадает
 # с этим, старт приложения не трогает схему вообще — а это единственное
 # обращение к базе на старте вместо четырёх.
-SCHEMA_VERSION = "pg-3"
+#
+# pg-4: добавлена синхронизация счётчиков BIGSERIAL. Номер поднят намеренно —
+# базы, уже развёрнутые с отставшими счётчиками, чинятся при первом же старте
+# новой версии, а не ждут, пока человек напорется на ошибку при загрузке.
+SCHEMA_VERSION = "pg-4"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1076,6 +1147,10 @@ def ensure_schema() -> None:
     rc, out, err = _run(MIGRATE_RULES_SQL, one_transaction=True)
     if rc != 0:
         _fail("перенос правил чипса", err or out)
+
+    # 5. Счётчики id. После переливки старой базы они отстают от таблиц, и
+    # первая же обычная вставка падает на «ключ (id)=(1) уже существует».
+    sync_sequences()
 
     rc, out, err = _run(_statement(
         "INSERT INTO app_settings (key, value) VALUES ('schema_version', ?) "
