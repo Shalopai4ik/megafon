@@ -2583,6 +2583,7 @@ const SETTINGS_TABS = {
   trips: renderTripSettings,
   statuses: renderStatusSettings,
   tariffs: renderTariffSettings,
+  roaming: renderRoamingSettings,
   widgets: renderWidgetSettings,
 };
 
@@ -2738,6 +2739,102 @@ const RULE_SCOPES = [
   ['tariff', 'Абонплата'], ['options', 'Опции'],
   ['overage', 'Перерасход'], ['roaming', 'Роуминг'],
 ];
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * РОУМИНГ: СТАВКИ ПО ЗОНАМ
+ *
+ * СПРАВОЧНИК, А НЕ КАЛЬКУЛЯТОР. Отчёт по этим ставкам ничего не пересчитывает:
+ * роуминг как брался суммой из счёта, так и берётся. Экран нужен для другого —
+ * когда за поездку прилетело восемь тысяч, надо видеть цену минуты и
+ * мегабайта, чтобы понять, много это или норма.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+// Колонки со ставками: поле, заголовок, подсказка. Один список на шапку,
+// на строки и на подписи — иначе они разъедутся при первой же правке.
+const ROAMING_COLUMNS = [
+  ['incoming',   'Входящие',   '₽/мин, входящие вызовы'],
+  ['call_home',  'В Россию',   '₽/мин, звонок в Россию'],
+  ['call_local', 'По стране',  '₽/мин, звонок по стране пребывания'],
+  ['call_other', 'В др. страны', '₽/мин, звонок в третьи страны'],
+  ['sms',        'SMS',        '₽ за исходящее SMS'],
+  ['mb',         'Интернет',   '₽ за 1 МБ'],
+  ['satellite',  'Спутник',    '₽/мин, спутниковые сети'],
+];
+
+let roamingZones = [];
+
+async function renderRoamingSettings(el) {
+  el.innerHTML = '<div class="empty">Загрузка…</div>';
+  try {
+    roamingZones = (await getJSON('/api/roaming')).zones || [];
+  } catch (err) {
+    el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="settings-note">Ставки роуминга из тарифной сетки оператора, в
+      рублях с НДС. Все страны разбиты на четыре зоны с едиными ценами внутри
+      зоны; Крым идёт отдельно. Тарификация вызовов поминутная, входящие
+      бесплатны. <b>Это справочник для сверки:</b> расход в отчёте берётся из
+      счёта как есть и по этим цифрам не пересчитывается — в счёте бывают
+      пакеты и акции, о которых таблица не знает.</div>
+    <div class="rule-table rule-table-roaming" id="roamingRows"></div>
+    <div class="settings-actions">
+      <button class="btn btn-soft" id="roamingAdd">+ Добавить зону</button>
+    </div>`;
+
+  const draw = () => {
+    $('roamingRows').innerHTML = `
+      <div class="rule-head">
+        <span>Зона</span>
+        ${ROAMING_COLUMNS.map(([, title]) => `<span>${title}</span>`).join('')}
+        <span></span>
+      </div>
+      ${roamingZones.map((z) => `
+        <div class="rule-row" data-code="${esc(z.code)}" title="${esc(z.note || '')}">
+          <input class="rule-zone" type="text" data-f="label" value="${esc(z.label)}"
+                 maxlength="60" placeholder="Название зоны">
+          ${ROAMING_COLUMNS.map(([field, title, hint]) => `
+            <input type="number" data-f="${field}" value="${z[field]}"
+                   min="0" step="0.01" title="${esc(hint)}" placeholder="${esc(title)}">`).join('')}
+          ${z.builtin
+            ? '<span class="rule-del is-locked" title="Зона из тарифной сетки — ставки поправить можно, удалить нельзя">🔒</span>'
+            : `<button class="rule-del" data-del="${esc(z.code)}" title="Удалить">✕</button>`}
+        </div>`).join('')}`;
+
+    $$('.rule-row', el).forEach((row) => {
+      $$('input', row).forEach((input) => input.addEventListener('change', () => {
+        const payload = { code: row.dataset.code };
+        $$('input', row).forEach((f) => { payload[f.dataset.f] = f.value; });
+        saveZone(payload);
+      }));
+    });
+    $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
+      if (!confirm('Удалить зону роуминга?')) return;
+      saveZone({ code: btn.dataset.del }, '/api/roaming/delete');
+    }));
+  };
+
+  const saveZone = async (payload, url = '/api/roaming') => {
+    try {
+      const data = await postJSON(url, payload);
+      roamingZones = data.zones || roamingZones;
+      draw();
+      flashHint('Ставки роуминга сохранены.');
+    } catch (err) { flashHint(err.message, 'error'); }
+  };
+
+  draw();
+  $('roamingAdd').onclick = () => {
+    const code = (prompt('Код новой зоны латиницей, например asia:') || '').trim();
+    if (!code) return;
+    saveZone({
+      code, label: code, incoming: 0, call_home: 0, call_local: 0,
+      call_other: 0, sms: 0, mb: 0, satellite: 0, sort_order: 100,
+    });
+  };
+}
 
 let paymentRules = [];
 

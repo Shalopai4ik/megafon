@@ -169,7 +169,14 @@ CREATE TABLE IF NOT EXISTS chip_colors (
 -- Постоянные настройки номера. Не зависят от месяца и периода счёта.
 CREATE TABLE IF NOT EXISTS chip_settings (
     number        TEXT PRIMARY KEY,
-    color_code    TEXT REFERENCES chip_colors (code),
+    -- Ссылки на chip_colors здесь БОЛЬШЕ НЕТ, и это исправление, а не
+    -- недосмотр. Цвета давно живут в chip_rules, а chip_colors осталась
+    -- пустой заготовкой для отката. На свежей установке она пустая всегда —
+    -- и внешний ключ отвергал ЛЮБУЮ покраску номера: «ключ (color_code)
+    -- отсутствует в таблице chip_colors». А проверять и так есть чему:
+    -- связь «номер ↔ правило» лежит в chip_rule_links, и вот там внешний
+    -- ключ на chip_rules настоящий и работающий.
+    color_code    TEXT,
     note          TEXT DEFAULT '',
     -- Ручная тонкая настройка поверх цвета. 'auto' — брать из цвета/правил.
     payer_tariff  TEXT DEFAULT 'auto',
@@ -256,6 +263,26 @@ CREATE TABLE IF NOT EXISTS roster_history (
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- Ставки роуминга по тарифным зонам оператора. Справочник: приложение по
+-- нему ничего не пересчитывает, роуминг как считался по факту из счёта, так
+-- и считается. Нужен, чтобы было куда посмотреть, когда в счёте прилетела
+-- неожиданная сумма за поездку, — иначе сверять не с чем.
+-- Все цены с НДС, в рублях. Входящие вызовы во всех зонах бесплатны.
+CREATE TABLE IF NOT EXISTS roaming_zones (
+    code        TEXT PRIMARY KEY,
+    label       TEXT NOT NULL,
+    incoming    DOUBLE PRECISION DEFAULT 0,   -- входящие вызовы, ₽/мин
+    call_home   DOUBLE PRECISION DEFAULT 0,   -- звонок в Россию, ₽/мин
+    call_local  DOUBLE PRECISION DEFAULT 0,   -- звонок по стране пребывания
+    call_other  DOUBLE PRECISION DEFAULT 0,   -- звонок в другие страны
+    sms         DOUBLE PRECISION DEFAULT 0,   -- исходящее SMS, ₽/шт
+    mb          DOUBLE PRECISION DEFAULT 0,   -- интернет, ₽/МБ
+    satellite   DOUBLE PRECISION DEFAULT 0,   -- спутниковые сети, ₽/мин
+    note        TEXT DEFAULT '',
+    sort_order  INTEGER DEFAULT 100,
+    builtin     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS chip_rules (

@@ -1425,6 +1425,9 @@ _DICT_ENDPOINTS: dict[str, DictEndpoint] = {
     "/api/payment-rules": DictEndpoint(
         "rules", queries.save_payment_rule, queries.delete_payment_rule,
         lambda p: domain.to_int(p.get("id")), "Ожидается объект правила"),
+    "/api/roaming": DictEndpoint(
+        "zones", queries.save_roaming_zone, queries.delete_roaming_zone,
+        lambda p: str(p.get("code") or ""), "Ожидается объект зоны роуминга"),
 }
 
 
@@ -1552,6 +1555,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"marks": queries.get_chip_marks()})
         if path == "/api/payment-rules":
             return self._json(200, {"rules": queries.get_payment_rules()})
+        if path == "/api/roaming":
+            return self._json(200, {"zones": queries.get_roaming_zones()})
         if path == "/api/trips":
             number = (query.get("number") or [""])[0]
             return self._json(200, {"trips": queries.get_trips(number)})

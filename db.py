@@ -876,6 +876,26 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Ставки роуминга по тарифным зонам оператора. Справочник: приложение по
+-- нему ничего не пересчитывает, роуминг как считался по факту из счёта, так
+-- и считается. Нужен, чтобы было куда посмотреть, когда в счёте прилетела
+-- неожиданная сумма за поездку, — иначе сверять не с чем.
+-- Все цены с НДС, в рублях. Входящие вызовы во всех зонах бесплатны.
+CREATE TABLE IF NOT EXISTS roaming_zones (
+    code        TEXT PRIMARY KEY,
+    label       TEXT NOT NULL,
+    incoming    DOUBLE PRECISION DEFAULT 0,   -- входящие вызовы, ₽/мин
+    call_home   DOUBLE PRECISION DEFAULT 0,   -- звонок в Россию, ₽/мин
+    call_local  DOUBLE PRECISION DEFAULT 0,   -- звонок по стране пребывания
+    call_other  DOUBLE PRECISION DEFAULT 0,   -- звонок в другие страны
+    sms         DOUBLE PRECISION DEFAULT 0,   -- исходящее SMS, ₽/шт
+    mb          DOUBLE PRECISION DEFAULT 0,   -- интернет, ₽/МБ
+    satellite   DOUBLE PRECISION DEFAULT 0,   -- спутниковые сети, ₽/мин
+    note        TEXT DEFAULT '',
+    sort_order  INTEGER DEFAULT 100,
+    builtin     INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # Объединённые правила чипса: цвета и пометки в одной таблице.
@@ -914,7 +934,7 @@ ALTER TABLE chip_settings DROP CONSTRAINT IF EXISTS chip_settings_color_code_fke
 # Версия схемы. Меняется, когда правится DDL выше. Пока номер в базе совпадает
 # с этим, старт приложения не трогает схему вообще — а это единственное
 # обращение к базе на старте вместо четырёх.
-SCHEMA_VERSION = "pg-2"
+SCHEMA_VERSION = "pg-3"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

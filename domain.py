@@ -152,6 +152,14 @@ VOICE_KW = ("вызов", "минут", "звон", "голос", "разгов�
 # Абонентская плата по тарифному плану — «база» тарифа, а не потребление.
 PLAN_FEE_KW = ("абонентская плата по тарифному плану",)
 
+# Посуточное списание абонплаты. Строка выглядит так:
+#     Абонентская плата по тарифному плану (посуточное списание);31 шт;400,00
+# В «шт» лежит число оплаченных дней. Если номер подключили или отключили
+# посреди месяца, дней будет меньше тридцати, а сумма — соответственно
+# меньше месячной. Отличать такую строку от обычной абонплаты обязательно:
+# иначе тариф за 400 ₽, оплаченный за 15 дней, выглядит как тариф за 200 ₽.
+DAILY_FEE_KW = ("посуточ",)
+
 # Служебные строки-итоги: это НЕ услуги, а суммы. Если сложить их вместе с
 # обычными начислениями — получим двойной счёт.
 META_KW = ("итого начислено", "итого по услугам", "в том числе ндс", "в т.ч. ндс", "в т.ч ндс")
@@ -179,6 +187,12 @@ def is_plan_fee(service: str) -> bool:
     """Является ли строка абонентской платой по тарифу (базой тарифа)."""
     s = (service or "").lower()
     return any(k in s for k in PLAN_FEE_KW)
+
+
+def is_daily_plan_fee(service: str) -> bool:
+    """Абонплата списана посуточно, а не за месяц целиком."""
+    s = (service or "").lower()
+    return is_plan_fee(s) and any(k in s for k in DAILY_FEE_KW)
 
 
 def is_addon(service: str) -> bool:
@@ -236,83 +250,184 @@ def categorize(service: str, category: str = "", service_type: str = "", unit: s
 # ═══════════════════════════════════════════════════════════════════════════
 #  Каталог тарифных планов
 #
-#  Значения взяты из тарифных сеток оператора:
-#    * «Федеральный Специальный» — без абонентской платы, поминутная оплата:
-#      0,18 ₽/мин на других операторов, 0,50 ₽/мин межгород, 0,05 ₽/SMS,
-#      0,05 ₽/МБ.
-#    * Пакетные тарифы 140 / 230 / 400 ₽ — включают минуты, SMS и интернет;
-#      всё сверх пакета тарифицируется по тем же поминутным ставкам.
-#    * Интернет-тарифы 30 / 100 / 220 / 310 / 400 ₽ — только для номеров,
-#      где нет голоса и SMS (модемы, M2M, планшеты).
+#  ОТКУДА ЦИФРЫ. Из тарифных сеток оператора (снимки tarifs*.jpg):
 #
-#  Каталог редактируется в интерфейсе (вкладка «Тарифы» в настройках) и
-#  приходит сюда параметром, поэтому здесь он — только значение по умолчанию.
+#    «Федеральный Специальный» — без абонентской платы, всё по факту:
+#        0,18 ₽/мин на других операторов домашнего региона,
+#        0,00 ₽/мин внутри сети и на номера корпоративного клиента,
+#        0,50 ₽/мин междугородные по России,
+#        0,05 ₽/SMS, 0,50 ₽/MMS, 0,05 ₽/МБ, входящие бесплатно.
+#        FMC (городской номер на трубке) — 16,95 ₽/мес.
+#
+#    Голосовые пакеты:
+#        140 ₽ — 700 мин · 300 SMS · 15 000 МБ
+#        230 ₽ — 1 500 мин · 500 SMS · 25 000 МБ
+#        400 ₽ — 4 000 мин · 1 000 SMS · 70 000 МБ
+#
+#    Интернет-пакеты (2G/3G/4G), они же тарифы для модемов и M2M:
+#        30 ₽ — 1,5 ГБ      100 ₽ — 8 ГБ      220 ₽ — 15 ГБ
+#        310 ₽ — 30 ГБ      400 ₽ — без ограничения объёма
+#
+#  ПОЧЕМУ КАТАЛОГ СОБИРАЕТСЯ КОДОМ, А НЕ НАПИСАН СПИСКОМ.
+#  Реальный набор — это КОМБИНАЦИИ: голосовая база × FMC × интернет-пакет.
+#  Отсюда и суммы в счетах, которых нет ни в одной строке сетки: 186,95 —
+#  это 16,95 + 140 + 30, а 726,95 — это 16,95 + 400 + 310. Пока в каталоге
+#  лежали только девять «чистых» тарифов, номер с абонплатой 186,95 ₽
+#  опознавался как «Пакет 140» (ближайшая цена), и дальше всё считалось от
+#  неверного пакета.
+#
+#  Руками такую таблицу не пишут: 53 строки, и при правке ставки FMC
+#  пришлось бы вычитать её из полусотни сумм. Поэтому части перечислены
+#  один раз, а комбинации собираются `build_catalog()`.
+#
+#  Каталог редактируется в интерфейсе (Настройки → Тарифы) и приходит сюда
+#  параметром, поэтому здесь он — только значение по умолчанию.
 # ═══════════════════════════════════════════════════════════════════════════
 
-RATE_MIN = 0.18       # ₽ за минуту сверх пакета
-RATE_SMS = 0.05       # ₽ за SMS сверх пакета
-RATE_MB = 0.05        # ₽ за МБ сверх пакета
+RATE_MIN = 0.18            # ₽ за минуту сверх пакета (другие операторы)
+RATE_MIN_INTERCITY = 0.50  # ₽ за минуту междугородного вызова по России
+RATE_SMS = 0.05            # ₽ за SMS сверх пакета абонентам РФ
+RATE_SMS_ABROAD = 1.00     # ₽ за SMS абонентам СНГ и других стран
+RATE_MMS = 0.50            # ₽ за MMS абонентам РФ
+RATE_MMS_ABROAD = 1.50     # ₽ за MMS абонентам СНГ и других стран
+RATE_MB = 0.05             # ₽ за МБ сверх пакета
 
-DEFAULT_TARIFFS: list[dict[str, Any]] = [
-    {
-        "id": "fed_special", "name": "Федеральный Специальный",
-        "kind": "voice", "fee": 0.0,
-        "minutes": 0, "sms": 0, "internet_mb": 0, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "Без абонентской платы, всё по факту потребления",
-    },
-    {
-        "id": "pack_140", "name": "Пакет 140 ₽",
-        "kind": "voice", "fee": 140.0,
-        "minutes": 700, "sms": 300, "internet_mb": 15000, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "700 мин · 300 SMS · 15 ГБ",
-    },
-    {
-        "id": "pack_230", "name": "Пакет 230 ₽",
-        "kind": "voice", "fee": 230.0,
-        "minutes": 1500, "sms": 500, "internet_mb": 25000, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "1 500 мин · 500 SMS · 25 ГБ",
-    },
-    {
-        "id": "pack_400", "name": "Пакет 400 ₽",
-        "kind": "voice", "fee": 400.0,
-        "minutes": 4000, "sms": 1000, "internet_mb": 70000, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "4 000 мин · 1 000 SMS · 70 ГБ",
-    },
-    {
-        "id": "int_30", "name": "Интернет 30 ₽", "kind": "internet", "fee": 30.0,
-        "minutes": 0, "sms": 0, "internet_mb": 1536, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "1,5 ГБ",
-    },
-    {
-        "id": "int_100", "name": "Интернет 100 ₽", "kind": "internet", "fee": 100.0,
-        "minutes": 0, "sms": 0, "internet_mb": 8192, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "8 ГБ",
-    },
-    {
-        "id": "int_220", "name": "Интернет 220 ₽", "kind": "internet", "fee": 220.0,
-        "minutes": 0, "sms": 0, "internet_mb": 15360, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "15 ГБ",
-    },
-    {
-        "id": "int_310", "name": "Интернет 310 ₽", "kind": "internet", "fee": 310.0,
-        "minutes": 0, "sms": 0, "internet_mb": 30720, "unlimited_internet": False,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "30 ГБ",
-    },
-    {
-        "id": "int_400", "name": "Интернет 400 ₽", "kind": "internet", "fee": 400.0,
-        "minutes": 0, "sms": 0, "internet_mb": 0, "unlimited_internet": True,
-        "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
-        "note": "Безлимит",
-    },
+# FMC — городской номер, привязанный к мобильному. Отдельная абонплата,
+# пакетов не добавляет, но в сумме абонплаты счёта сидит и сдвигает её на
+# 16,95 ₽. Без учёта этой добавки тариф из счёта не опознать.
+FMC_FEE = 16.95
+
+# Голосовые базы: код, название, абонплата, минуты, SMS, МБ.
+VOICE_BASES: list[tuple[str, str, float, int, int, int]] = [
+    ("fed", "Федеральный Специальный", 0.0, 0, 0, 0),
+    ("140", "Пакет 140", 140.0, 700, 300, 15000),
+    ("230", "Пакет 230", 230.0, 1500, 500, 25000),
+    ("400", "Пакет 400", 400.0, 4000, 1000, 70000),
 ]
+
+# Интернет-пакеты: код, название, цена, МБ, безлимит.
+INTERNET_PACKS: list[tuple[str, str, float, int, bool]] = [
+    ("30", "Интернет 30", 30.0, 1536, False),
+    ("100", "Интернет 100", 100.0, 8192, False),
+    ("220", "Интернет 220", 220.0, 15360, False),
+    ("310", "Интернет 310", 310.0, 30720, False),
+    ("400", "Интернет 400", 400.0, 0, True),
+]
+
+
+def _gb_text(mb: int) -> str:
+    """«1,5 ГБ», «15 ГБ» — объём интернет-пакета как в тарифной сетке.
+
+    Годится только для пакетов, которые в сетке и заданы гигабайтами: там МБ
+    получены умножением на 1024 и делятся обратно нацело.
+    """
+    gb = mb / MB_IN_GB
+    text = f"{gb:.1f}".rstrip("0").rstrip(".") if gb < 10 else f"{gb:.0f}"
+    return text.replace(".", ",") + " ГБ"
+
+
+def _mb_text(mb: int) -> str:
+    """«15 000 МБ» — объём, включённый в голосовой пакет.
+
+    Именно МБ, а не ГБ: в сетке эти пакеты записаны мегабайтами (15 000,
+    25 000, 70 000), и перевод в гигабайты даёт 14,6 и 24,4 — числа, которых
+    в счёте никто не увидит и которые только сбивают с толку.
+    """
+    return f"{mb:,}".replace(",", " ") + " МБ"
+
+
+def _num_text(value: int) -> str:
+    """1500 → «1 500». Неразрывный пробел, чтобы число не рвалось по строкам."""
+    return f"{value:,}".replace(",", " ")
+
+
+def build_catalog() -> list[dict[str, Any]]:
+    """Собрать полный каталог: базы, интернет-тарифы и все их комбинации.
+
+    ПОРЯДОК СТРОК ЗНАЧИМ. Разные наборы дают одинаковую абонплату:
+    «Пакет 400» и «Федеральный Специальный + Интернет 400» — оба по 400 ₽,
+    «Пакет 400 + FMC» и «Федеральный Специальный + FMC + Интернет 400» —
+    оба по 416,95 ₽. Когда название в счёте не помогает выбрать, берётся
+    первый подходящий по цене, поэтому простые наборы идут раньше составных
+    (см. ключ сортировки в конце функции): более простое объяснение суммы
+    вероятнее.
+    """
+    out: list[dict[str, Any]] = []
+
+    def add(code: str, name: str, kind: str, fee: float, minutes: int, sms: int,
+            internet_mb: int, unlimited: bool, note: str, parts: int) -> None:
+        out.append({
+            "id": code, "name": name, "kind": kind, "fee": round2(fee),
+            "minutes": minutes, "sms": sms, "internet_mb": internet_mb,
+            "unlimited_internet": unlimited,
+            "rate_min": RATE_MIN, "rate_sms": RATE_SMS, "rate_mb": RATE_MB,
+            "note": note, "_parts": parts,
+        })
+
+    # 1. Тарифы для модемов, планшетов и M2M: только интернет, без голоса.
+    # Названы «Мобильный интернет», а не как пакет-добавка, потому что это
+    # разные вещи с одинаковой ценой: тарифный план для модема против пакета,
+    # докупленного к голосовому тарифу.
+    for code, name, fee, mb, unlimited in INTERNET_PACKS:
+        add(f"int_{code}", f"Мобильный интернет {code}", "internet", fee,
+            0, 0, mb, unlimited,
+            "Без ограничения объёма" if unlimited else _gb_text(mb), 1)
+
+    # 2. Голосовые базы и всё, что на них навешивается.
+    for base, base_name, base_fee, minutes, sms, base_mb in VOICE_BASES:
+        for with_fmc in (False, True):
+            for pack in [None, *INTERNET_PACKS]:
+                code = base
+                name = base_name
+                fee = base_fee
+                parts = 1
+                mb = base_mb
+                unlimited = False
+                extra_note = ""
+
+                if with_fmc:
+                    code += "_fmc"
+                    name += " + FMC"
+                    fee += FMC_FEE
+                    parts += 1
+
+                if pack is not None:
+                    pack_code, pack_name, pack_fee, pack_mb, pack_unlim = pack
+                    code += f"_int{pack_code}"
+                    name += f" + {pack_name}"
+                    fee += pack_fee
+                    parts += 1
+                    # Докупленный пакет СКЛАДЫВАЕТСЯ с тем, что уже включено
+                    # в тариф: оператор отдельным пакетом трафик не заменяет.
+                    unlimited = pack_unlim
+                    mb = 0 if pack_unlim else base_mb + pack_mb
+                    extra_note = (" + безлимитный интернет" if pack_unlim
+                                  else f" + {_gb_text(pack_mb)}")
+
+                if base == "fed":
+                    note = "Без абонплаты, всё по факту потребления"
+                else:
+                    note = (f"{_num_text(minutes)} мин · {_num_text(sms)} SMS"
+                            f" · {_mb_text(base_mb)}")
+                if with_fmc:
+                    note += " · городской номер FMC"
+                note += extra_note
+
+                add(code, name, "voice", fee, minutes, sms, mb, unlimited,
+                    note, parts)
+
+    # Простое раньше составного, при равной сложности — дешёвое раньше, а при
+    # равной цене — голосовое раньше модемного. Последнее не придирка: «Пакет
+    # 400» и «Мобильный интернет 400» стоят одинаково, но обычных сотрудников
+    # на порядок больше, чем модемов, и при выборе вслепую вероятнее первое.
+    # Модем всё равно опознается по названию тарифа из счёта.
+    out.sort(key=lambda t: (t["_parts"], t["fee"], t["kind"] != "voice"))
+    for tariff in out:
+        tariff.pop("_parts")
+    return out
+
+
+DEFAULT_TARIFFS: list[dict[str, Any]] = build_catalog()
 
 
 def normalize_tariff(raw: dict[str, Any]) -> dict[str, Any]:
@@ -338,15 +453,76 @@ def normalize_catalog(raw: Iterable[dict[str, Any]] | None) -> list[dict[str, An
     return items or [normalize_tariff(t) for t in DEFAULT_TARIFFS]
 
 
-# --- Сопоставление названия тарифа из счёта с каталогом ---------------------
-# В счёте тариф записан как «Федеральный Специальный B2B», «Управляй!
-# Специалист +» и т. п. Точного совпадения названия с каталогом может не быть.
+# ═══════════════════════════════════════════════════════════════════════════
+#  Какой тариф у абонента
 #
-# ПОЧЕМУ ГЛАВНЫЙ ПРИЗНАК — АБОНЕНТСКАЯ ПЛАТА, А НЕ НАЗВАНИЕ.
-# Название в счёте — это маркетинговая подпись, оператор меняет её и добавляет
-# суффиксы («B2B», «+», дату версии). А списанная абонплата — твёрдый факт из
-# того же счёта. Поэтому сначала ищем тариф с такой же ценой, и уже среди них
-# уточняем по названию. Если абонплаты нет вовсе — это тариф без абонплаты.
+#  ПОЧЕМУ ГЛАВНЫЙ ПРИЗНАК — АБОНЕНТСКАЯ ПЛАТА, А НЕ НАЗВАНИЕ.
+#  Название в счёте — маркетинговая подпись: «Федеральный Специальный B2B»,
+#  «Управляй! Специалист +», суффиксы и даты версий оператор меняет когда
+#  хочет. А списанная абонплата — твёрдый факт из того же счёта, и она прямо
+#  показывает, из чего тариф собран: 186,95 ₽ — это 16,95 (FMC) + 140 (пакет)
+#  + 30 (интернет). Поэтому сначала ищем по сумме, а названием уточняем.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Полный месяц и порог, ниже которого месяц считается неполным. 28 — потому
+# что февраль; месяц из 28 дней полный, а вот 27 — уже обрезанный.
+FULL_MONTH_DAYS = 30
+FULL_MONTH_MIN_DAYS = 28
+
+# Допуск при поиске тарифа по сумме, ₽. Взят из прежней версии подбора и
+# закрывает мелочи, которых в каталоге нет: округления, разовые скидки,
+# копеечные добавки вроде переадресации.
+TARIFF_TOLERANCE = 15.0
+
+
+def normalize_monthly_fee(daily_fee: float, days: int) -> float:
+    """Посуточная абонплата за неполный месяц → сколько это было бы за месяц.
+
+    Номер подключили пятнадцатого — оператор спишет половину абонплаты, и
+    тариф за 400 ₽ в счёте будет выглядеть как тариф за 200 ₽. Прежде чем
+    искать его в каталоге, сумму надо привести к полному месяцу.
+    """
+    fee = to_float(daily_fee)
+    if fee <= 0:
+        return 0.0
+    if days <= 0 or days >= FULL_MONTH_MIN_DAYS:
+        return round2(fee)
+    return round2(fee / days * FULL_MONTH_DAYS)
+
+
+def split_plan_fees(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Разложить абонплату счёта на месячную, посуточную и число дней.
+
+    Возвращает и то, что реально списано (`charged`), и приведённое к полному
+    месяцу (`monthly`). Первое — факт для денег, второе — для поиска тарифа.
+    """
+    monthly_part = 0.0
+    daily_part = 0.0
+    days = 0
+    for it in items:
+        service = it.get("service") or ""
+        if not is_plan_fee(service):
+            continue
+        cost = to_float(it.get("cost"))
+        if is_daily_plan_fee(service):
+            daily_part += cost
+            # В объёме такой строки лежит число оплаченных дней («31 шт»).
+            days = max(days, to_int(it.get("volume")))
+        else:
+            monthly_part += cost
+
+    charged = round2(monthly_part + daily_part)
+    monthly = round2(monthly_part + normalize_monthly_fee(daily_part, days))
+    return {
+        "charged": charged,
+        "monthly": monthly,
+        "monthly_part": round2(monthly_part),
+        "daily_part": round2(daily_part),
+        "days": days,
+        # Неполный месяц: абонплата списана посуточно и дней меньше месяца.
+        "partial": bool(daily_part > 0 and 0 < days < FULL_MONTH_MIN_DAYS),
+    }
+
 
 def _norm_name(text: str) -> str:
     return " ".join(str(text or "").lower().replace("ё", "е").split())
@@ -354,7 +530,21 @@ def _norm_name(text: str) -> str:
 
 def match_tariff(plan_name: str, plan_fee: float,
                  catalog: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Найти в каталоге тариф абонента. Возвращает копию с полем `matched_by`."""
+    """Найти в каталоге тариф абонента. Возвращает копию с полем `matched_by`.
+
+    `plan_fee` — абонплата ЗА ПОЛНЫЙ МЕСЯЦ (см. split_plan_fees), иначе номер
+    с посуточным списанием опознается как тариф подешевле.
+
+    Как ищем, в порядке убывания доверия:
+        fee        — сумма совпала копейка в копейку;
+        fee+name   — совпала сумма, и среди таких тариф нашёлся по названию;
+        fee~       — сумма сошлась в пределах допуска (TARIFF_TOLERANCE);
+        name       — сумма не сошлась, но название узнали;
+        nearest    — не сошлось ничего, взяли ближайший по цене.
+
+    Последние два случая — это уже догадка, и `matched_by` даёт интерфейсу
+    возможность так и сказать, а не выдавать предположение за факт.
+    """
     if not catalog:
         return None
     name = _norm_name(plan_name)
@@ -372,10 +562,20 @@ def match_tariff(plan_name: str, plan_fee: float,
                 return t
         return None
 
+    def pick(pool: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+        # Каталог отсортирован «простое раньше составного», поэтому первый
+        # подходящий — это самое простое объяснение суммы.
+        hit = by_name(pool)
+        return {**(hit or pool[0]), "matched_by": f"{kind}+name" if hit else kind}
+
     same_fee = [t for t in catalog if abs(t["fee"] - fee) <= 0.51]
     if same_fee:
-        hit = by_name(same_fee) or same_fee[0]
-        return {**hit, "matched_by": "fee+name" if by_name(same_fee) else "fee"}
+        return pick(same_fee, "fee")
+
+    near_fee = [t for t in catalog if abs(t["fee"] - fee) <= TARIFF_TOLERANCE]
+    if near_fee:
+        near_fee.sort(key=lambda t: abs(t["fee"] - fee))
+        return pick(near_fee, "fee~")
 
     hit = by_name(catalog)
     if hit:
@@ -383,7 +583,7 @@ def match_tariff(plan_name: str, plan_fee: float,
         return {**hit, "fee": round2(fee), "matched_by": "name"}
 
     nearest = min(catalog, key=lambda t: abs(t["fee"] - fee))
-    return {**nearest, "fee": round2(fee), "matched_by": "nearest-fee"}
+    return {**nearest, "fee": round2(fee), "matched_by": "nearest"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -879,7 +1079,11 @@ def build_record(
     profile = profile or {}
 
     items_sum = round2(sum(it["cost"] for it in items))
-    plan_fee = round2(sum(it["cost"] for it in items if is_plan_fee(it["service"])))
+    # Абонплата в двух видах: `charged` — сколько списано на самом деле (это
+    # деньги, их и показываем), `monthly` — та же плата, приведённая к полному
+    # месяцу (по ней ищем тариф, см. split_plan_fees).
+    fees = split_plan_fees(items)
+    plan_fee = fees["charged"]
     addons_cost = round2(sum(it["cost"] for it in items
                              if is_addon(it["service"]) and not is_plan_fee(it["service"])))
 
@@ -904,10 +1108,24 @@ def build_record(
                             and not is_roaming(it["service"])))
     tariff_cost = round2(plan_fee + usage_cost)
 
-    tariff = match_tariff(plan_name, plan_fee, catalog)
+    tariff = match_tariff(plan_name, fees["monthly"], catalog)
     categories = category_breakdown(items, usage, tariff)
     recommendation = build_recommendation(usage, catalog, tariff, tariff_cost,
                                           avg_tariff_cost, categories)
+
+    # НЕПОЛНЫЙ МЕСЯЦ — ПОВОД НЕ ВЕРИТЬ СРАВНЕНИЮ.
+    # Номер проработал не весь месяц: и абонплата, и потребление обрезаны.
+    # Тариф мы по такому счёту опознаём (плату привели к месяцу), а вот
+    # советовать смену тарифа по половине месяца нельзя — экономия там
+    # получается из воздуха. Говорим об этом прямо и обнуляем выгоду.
+    if fees["partial"]:
+        recommendation["lines"].append(
+            f"Абонплата списана посуточно за {fees['days']} дн. — месяц неполный. "
+            f"Тариф определён по приведённой плате {money_ru(fees['monthly'])} в месяц, "
+            f"а сравнение тарифов по такому счёту недостоверно."
+        )
+        recommendation["saving"] = 0.0
+        recommendation["action"] = "keep"
 
     overuse = sum(1 for c in categories if c["verdict"]["type"] == "over")
     underuse = sum(1 for c in categories if c["verdict"]["type"] == "under")
@@ -959,6 +1177,12 @@ def build_record(
         "month": month,
         "plan_name": plan_name or (tariff["name"] if tariff else ""),
         "plan_fee": plan_fee,
+        # Абонплата, приведённая к полному месяцу, и число оплаченных дней.
+        # Нужны интерфейсу, чтобы объяснить, почему тариф на 400 ₽ опознан по
+        # счёту, в котором абонплаты списано 200 ₽.
+        "plan_fee_monthly": fees["monthly"],
+        "plan_days": fees["days"],
+        "partial_month": fees["partial"],
         "tariff": tariff,
         "total": total,
         "items_sum": items_sum,

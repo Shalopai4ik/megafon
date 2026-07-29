@@ -282,6 +282,49 @@ APP_STATUSES = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  5. РОУМИНГ: СТАВКИ ПО ЗОНАМ
+#
+#  Из тарифных сеток оператора (снимки tarifs2.jpg и tarifs3.jpg). Все страны
+#  мира, где работает международный роуминг, разбиты на ЧЕТЫРЕ зоны с едиными
+#  ценами внутри зоны; Крым идёт отдельной строкой со своими ставками.
+#
+#  ЭТО СПРАВОЧНИК, А НЕ КАЛЬКУЛЯТОР. Роуминг в отчёте как считался по факту
+#  из счёта, так и считается: пересчитывать его по этим ставкам мы не беремся
+#  — в счёте бывают пакеты «Вокруг света», акции и посекундные округления,
+#  и наш пересчёт спорил бы с оператором на ровном месте. Таблица нужна для
+#  другого: когда за поездку прилетело 8 000 ₽, надо иметь под рукой цену
+#  минуты и мегабайта, чтобы понять, много это или норма.
+#
+#  Цены с НДС, в рублях. Входящие вызовы бесплатны во всех зонах.
+#  Тарификация соединений — поминутная.
+# ═══════════════════════════════════════════════════════════════════════════
+
+ROAMING_ZONES = [
+    dict(code="europe", label="Европа",
+         incoming=0, call_home=5, call_local=5, call_other=129,
+         sms=5, mb=5, satellite=313, sort_order=10,
+         note="Страны Европы"),
+    dict(code="cis", label="СНГ",
+         incoming=0, call_home=5, call_local=5, call_other=129,
+         sms=5, mb=5, satellite=313, sort_order=20,
+         note="Страны СНГ"),
+    dict(code="popular", label="Популярные страны",
+         incoming=0, call_home=10, call_local=10, call_other=129,
+         sms=5, mb=5, satellite=313, sort_order=30,
+         note="Популярные направления вне Европы и СНГ"),
+    dict(code="other", label="Остальные страны",
+         incoming=0, call_home=10, call_local=10, call_other=129,
+         sms=5, mb=20, satellite=313, sort_order=40,
+         note="Всё, что не вошло в первые три зоны. Интернет вчетверо дороже"),
+    dict(code="crimea", label="Республика Крым",
+         incoming=0, call_home=1, call_local=1, call_other=0,
+         sms=1, mb=1, satellite=0, sort_order=50,
+         note="Отдельные ставки, в международные зоны не входит. "
+              "Исходящие — включая переадресацию"),
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Заливка в базу
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -306,6 +349,8 @@ def ensure_seeds() -> None:
     have = {
         "chip_rules": {str(r["code"]) for r in db.query("SELECT code FROM chip_rules")},
         "app_statuses": {str(r["id"]) for r in db.query("SELECT id FROM app_statuses")},
+        "roaming_zones": {str(r["code"]) for r in db.query(
+            "SELECT code FROM roaming_zones")},
     }
 
     # ── ПРАВИЛА ЧИПСА: цвета и пометки ──
@@ -344,6 +389,10 @@ def ensure_seeds() -> None:
         # ── Статусы ──
         for status in APP_STATUSES:
             _insert_if_absent(conn, have, "app_statuses", "id", status)
+
+        # ── Ставки роуминга по зонам ──
+        for zone in ROAMING_ZONES:
+            _insert_if_absent(conn, have, "roaming_zones", "code", zone, builtin=1)
 
         # ── Правила по услугам ──
         # У правил нет естественного ключа, поэтому сверяем по тройке

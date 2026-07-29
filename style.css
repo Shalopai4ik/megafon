@@ -646,6 +646,13 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .rule-table-payment .rule-row {
   grid-template-columns: 40px 60px minmax(min(100%, 96px), 1fr) minmax(170px, 1.6fr) minmax(min(100%, 104px), 1fr) minmax(150px, 1.6fr) 34px;
 }
+/* Роуминг: название зоны и семь колонок со ставками. Цифры узкие, поэтому
+   колонки одинаковые и нарочно тесные — таблица должна влезать целиком. */
+.rule-table-roaming .rule-head,
+.rule-table-roaming .rule-row {
+  grid-template-columns: minmax(140px, 1.6fr) repeat(7, minmax(min(100%, 74px), 1fr)) 34px;
+}
+.rule-table-roaming .rule-zone { font-weight: 600; }
 .rule-head {
   background: var(--surface-2); font-size: 12px; letter-spacing: 0;
   text-transform: none; color: var(--text-muted); font-weight: 700;
@@ -687,6 +694,9 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
   font-size: 13px; padding: 3px 5px; border-radius: 6px;
 }
 .rule-del:hover { color: var(--danger); background: var(--danger-soft); }
+/* Замок вместо крестика: строку из тарифной сетки править можно, удалять нет. */
+.rule-del.is-locked { cursor: default; opacity: .45; }
+.rule-del.is-locked:hover { color: var(--text-muted); background: none; }
 
 /* Таблица командировок на главной странице. */
 .trip-table { display: flex; flex-direction: column; gap: 3px; }
@@ -737,7 +747,9 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 
 @media (max-width: 900px) {
   .rule-head { display: none; }
-  .rule-row, .rule-table-payment .rule-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rule-row,
+  .rule-table-payment .rule-row,
+  .rule-table-roaming .rule-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .trip-item { grid-template-columns: 1fr 1fr; }
 }
 

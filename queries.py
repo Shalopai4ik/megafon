@@ -179,11 +179,41 @@ def _seed_parameters() -> None:
         )
 
 
+# Каталог, который приложение ставило по умолчанию РАНЬШЕ: девять «чистых»
+# тарифов, без комбинаций с FMC и интернет-пакетами. Список нужен, чтобы
+# отличить нетронутый старый каталог от того, который правил администратор.
+LEGACY_TARIFFS: set[tuple[str, float]] = {
+    ("Федеральный Специальный", 0.0),
+    ("Пакет 140 ₽", 140.0), ("Пакет 230 ₽", 230.0), ("Пакет 400 ₽", 400.0),
+    ("Интернет 30 ₽", 30.0), ("Интернет 100 ₽", 100.0),
+    ("Интернет 220 ₽", 220.0), ("Интернет 310 ₽", 310.0),
+    ("Интернет 400 ₽", 400.0),
+}
+
+
 def _seed_tariffs() -> None:
-    """Залить каталог тарифов, если он пуст."""
-    if db.scalar("SELECT COUNT(*) AS n FROM tariff_plans", default=0):
+    """Залить каталог тарифов: если он пуст или всё ещё старый по умолчанию.
+
+    ЗАЧЕМ ВТОРОЕ УСЛОВИЕ. Каталог вырос с девяти тарифов до полусотни: в нём
+    появились комбинации «пакет + FMC + интернет-пакет», без которых номер с
+    абонплатой 186,95 ₽ опознавался как «Пакет 140» и считался по чужому
+    пакету. На пустой базе новый каталог заливается сам, а вот на уже
+    работающей так и остались бы девять строк.
+
+    Поэтому подменяем каталог ТОЛЬКО если он дословно совпадает со старым
+    набором по умолчанию — то есть его никто не трогал. Стоит администратору
+    поправить хоть одну цену или название, и мы не лезем: его работа дороже
+    нашего обновления. Обновить руками в этом случае — «Настройки → Тарифы →
+    Сбросить к заводским».
+    """
+    rows = db.query("SELECT plan_name, base_cost FROM tariff_plans")
+    if not rows:
+        set_tariffs(domain.DEFAULT_TARIFFS)
         return
-    set_tariffs(domain.DEFAULT_TARIFFS)
+    current = {(str(r["plan_name"]), round(float(r["base_cost"] or 0.0), 2))
+               for r in rows}
+    if current == LEGACY_TARIFFS:
+        set_tariffs(domain.DEFAULT_TARIFFS)
 
 
 def _reload_param_index() -> None:
@@ -1383,6 +1413,71 @@ def save_payment_rule(data: dict[str, Any]) -> list[dict[str, Any]]:
 def delete_payment_rule(rule_id: int) -> list[dict[str, Any]]:
     db.execute("DELETE FROM payment_rules WHERE id = ?", (domain.to_int(rule_id),))
     return get_payment_rules()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  РОУМИНГ: СТАВКИ ПО ЗОНАМ
+#
+#  Справочник, и только справочник. Расчёт роуминга в отчёте по этим ставкам
+#  НЕ идёт: там сумма берётся из счёта как есть. Таблица нужна, чтобы было
+#  с чем сверить неожиданное начисление за поездку.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Денежные поля зоны — их же правит интерфейс.
+_ROAMING_RATES = ("incoming", "call_home", "call_local", "call_other",
+                  "sms", "mb", "satellite")
+
+
+def get_roaming_zones() -> list[dict[str, Any]]:
+    rows = db.query("SELECT * FROM roaming_zones ORDER BY sort_order, code")
+    return [{**r, **{k: float(r.get(k) or 0.0) for k in _ROAMING_RATES},
+             "builtin": bool(r.get("builtin"))} for r in rows]
+
+
+def save_roaming_zone(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Сохранить зону. Меняются только переданные поля.
+
+    ПОЧЕМУ НЕ «ЗАПИСАТЬ ВСЁ, ЧТО ПРИШЛО». Экран правки шлёт название и семь
+    ставок — пояснения и порядка сортировки в форме нет. Пиши мы всё подряд,
+    первая же поправка цены за мегабайт стирала бы пояснение зоны и роняла
+    её в конец списка.
+    """
+    code = str(data.get("code") or "").strip().lower()
+    if not code:
+        raise ValueError("У зоны роуминга должен быть код")
+    old = db.query_one("SELECT * FROM roaming_zones WHERE code = ?", (code,)) or {}
+
+    def keep(field: str, default: Any) -> Any:
+        return old.get(field, default) if field not in data else data[field]
+
+    fields = {
+        "label": str(keep("label", code) or code),
+        **{k: max(0.0, domain.to_float(keep(k, 0.0))) for k in _ROAMING_RATES},
+        "note": str(keep("note", "") or ""),
+        "sort_order": domain.to_int(keep("sort_order", 100), 100),
+    }
+    updates = ", ".join(f"{k} = excluded.{k}" for k in fields)
+    columns = ", ".join(["code", *fields])
+    marks = ", ".join("?" for _ in range(len(fields) + 1))
+    db.execute(
+        f"INSERT INTO roaming_zones ({columns}) VALUES ({marks}) "
+        f"ON CONFLICT (code) DO UPDATE SET {updates}",
+        [code, *fields.values()],
+    )
+    return get_roaming_zones()
+
+
+def delete_roaming_zone(code: str) -> list[dict[str, Any]]:
+    """Удалить зону. Встроенные не трогаем: это данные из тарифной сетки."""
+    code = str(code or "").strip().lower()
+    row = db.query_one("SELECT builtin FROM roaming_zones WHERE code = ?", (code,))
+    if not row:
+        raise ValueError("Зона роуминга не найдена")
+    if row["builtin"]:
+        raise ValueError("Зона из тарифной сетки оператора — удалить нельзя, "
+                         "можно только поправить ставки")
+    db.execute("DELETE FROM roaming_zones WHERE code = ?", (code,))
+    return get_roaming_zones()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
