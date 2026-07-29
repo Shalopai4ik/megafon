@@ -37,7 +37,10 @@ server.py — HTTP-слой и разбор загружаемых файлов.
 
 from __future__ import annotations
 
+import csv
+import html
 import http.server
+import io
 import json
 import os
 import re
@@ -48,8 +51,25 @@ from datetime import date, datetime
 from typing import Any, Iterable, NamedTuple
 
 import billing
+import db
 import domain
-import queries
+
+# Консоль Windows по умолчанию не в UTF-8, а мы печатаем по-русски.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:                                             # noqa: BLE001
+    pass
+
+# queries поднимает схему и справочники прямо на импорте, поэтому именно
+# здесь всплывает «база недоступна». Простыня трассировки в этом месте
+# бесполезна: причина всегда снаружи — не запущен сервер PostgreSQL или
+# не те логин с паролем. Печатаем причину и выходим по-человечески.
+try:
+    import queries
+except db.DbError as err:
+    print(f"\n  НЕ УДАЛОСЬ ОТКРЫТЬ БАЗУ\n\n  {err}\n", file=sys.stderr)
+    raise SystemExit(1)
 
 PORT = int(os.environ.get("PORT", 3001))
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -993,23 +1013,30 @@ def parse_trips(text: str) -> dict[str, Any]:
 
 
 def apply_roster(parsed: dict[str, Any]) -> dict[str, Any]:
-    """Записать разобранный список в хранилище."""
+    """Записать разобранный список в хранилище.
+
+    Весь список пишется ОДНОЙ транзакцией. Дело не только в целостности:
+    каждый выход в базу — это отдельный запуск psql, и на списке в двести
+    строк поштучная запись превращается в минуты ожидания.
+    """
     applied, with_limit, with_history = 0, 0, 0
-    for row in parsed["rows"]:
-        queries.upsert_user(
-            row["number"],
-            username=row["username"],
-            limit=row["limit"],
-            position=row["position"],
-            personnel_no=row["personnel_no"],
-            note=row["note"],
-        )
-        applied += 1
-        if 0 < row["limit"] < domain.LIMIT_SENTINEL:
-            with_limit += 1
-        if row["history"]:
-            queries.set_roster_history(row["number"], row["history"])
-            with_history += 1
+    with db.transaction():
+        for row in parsed["rows"]:
+            queries.upsert_user(
+                row["number"],
+                username=row["username"],
+                limit=row["limit"],
+                position=row["position"],
+                personnel_no=row["personnel_no"],
+                note=row["note"],
+                fetch=False,
+            )
+            applied += 1
+            if 0 < row["limit"] < domain.LIMIT_SENTINEL:
+                with_limit += 1
+            if row["history"]:
+                queries.set_roster_history(row["number"], row["history"])
+                with_history += 1
     return {"applied": applied, "with_limit": with_limit,
             "with_history": with_history, "months": parsed["months"],
             "stats": parsed["stats"]}
@@ -1022,17 +1049,24 @@ def apply_bill(parsed: dict[str, Any]) -> dict[str, Any]:
     история. Повторная загрузка того же месяца перезаписывает его целиком.
     """
     saved = 0
-    for number, sub in parsed["subscribers"].items():
-        if not sub["items"]:
-            continue
-        queries.save_report(
-            number, sub["month"], sub["items"],
-            report_date=sub["month"],
-            plan_name=sub["plan_name"],
-            total_charged=sub["total_charged"],
-            vat=sub["vat"],
-        )
-        saved += 1
+    # Весь счёт — одна транзакция: и целостнее, и на порядок быстрее, чем
+    # отдельный поход в базу на каждого абонента.
+    with db.transaction():
+        for number, sub in parsed["subscribers"].items():
+            if not sub["items"]:
+                continue
+            queries.save_report(
+                number, sub["month"], sub["items"],
+                report_date=sub["month"],
+                plan_name=sub["plan_name"],
+                total_charged=sub["total_charged"],
+                vat=sub["vat"],
+            )
+            saved += 1
+
+    # Реквизиты — уже ПОСЛЕ транзакции. Если в них не указан период,
+    # set_invoice берёт последний загруженный, а увидеть его можно только
+    # когда счёт уже лежит в базе.
     if parsed["invoice"]:
         queries.set_invoice(parsed["invoice"])
     return {"saved": saved, "month": parsed["month"], "stats": parsed["stats"]}
@@ -1060,12 +1094,10 @@ def _tariff_cost_of(bundle: dict[str, Any]) -> float:
     return total
 
 
-def _averages(number: str) -> tuple[float | None, float | None]:
+def _averages(history: list[dict[str, Any]],
+              bundles: list[dict[str, Any]]) -> tuple[float | None, float | None]:
     """Средний расход и средняя тарифозависимая часть по всей истории номера."""
-    history = queries.history_for_number(number)
     avg_total = (sum(h["total"] for h in history) / len(history)) if history else None
-
-    bundles = queries.bundles_for_number(number)
     avg_tariff = (sum(_tariff_cost_of(b) for b in bundles) / len(bundles)) if bundles else None
     return avg_total, avg_tariff
 
@@ -1081,29 +1113,44 @@ def build_month_view(month: str) -> dict[str, Any]:
         marks=queries.get_chip_marks(),
         rules=queries.get_payment_rules(only_enabled=True),
     )
-    chips = queries.all_chips()
+
+    # ВСЁ ОСТАЛЬНОЕ — ТОЖЕ ОДНИМ НАБОРОМ ЗАПРОСОВ. История, потребление по
+    # категориям, профили, командировки и чипсы читаются на весь парк сразу
+    # (queries.month_dataset), а ниже разбираются по номерам уже в памяти.
+    # Пока это делалось «по номеру», главный экран на сотне абонентов
+    # открывался минутами: полторы тысячи обращений к базе на один отчёт.
+    data = queries.month_dataset(month)
+    chips = data["chips"]
+
+    # Счета расчётного месяца берём из того же набора: перечитывать их
+    # отдельным запросом незачем, они уже прочитаны.
+    month_bundles = sorted(
+        (b for own in data["bundles"].values() for b in own if b["month"] == data["month"]),
+        key=lambda b: b["number"])
 
     records = []
-    for bundle in queries.bundles_for_month(month):
+    for bundle in month_bundles:
         number = bundle["number"]
-        avg_total, avg_tariff = _averages(number)
+        own_bundles = data["bundles"].get(number, [])
+        history = queries.history_rows(own_bundles, data["roster"].get(number, {}))
+        avg_total, avg_tariff = _averages(history, own_bundles)
         record = domain.build_record(
             number, bundle["items"],
             month=bundle["month"],
-            profile=queries.get_profile(number, bundle["month"]),
+            profile=queries.dataset_profile(data, number),
             catalog=catalog,
             plan_name=bundle["plan_name"],
             total_charged=bundle["total_charged"],
             avg_total=avg_total,
             avg_tariff_cost=avg_tariff,
         )
-        record["history"] = queries.history_for_number(number)
-        record["category_history"] = queries.category_history(number)
+        record["history"] = history
+        record["category_history"] = queries.category_rows(own_bundles)
         record["trend"] = _trend_percent(record["history"], bundle["month"])
 
         # НОВОЕ: разделение «мы / сотрудник» и расчёт впустую потраченного.
-        chip = chips.get(number) or queries.get_chip(number)
-        trip = queries.trip_for_month(number, bundle["month"])
+        chip = chips.get(number) or queries.blank_chip(number)
+        trip = queries.pick_trip(data["trips"].get(number, []), bundle["month"])
         record["chip"] = chip
         record["trip"] = trip
         record["payment"] = billing.split_payment(
@@ -1157,7 +1204,8 @@ def build_subscriber_view(number: str, month: str | None = None) -> dict[str, An
     if not bundles:
         return {}
     bundle = next((b for b in bundles if b["month"] == month), bundles[-1])
-    avg_total, avg_tariff = _averages(number)
+    history = queries.history_rows(bundles, queries.get_roster_history(number))
+    avg_total, avg_tariff = _averages(history, bundles)
     record = domain.build_record(
         number, bundle["items"],
         month=bundle["month"],
@@ -1168,8 +1216,8 @@ def build_subscriber_view(number: str, month: str | None = None) -> dict[str, An
         avg_total=avg_total,
         avg_tariff_cost=avg_tariff,
     )
-    record["history"] = queries.history_for_number(number)
-    record["category_history"] = queries.category_history(number)
+    record["history"] = history
+    record["category_history"] = queries.category_rows(bundles)
     record["trend"] = _trend_percent(record["history"], bundle["month"])
     record["months"] = [b["month"] for b in bundles]
     return record
@@ -1206,6 +1254,140 @@ def parse_multipart(body: bytes, content_type: str) -> dict[str, bytes]:
         name = name_m.group(1) if name_m else "file"
         fields[name] = content
     return fields
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  СТРАНИЦА СЫРЫХ СТРОК  (/raw)
+#
+#  Собирается НА СЕРВЕРЕ, обычным HTML, без единой строчки JavaScript. Это не
+#  лень, а требование площадки: в закрытом контуре на Астре смотреть базу
+#  нечем — ни pgAdmin, ни клиента постгреса там нет. Страница должна
+#  открываться в любом браузере, который найдётся на машине, и работать даже
+#  если основной скрипт приложения не загрузился.
+#
+#  Формы отправляются методом GET: тогда фильтр целиком лежит в адресной
+#  строке, и ссылку на конкретную выборку можно просто переслать коллеге.
+# ═══════════════════════════════════════════════════════════════════════════
+
+RAW_PAGE_CSS = """
+  body { margin: 0; padding: 16px; background: #10201b; color: #dfe9e4;
+         font: 14px/1.45 "Segoe UI", Arial, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #8fa79d; margin-bottom: 14px; }
+  .sub a { color: #6fd0a8; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+         margin-bottom: 14px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+          color: #8fa79d; }
+  input { background: #163029; border: 1px solid #2b4c42; border-radius: 6px;
+          color: #eef6f2; padding: 7px 9px; font-size: 14px; min-width: 150px; }
+  button, .btn { background: #2f8f6b; border: 0; border-radius: 6px;
+                 color: #fff; padding: 8px 16px; font-size: 14px;
+                 cursor: pointer; text-decoration: none; display: inline-block; }
+  .btn.ghost { background: #2b4c42; }
+  .wrap { overflow-x: auto; border: 1px solid #2b4c42; border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; white-space: nowrap; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid #1e3b33; text-align: left; }
+  th { background: #163029; position: sticky; top: 0; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; color: #8fa79d; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:hover td { background: #16302980; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px;
+           flex-wrap: wrap; }
+  .empty { padding: 24px; text-align: center; color: #8fa79d; }
+"""
+
+# Колонки с деньгами и объёмами прижимаем вправо: столбик цифр читается
+# только когда разряды стоят друг под другом.
+RAW_NUMERIC = {"no_discount", "discount", "with_discount", "total_charged",
+               "vat", "parameter_id", "report_id", "value_id"}
+
+
+def _raw_query_string(filters: dict[str, str], **extra: Any) -> str:
+    """Собрать адрес выборки: фильтры плюс постраничные параметры."""
+    params = {k: v for k, v in filters.items() if v}
+    params.update({k: v for k, v in extra.items() if v not in (None, "")})
+    return urllib.parse.urlencode(params)
+
+
+def render_raw_page(data: dict[str, Any]) -> bytes:
+    """Нарисовать таблицу сырых строк."""
+    filters = data["filters"]
+    limit, offset, total = data["limit"], data["offset"], data["total"]
+
+    def field(name: str, title: str, value: str) -> str:
+        return (f'<label>{html.escape(title)}'
+                f'<input name="{name}" value="{html.escape(value)}"></label>')
+
+    head = "".join(f"<th>{html.escape(c['title'])}</th>" for c in data["columns"])
+
+    body = []
+    for row in data["rows"]:
+        cells = []
+        for column in data["columns"]:
+            key = column["key"]
+            value = row.get(key)
+            text = "" if value is None else str(value)
+            css = ' class="num"' if key in RAW_NUMERIC else ""
+            cells.append(f"<td{css}>{html.escape(text)}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+
+    if body:
+        table = (f'<div class="wrap"><table><thead><tr>{head}</tr></thead>'
+                 f'<tbody>{"".join(body)}</tbody></table></div>')
+    else:
+        table = ('<div class="wrap"><div class="empty">Ничего не найдено. '
+                 'Проверьте фильтры или загрузите отчёт.</div></div>')
+
+    # Постраничный обход. Кнопки показываем только когда им есть куда вести,
+    # чтобы не тыкать в неработающее.
+    pager = [f'<span>Показано {len(data["rows"])} из {total}, '
+             f'начиная с {offset + 1 if data["rows"] else 0}</span>']
+    if offset > 0:
+        back = _raw_query_string(filters, limit=limit, offset=max(0, offset - limit))
+        pager.append(f'<a class="btn ghost" href="/raw?{back}">← Предыдущие</a>')
+    if offset + limit < total:
+        fwd = _raw_query_string(filters, limit=limit, offset=offset + limit)
+        pager.append(f'<a class="btn ghost" href="/raw?{fwd}">Следующие →</a>')
+
+    csv_link = _raw_query_string(filters, limit=queries.RAW_LIMIT_MAX)
+
+    page = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сырые строки счёта</title>
+<style>{RAW_PAGE_CSS}</style></head>
+<body>
+  <h1>Сырые строки счёта</h1>
+  <div class="sub">Содержимое таблиц <b>reports</b> и <b>pvalues</b> как есть,
+    без пересчётов и правил. <a href="/">← к анализу</a></div>
+  <form method="get" action="/raw">
+    {field("month", "Период (2026-06)", filters.get("month", ""))}
+    {field("number", "Номер", filters.get("number", ""))}
+    {field("service", "Услуга", filters.get("service", ""))}
+    {field("limit", "Строк на странице", str(limit))}
+    <button type="submit">Показать</button>
+    <a class="btn ghost" href="/api/raw.csv?{csv_link}">Скачать CSV</a>
+  </form>
+  {table}
+  <div class="pager">{"".join(pager)}</div>
+</body></html>"""
+    return page.encode("utf-8")
+
+
+def render_raw_csv(data: dict[str, Any]) -> bytes:
+    """Выгрузка сырых строк в CSV.
+
+    Точка с запятой и BOM — те же, что у convert.py: с ними файл открывается
+    двойным щелчком и в Excel, и в LibreOffice, без мастера импорта.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
+    writer.writerow([c["title"] for c in data["columns"]])
+    for row in data["rows"]:
+        writer.writerow(["" if row.get(c["key"]) is None else row[c["key"]]
+                         for c in data["columns"]])
+    return buffer.getvalue().encode("utf-8-sig")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1289,6 +1471,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         try:
+            if path == "/raw":
+                return self._raw_page(query)
             if path.startswith("/api/"):
                 return self._api_get(path, query)
             return self._static(path)
@@ -1307,8 +1491,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.log_error("POST %s failed: %s", path, exc)
             self._error(500, f"Внутренняя ошибка: {exc}")
 
+    # --- сырые строки счёта ----------------------------------------------
+    def _raw_filters(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        """Разобрать параметры адресной строки для страницы /raw."""
+        def one(name: str, default: str = "") -> str:
+            return (query.get(name) or [default])[0].strip()
+
+        def num(name: str, default: int) -> int:
+            try:
+                return int(one(name) or default)
+            except ValueError:
+                return default
+
+        return queries.raw_rows(
+            month=one("month"), number=one("number"), service=one("service"),
+            limit=num("limit", 200), offset=num("offset", 0))
+
+    def _raw_page(self, query: dict[str, list[str]]) -> None:
+        data = self._raw_filters(query)
+        self._send(200, render_raw_page(data), "text/html; charset=utf-8")
+
     # --- GET API ---------------------------------------------------------
     def _api_get(self, path: str, query: dict[str, list[str]]) -> None:
+        if path == "/api/raw.csv":
+            data = self._raw_filters(query)
+            self._send(200, render_raw_csv(data), "text/csv; charset=utf-8",
+                       extra={"Content-Disposition":
+                              'attachment; filename="raw_rows.csv"'})
+            return
         if path == "/api/health":
             return self._json(200, {"ok": True, "storage": queries.stats(),
                                     "month": queries.latest_month()})

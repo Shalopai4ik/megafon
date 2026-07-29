@@ -292,8 +292,21 @@ SEEDS_VERSION = "1"
 
 
 def ensure_seeds() -> None:
-    """Залить справочники, если их ещё нет. Правки администратора не трогаем."""
+    """Залить справочники, если их ещё нет. Правки администратора не трогаем.
+
+    ЧИТАЕМ ОДНИМ ЗАПРОСОМ НА ТАБЛИЦУ, а не по строке на каждое значение.
+    Раньше на каждый цвет, пометку и статус уходил отдельный SELECT — три
+    десятка обращений к базе на КАЖДЫЙ старт приложения. С postgres каждое
+    такое обращение — запуск psql, и старт из-за этого заметно тормозил.
+    """
     already = db.get_setting(SEEDED_FLAG) == SEEDS_VERSION
+
+    # Что уже лежит в справочниках. Дальше сверяемся только с этими
+    # множествами, в базу за проверками не ходим.
+    have = {
+        "chip_rules": {str(r["code"]) for r in db.query("SELECT code FROM chip_rules")},
+        "app_statuses": {str(r["id"]) for r in db.query("SELECT id FROM app_statuses")},
+    }
 
     # ── ПРАВИЛА ЧИПСА: цвета и пометки ──
     #
@@ -318,60 +331,62 @@ def ensure_seeds() -> None:
     # Поэтому сеем прямо в chip_rules — туда, откуда приложение читает.
     # Поле kind различает вид: 'color' красит карточку и у номера один,
     # 'mark' навешивается сколько угодно.
-    for color in CHIP_COLORS:
-        _insert_if_absent("chip_rules", "code", {**color, "kind": "color"},
-                          builtin=1, skip=already)
+    # Всё, чего не хватает, доливается ОДНОЙ транзакцией.
+    with db.transaction() as conn:
+        for color in CHIP_COLORS:
+            _insert_if_absent(conn, have, "chip_rules", "code",
+                              {**color, "kind": "color"}, builtin=1)
 
-    for mark in CHIP_MARKS:
-        _insert_if_absent("chip_rules", "code", {**mark, "kind": "mark"},
-                          builtin=1, skip=already)
+        for mark in CHIP_MARKS:
+            _insert_if_absent(conn, have, "chip_rules", "code",
+                              {**mark, "kind": "mark"}, builtin=1)
 
-    # ── Статусы ──
-    for status in APP_STATUSES:
-        _insert_if_absent("app_statuses", "id", status, skip=already)
+        # ── Статусы ──
+        for status in APP_STATUSES:
+            _insert_if_absent(conn, have, "app_statuses", "id", status)
 
-    # ── Правила по услугам ──
-    # У правил нет естественного ключа, поэтому сверяем по тройке
-    # (область, тип условия, значение) — так дубли не плодятся.
-    if not already:
-        for rule in PAYMENT_RULES:
-            exists = db.query_one(
-                "SELECT id FROM payment_rules "
-                " WHERE scope = ? AND match_kind = ? AND match_value = ?",
-                (rule["scope"], rule["match_kind"], rule["match_value"]),
-            )
-            if exists:
-                continue
-            db.execute(
-                "INSERT INTO payment_rules "
-                "(priority, enabled, scope, match_kind, match_value, payer, note, builtin) "
-                "VALUES (?, 1, ?, ?, ?, ?, ?, 1)",
-                (rule["priority"], rule["scope"], rule["match_kind"],
-                 rule["match_value"], rule["payer"], rule["note"]),
-            )
+        # ── Правила по услугам ──
+        # У правил нет естественного ключа, поэтому сверяем по тройке
+        # (область, тип условия, значение) — так дубли не плодятся.
+        if not already:
+            known = {(r["scope"], r["match_kind"], r["match_value"]) for r in db.query(
+                "SELECT scope, match_kind, match_value FROM payment_rules")}
+            for rule in PAYMENT_RULES:
+                key = (rule["scope"], rule["match_kind"], rule["match_value"])
+                if key in known:
+                    continue
+                known.add(key)
+                conn.execute(
+                    "INSERT INTO payment_rules "
+                    "(priority, enabled, scope, match_kind, match_value, payer, note, builtin) "
+                    "VALUES (?, 1, ?, ?, ?, ?, ?, 1)",
+                    (rule["priority"], rule["scope"], rule["match_kind"],
+                     rule["match_value"], rule["payer"], rule["note"]),
+                )
 
-    db.set_setting(SEEDED_FLAG, SEEDS_VERSION)
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (SEEDED_FLAG, SEEDS_VERSION),
+        )
 
 
-def _insert_if_absent(table: str, key_field: str, row: dict,
-                      *, builtin: int | None = None, skip: bool = False) -> None:
+def _insert_if_absent(conn, have: dict[str, set], table: str, key_field: str,
+                      row: dict, *, builtin: int | None = None) -> None:
     """Вставить строку справочника, если строки с таким ключом ещё нет.
 
-    `skip=True` означает «первичная заливка уже была»: тогда добавляем только
-    те строки, которых нет вообще — то есть новые справочные значения из
-    свежей версии кода. Существующие (и отредактированные) не трогаем.
+    Наличие проверяем по заранее прочитанному множеству ключей: удалённое
+    администратором значение обратно не воскресает, а новое из свежей версии
+    кода — доезжает.
     """
-    exists = db.query_one(
-        f"SELECT {key_field} FROM {table} WHERE {key_field} = ?", (row[key_field],)
-    )
-    if exists:
+    key = str(row[key_field])
+    if key in have[table]:
         return
-    if skip and table == "payment_rules":
-        return
+    have[table].add(key)
 
     data = dict(row)
     if builtin is not None:
         data.setdefault("builtin", builtin)
     columns = ", ".join(data)
     marks = ", ".join("?" for _ in data)
-    db.execute(f"INSERT INTO {table} ({columns}) VALUES ({marks})", list(data.values()))
+    conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({marks})", list(data.values()))

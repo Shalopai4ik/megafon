@@ -4,9 +4,10 @@
 УСТАНОВКА В ЗАКРЫТОМ КОНТУРЕ
 ═════════════════════════════════════════════════════════════════════════════
 
-Один запуск — и система готова к работе. Интернет НЕ НУЖЕН ни на одном шаге:
-всё, что требуется, лежит в этом же архиве, а работает оно на стандартной
-библиотеке Python. Ничего не скачивается, ничего не ставится в систему.
+Один запуск — и система готова к работе. Интернет НЕ НУЖЕН ни на одном шаге,
+скачивать и доустанавливать нечего: приложение работает на стандартной
+библиотеке Python, а с базой разговаривает через `psql`, который уже стоит
+вместе с самим PostgreSQL.
 
     python install.py
 
@@ -14,25 +15,37 @@
 
     1. проверяет версию Python;
     2. проверяет, что все файлы приложения на месте;
-    3. создаёт базу и разворачивает в ней 18 таблиц;
-    4. заполняет справочники: цвета-правила, пометки, правила оплаты, статусы;
-    5. прогоняет самопроверку — что база читается и расчёт запускается;
-    6. печатает, что делать дальше.
+    3. находит psql и проверяет связь с сервером PostgreSQL;
+    4. создаёт базу и пользователя приложения, если их ещё нет;
+    5. разворачивает 18 таблиц и индексы;
+    6. заполняет справочники: цвета-правила, пометки, правила оплаты, статусы;
+    7. прогоняет самопроверку — что база читается и расчёт запускается.
 
-Повторный запуск безопасен: таблицы создаются через IF NOT EXISTS, справочники
-досеиваются только те, которых нет. Существующие данные не трогаются.
+Повторный запуск безопасен: таблицы создаются через IF NOT EXISTS, колонки
+через ADD COLUMN IF NOT EXISTS, справочники досеиваются только те, которых
+нет. Существующие данные не трогаются.
 
 ДОПОЛНИТЕЛЬНЫЕ КЛЮЧИ
 
     python install.py --dump-schema    пересобрать schema.sql из db.py
     python install.py --check          только проверить, ничего не менять
 
-ГДЕ ЛЕЖИТ БАЗА. Файл megafon.db рядом с приложением. Другой путь задаётся
-переменной окружения MEGAFON_DB — удобно, когда база должна лежать на
-отдельном диске:
+КУДА ПОДКЛЮЧАЕМСЯ. Настройки берутся из файла `pg.conf` рядом с приложением,
+а поверх него — из переменных окружения. По умолчанию:
 
-    set MEGAFON_DB=D:\\data\\megafon.db      (Windows)
-    export MEGAFON_DB=/var/lib/megafon.db   (Linux)
+    host=127.0.0.1  port=5432  database=megafon  user=megafon  password=megafon
+
+Пример pg.conf:
+
+    host     = 127.0.0.1
+    port     = 5434
+    database = megafon
+    user     = megafon
+    password = megafon
+
+СОЗДАНИЕ БАЗЫ И ПОЛЬЗОВАТЕЛЯ требует прав суперпользователя — их установщик
+берёт из PGSUPERUSER (по умолчанию `postgres`) и PGSUPERPASS. Если база и
+пользователь уже созданы руками, эти переменные не нужны вообще.
 
 ЗАПУСК ПОСЛЕ УСТАНОВКИ
 
@@ -51,7 +64,7 @@ import sys
 MIN_PYTHON = (3, 9)
 
 # Файлы, без которых приложение не поднимется. Проверяем до всякой работы,
-# чтобы не создавать базу для заведомо битой установки.
+# чтобы не лезть в базу для заведомо битой установки.
 REQUIRED = [
     "db.py", "queries.py", "domain.py", "billing.py", "seeds.py",
     "server.py", "index.html", "script.js", "style.css",
@@ -68,7 +81,7 @@ def step(title: str) -> None:
 
 def fail(message: str) -> int:
     print(f"\n  ОШИБКА: {message}")
-    print("  Установка прервана, база не изменена.")
+    print("  Установка прервана.")
     return 1
 
 
@@ -89,37 +102,35 @@ def check_files(root: str) -> list[str]:
 
 
 def dump_schema(root: str) -> None:
-    """Пересобрать SQL-файлы схемы из db.py.
+    """Пересобрать schema.sql из db.py.
 
-    Схема живёт в коде — это единственный источник правды. Файлы .sql нужны,
+    Схема живёт в коде — это единственный источник правды. Файл .sql нужен,
     чтобы структуру можно было посмотреть или развернуть руками там, где
-    python запускать нельзя. Поэтому они именно ГЕНЕРИРУЮТСЯ, а не пишутся
-    отдельно: разъехаться с кодом они не могут.
+    python запускать нельзя:
+
+        psql -U megafon -d megafon -f schema.sql
+
+    Поэтому он именно ГЕНЕРИРУЕТСЯ, а не пишется отдельно: разъехаться с
+    кодом он не может.
     """
     import db
-    parts = [db.CORE_DDL, db.EXTENSION_DDL, db.RULES_DDL]
-
-    head = ("-- Схема базы «Анализ тарифных планов». Диалект: {d}\n"
+    head = ("-- Схема базы «Анализ тарифных планов». PostgreSQL.\n"
             "-- ФАЙЛ СГЕНЕРИРОВАН, РУКАМИ НЕ ПРАВЯТ.\n"
             "-- Источник: db.py (CORE_DDL + EXTENSION_DDL + RULES_DDL).\n"
             "-- Пересобрать: python install.py --dump-schema\n\n")
-
     with open(os.path.join(root, "schema.sql"), "w", encoding="utf-8") as fh:
-        fh.write(head.format(d="SQLite") + "\n".join(parts))
-    print("    schema.sql — пересобран")
-
-    # Постгресовый вариант делаем, только если рядом лежит deploy.py.
-    try:
-        import deploy
-        with open(os.path.join(root, "schema_postgres.sql"), "w", encoding="utf-8") as fh:
-            fh.write(head.format(d="PostgreSQL")
-                     + "\n".join(deploy.to_postgres(p) for p in parts))
-        print("    schema_postgres.sql — пересобран")
-    except Exception as err:                                   # noqa: BLE001
-        print(f"    schema_postgres.sql — пропущен ({err})")
+        fh.write(head + db.schema_sql())
+    print(f"    schema.sql — пересобран, таблиц {len(db.table_names())}")
 
 
 def main(argv: list[str]) -> int:
+    # Консоль Windows по умолчанию не в UTF-8, и первая же рамка из «═»
+    # роняет установку целиком. Переключаем поток, а не убираем рамки.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                          # noqa: BLE001
+        pass
+
     root = os.path.dirname(os.path.abspath(__file__))
     os.chdir(root)
     sys.path.insert(0, root)
@@ -139,26 +150,60 @@ def main(argv: list[str]) -> int:
     if missing:
         return fail("не хватает файлов: " + ", ".join(missing))
 
+    import db
+
     if "--dump-schema" in argv:
-        step("Пересборка файлов схемы")
+        step("Пересборка файла схемы")
         dump_schema(root)
         return 0
 
-    step("База данных")
-    import db
-    print(f"    путь: {db.DB_PATH}")
-    existed = os.path.isfile(db.DB_PATH)
-    print("    " + ("файл уже есть — дополним, данные не тронем"
-                    if existed else "файла нет — создаём с нуля"))
-    if only_check and not existed:
-        return fail("базы нет, а запуск в режиме проверки ничего не создаёт")
+    step("Клиент PostgreSQL")
+    psql = db.find_psql()
+    if not psql:
+        return fail("не найден psql — клиент PostgreSQL.\n"
+                    "  Он ставится вместе с сервером. Если сервер стоит, а psql\n"
+                    "  не в PATH — укажите путь переменной MEGAFON_PSQL.")
+    print(f"    psql: {psql}")
+    print(f"    подключение: {db.target()}")
+    if db.CONF_PATH and os.path.isfile(db.CONF_PATH):
+        print(f"    настройки из: {db.CONF_PATH}")
 
-    conn = db.connect()          # создаёт схему и применяет миграции
-    tables = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-    print(f"    таблиц в базе: {len(tables)}")
+    step("База и пользователь")
+    try:
+        db.ping()
+        print("    связь есть, база и пользователь уже готовы")
+    except db.DbError as err:
+        print(f"    войти не удалось: {str(err).splitlines()[0]}")
+        if only_check:
+            return fail("проверка не создаёт базу; уберите --check")
+        print(f"    пробуем создать под суперпользователем "
+              f"{os.environ.get('PGSUPERUSER', 'postgres')}")
+        try:
+            for done in db.ensure_database():
+                print(f"    создано: {done}")
+            db.ping()
+        except db.DbError as err2:
+            return fail(f"{err2}\n\n"
+                        "  Если базу и пользователя заводит администратор, попросите его\n"
+                        "  выполнить:\n"
+                        f"    CREATE ROLE {db.CFG['user']} LOGIN PASSWORD '…';\n"
+                        f"    CREATE DATABASE {db.CFG['database']} OWNER {db.CFG['user']};")
+
+    step("Схема")
+    if only_check:
+        print("    режим проверки: схема не трогается")
+    else:
+        db.ensure_schema()
+        db.grant_all()
+    counts = db.table_counts()
+    print(f"    таблиц в базе: {len(counts)} (в схеме {len(db.table_names())})")
+    absent = [t for t in db.table_names() if t not in counts]
+    if absent:
+        return fail("не развернулись таблицы: " + ", ".join(absent))
 
     step("Справочники")
+    # Импорт queries сам поднимает схему и досеивает справочники — так же,
+    # как это происходит при старте сервера. Отдельный вызов init() не нужен.
     import queries
     colors = queries.get_chip_colors()
     marks = queries.get_chip_marks()

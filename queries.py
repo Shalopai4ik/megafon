@@ -6,13 +6,18 @@ queries.py — ВЕСЬ доступ к данным в одном месте.
 ЧТО ИЗМЕНИЛОСЬ (важно понимать при чтении кода)
 -----------------------------------------------
 Раньше «база» была списками словарей в памяти: всё терялось при перезапуске
-сервера. Теперь под этим файлом лежит настоящая база (db.py, SQLite по схеме
-из database.txt.txt), и каждая функция ниже — это реальный SQL-запрос.
+сервера. Теперь под этим файлом лежит настоящая база — PostgreSQL по схеме
+из database.txt.txt (см. db.py), и каждая функция ниже — это реальный
+SQL-запрос.
 
 Что это даёт на практике:
     * настройки чипсов, пометки, правила и командировки переживают рестарт;
-    * данные видны снаружи обычным SQL-клиентом;
-    * переезд на боевой PostgreSQL — это замена драйвера в db.py.
+    * данные видны снаружи обычным psql — это та же самая база, а не копия.
+
+ЧЕГО ЗДЕСЬ НЕЛЬЗЯ ДЕЛАТЬ. Внутри `with db.transaction()` команды копятся и
+уходят в базу одним куском на выходе из блока. Значит, посреди блока нет ни
+результата команды, ни свежепрочитанных своих же записей. Нужно прочитать —
+читайте до блока или после него.
 
 ИМЕНА ТАБЛИЦ
 ------------
@@ -226,13 +231,17 @@ def find_parameter_id(service_name: str) -> int | None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def upsert_user(number: str, *, username: str = "", limit: int | None = None,
-                position: str = "", personnel_no: str = "", note: str = "") -> dict[str, Any]:
+                position: str = "", personnel_no: str = "", note: str = "",
+                fetch: bool = True) -> dict[str, Any]:
     """Создать или обновить карточку абонента.
 
     Пустые поля НЕ затирают старые: повторная загрузка списка без колонки
     «Должность» не должна стирать уже проставленные должности. А вот статус и
     командировка сюда не приходят — их выставляют вручную через настройки,
     и загрузка файла их не трогает.
+
+    `fetch=False` — не перечитывать карточку после записи. Массовой загрузке
+    результат не нужен, а это лишний поход в базу на КАЖДЫЙ номер списка.
     """
     number = str(number)
     db.execute(
@@ -248,7 +257,7 @@ def upsert_user(number: str, *, username: str = "", limit: int | None = None,
         "  note         = COALESCE(NULLIF(excluded.note, ''), users_numbers.note)",
         (number, username, limit, position, personnel_no, note),
     )
-    return get_user(number) or {}
+    return (get_user(number) or {}) if fetch else {}
 
 
 _USER_SETTING_FIELDS = ("status", "status_color", "is_business_trip",
@@ -264,7 +273,7 @@ def update_user_settings(number: str, changes: dict[str, Any]) -> dict[str, Any]
     """
     number = str(number)
     if not get_user(number):
-        upsert_user(number)
+        upsert_user(number, fetch=False)
 
     sets: list[str] = []
     params: list[Any] = []
@@ -309,24 +318,26 @@ def on_business_trip(user: dict[str, Any], month: str) -> bool:
     Без дат галочка считается действующей всегда — так удобнее: отметил и не
     следишь за датами.
     """
-    if user and user.get("is_business_trip"):
-        start = str(user.get("trip_start_date") or "")
-        end = str(user.get("trip_end_date") or "")
-        if not month or (not start and not end):
-            return True
-        if not (start and start[:7] > month) and not (end and end[:7] < month):
-            return True
-
+    if _on_trip(user, month):
+        return True
     if user and month and trip_for_month(str(user.get("number") or ""), month):
         return True
     return False
 
 
-def get_profile(number: str, month: str = "") -> dict[str, Any]:
-    """Профиль абонента для domain.build_record."""
-    user = get_user(number)
-    if not user:
-        return {}
+def _on_trip(user: dict[str, Any], month: str) -> bool:
+    """Только ручная галочка: действует ли она в этом месяце."""
+    if not (user and user.get("is_business_trip")):
+        return False
+    start = str(user.get("trip_start_date") or "")
+    end = str(user.get("trip_end_date") or "")
+    if not month or (not start and not end):
+        return True
+    return not (start and start[:7] > month) and not (end and end[:7] < month)
+
+
+def _profile_fields(user: dict[str, Any]) -> dict[str, Any]:
+    """Карточка абонента в том виде, в каком её ждёт domain.build_record."""
     return {
         "username": user["username"] or "",
         "limit": user["limit_numbr"] or 0,
@@ -338,8 +349,15 @@ def get_profile(number: str, month: str = "") -> dict[str, Any]:
         "is_business_trip": bool(user["is_business_trip"]),
         "trip_start_date": user["trip_start_date"] or "",
         "trip_end_date": user["trip_end_date"] or "",
-        "on_trip": on_business_trip(user, month),
     }
+
+
+def get_profile(number: str, month: str = "") -> dict[str, Any]:
+    """Профиль абонента для domain.build_record."""
+    user = get_user(number)
+    if not user:
+        return {}
+    return {**_profile_fields(user), "on_trip": on_business_trip(user, month)}
 
 
 def all_users() -> list[dict[str, Any]]:
@@ -429,51 +447,58 @@ def delete_status(status_id: str) -> list[dict[str, Any]]:
 
 def save_report(number: str, month: str, items: list[dict[str, Any]], *,
                 report_date: str = "", plan_name: str = "",
-                total_charged: float = 0.0, vat: float = 0.0) -> int:
+                total_charged: float = 0.0, vat: float = 0.0) -> None:
     """Сохранить счёт абонента за месяц.
 
     Повторная загрузка того же месяца полностью заменяет прежние строки — так
     двойной загрузкой файла нельзя задвоить расходы. За это отвечает
     уникальный индекс (subscriber_id, report_month) плюс удаление старых
     строк pvalues внутри одной транзакции.
+
+    ПОЧЕМУ ЗДЕСЬ НЕТ «SELECT id, ПОТОМ INSERT ИЛИ UPDATE». Транзакция копит
+    команды и уходит в базу одним куском (см. db.transaction), поэтому
+    прочитать id прямо посреди блока нельзя. Да и не нужно: то же самое
+    делает ON CONFLICT DO UPDATE, а строки счёта привязываются к отчёту
+    подзапросом по паре (номер, месяц) — она уникальна.
     """
     number, month = str(number), str(month)
-    upsert_user(number)
 
     with db.transaction() as conn:
-        row = conn.execute(
-            "SELECT id FROM reports WHERE subscriber_id = ? AND report_month = ?",
-            (number, month),
-        ).fetchone()
+        # Карточка абонента должна существовать: на неё ссылается интерфейс.
+        conn.execute(
+            "INSERT INTO users_numbers (number) VALUES (?) "
+            "ON CONFLICT (number) DO NOTHING", (number,))
 
-        if row:
-            rid = row["id"]
-            conn.execute("DELETE FROM pvalues WHERE report_id = ?", (rid,))
-            conn.execute(
-                "UPDATE reports SET report_date = ?, tariff_name = ?, "
-                "       total_charged = ?, vat = ? WHERE id = ?",
-                (report_date or month, plan_name, float(total_charged), float(vat), rid),
-            )
-        else:
-            cur = conn.execute(
-                "INSERT INTO reports (report_month, subscriber_id, report_date, "
-                "                     tariff_name, total_charged, vat) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (month, number, report_date or month, plan_name,
-                 float(total_charged), float(vat)),
-            )
-            rid = cur.lastrowid
+        conn.execute(
+            "INSERT INTO reports (report_month, subscriber_id, report_date, "
+            "                     tariff_name, total_charged, vat) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (subscriber_id, report_month) DO UPDATE SET "
+            "  report_date   = excluded.report_date, "
+            "  tariff_name   = excluded.tariff_name, "
+            "  total_charged = excluded.total_charged, "
+            "  vat           = excluded.vat",
+            (month, number, report_date or month, plan_name,
+             float(total_charged), float(vat)),
+        )
+
+        # Старые строки убираем ПОСЛЕ вставки шапки: к этому моменту отчёт
+        # точно есть, и подзапрос ниже всегда что-то находит.
+        conn.execute(
+            "DELETE FROM pvalues WHERE report_id = "
+            "  (SELECT id FROM reports WHERE subscriber_id = ? AND report_month = ?)",
+            (number, month))
 
         conn.executemany(
             "INSERT INTO pvalues (report_id, parameter_id, service_name, volume, "
             "                     no_discount, discount, with_discount) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(rid, find_parameter_id(it["service"]), it["service"],
+            "VALUES ((SELECT id FROM reports "
+            "          WHERE subscriber_id = ? AND report_month = ?), ?, ?, ?, ?, ?, ?)",
+            [(number, month, find_parameter_id(it["service"]), it["service"],
               it.get("raw_volume", ""), float(it.get("no_discount", 0.0)),
               float(it.get("discount", 0.0)), float(it.get("cost", 0.0)))
              for it in items],
         )
-    return rid
 
 
 def months() -> list[dict[str, Any]]:
@@ -557,6 +582,57 @@ def bundles_for_month(month: str) -> list[dict[str, Any]]:
 
 def bundles_for_number(number: str) -> list[dict[str, Any]]:
     return _bundles("WHERE subscriber_id = ?", (str(number),))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ВСЁ ДЛЯ РАСЧЁТА МЕСЯЦА — ОДНИМ НАБОРОМ ЗАПРОСОВ
+#
+#  ЗАЧЕМ. Расчёт месяца собирает карточку по каждому абоненту: история,
+#  потребление по категориям, профиль, командировка, настройки чипса. Пока
+#  каждый кусок читался «по номеру», на сотне абонентов выходило больше
+#  тысячи обращений к базе. Каждое обращение — отдельный запуск psql, и
+#  главный экран открывался ЧЕТЫРЕ МИНУТЫ.
+#
+#  Здесь всё то же самое читается семью запросами на весь парк, а разбор по
+#  номерам делается в памяти. Формулы при этом не продублированы: и разбор
+#  по номерам, и одиночные функции зовут одни и те же history_rows,
+#  category_rows и pick_trip.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def month_dataset(month: str) -> dict[str, Any]:
+    """Прочитать всё, что нужно расчёту месяца."""
+    by_number: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for bundle in _bundles("", ()):
+        by_number[str(bundle["number"])].append(bundle)
+
+    roster: dict[str, dict[str, float]] = defaultdict(dict)
+    for row in db.query("SELECT number, month, total FROM roster_history"):
+        roster[str(row["number"])][row["month"]] = float(row["total"] or 0.0)
+
+    trips: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in db.query("SELECT * FROM business_trips "
+                        " ORDER BY approved DESC, date_start"):
+        trips[str(row["number"])].append(row)
+
+    return {
+        "month": str(month),
+        "bundles": by_number,
+        "roster": roster,
+        "trips": trips,
+        "users": {str(u["number"]): u for u in all_users()},
+        "chips": all_chips(),
+    }
+
+
+def dataset_profile(data: dict[str, Any], number: str) -> dict[str, Any]:
+    """Профиль абонента из прочитанного набора — без похода в базу."""
+    user = data["users"].get(str(number))
+    if not user:
+        return {}
+    month = data["month"]
+    on_trip = _on_trip(user, month) or bool(
+        pick_trip(data["trips"].get(str(number), []), month))
+    return {**_profile_fields(user), "on_trip": on_trip}
 
 
 
@@ -662,8 +738,18 @@ def services_summary(month: str = "") -> list[dict[str, Any]]:
 
 def category_history(number: str) -> list[dict[str, Any]]:
     """Помесячное потребление по категориям — для графиков минут, ГБ и SMS."""
+    return category_rows(bundles_for_number(number))
+
+
+def category_rows(bundles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """То же самое, но из уже прочитанных счетов.
+
+    Вынесено отдельно, чтобы расчёт целого месяца не ходил в базу за счетами
+    каждого номера по отдельности: он читает их все разом и зовёт эту
+    функцию. Логика при этом одна на оба пути, разъехаться ей негде.
+    """
     out = []
-    for bundle in bundles_for_number(number):
+    for bundle in bundles:
         items = bundle["items"]
         usage = domain.aggregate_usage(items)
         cost = {c: 0.0 for c in domain.CATEGORY_ORDER}
@@ -687,19 +773,24 @@ def history_for_number(number: str) -> list[dict[str, Any]]:
 
     Данные счёта приоритетнее — они детальные и проверяемые.
     """
+    return history_rows(bundles_for_number(number), get_roster_history(number))
+
+
+def history_rows(bundles: list[dict[str, Any]],
+                 roster: dict[str, float]) -> list[dict[str, Any]]:
+    """То же самое из уже прочитанных данных — см. `category_rows`.
+
+    Сумма месяца берётся из счёта той же формулой, что и в `_bundles`:
+    «итого начислено» оператора, а если его нет — сумма строк.
+    """
     merged: dict[str, dict[str, Any]] = {}
-    for month, amount in get_roster_history(number).items():
-        merged[month] = {"month": month, "total": round(amount, 2), "source": "roster"}
-    for row in db.query(
-        "SELECT r.report_month AS month, "
-        "       COALESCE(NULLIF(r.total_charged, 0), "
-        "         (SELECT COALESCE(SUM(with_discount), 0) FROM pvalues WHERE report_id = r.id)) AS total "
-        "  FROM reports r WHERE r.subscriber_id = ?",
-        (str(number),),
-    ):
-        merged[row["month"]] = {"month": row["month"],
-                                "total": round(float(row["total"] or 0.0), 2),
-                                "source": "bill"}
+    for month, amount in roster.items():
+        merged[month] = {"month": month, "total": round(float(amount), 2),
+                         "source": "roster"}
+    for bundle in bundles:
+        merged[bundle["month"]] = {"month": bundle["month"],
+                                   "total": round(float(bundle["total_charged"] or 0.0), 2),
+                                   "source": "bill"}
     return [merged[m] for m in sorted(merged)]
 
 
@@ -871,6 +962,98 @@ def get_invoice(month: str = "") -> dict[str, Any]:
     if amounts:
         out["amounts"] = amounts
     return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  СЫРЫЕ СТРОКИ СЧЁТА
+#
+#  ЗАЧЕМ. Витрина на PostgreSQL в закрытом контуре смотреть не даёт: на Астре
+#  нет ни pgAdmin, ни привычного клиента, а тащить туда нечего. При этом
+#  сверить «что реально легло в базу» с тем, что нарисовано на главном экране,
+#  нужно регулярно — иначе спор про сумму упирается в веру на слово.
+#
+#  ЧТО ОТДАЁТ. Ровно содержимое reports + pvalues, без единого пересчёта:
+#  ни разделения компания/сотрудник, ни правил чипса, ни классификации услуг.
+#  Это сознательно: если тут применять хоть одно правило, экран перестанет
+#  быть точкой отсчёта и сверять станет не с чем.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Порядок колонок и подписи. Один список на JSON, CSV и таблицу в браузере —
+# иначе выгрузка и экран разъедутся, и сверять придётся ещё и их между собой.
+RAW_COLUMNS: list[tuple[str, str]] = [
+    ("report_month",  "Период"),
+    ("number",        "Номер"),
+    ("report_date",   "Дата отчёта"),
+    ("tariff_name",   "Тариф"),
+    ("service_name",  "Услуга"),
+    ("volume",        "Объём"),
+    ("unit",          "Ед."),
+    ("no_discount",   "Без скидки"),
+    ("discount",      "Скидка"),
+    ("with_discount", "Со скидкой"),
+    ("total_charged", "Начислено за номер"),
+    ("vat",           "НДС"),
+    ("parameter_id",  "ID услуги"),
+    ("report_id",     "ID отчёта"),
+    ("value_id",      "ID строки"),
+]
+
+RAW_LIMIT_MAX = 5000
+
+
+def raw_rows(*, month: str = "", number: str = "", service: str = "",
+             limit: int = 200, offset: int = 0) -> dict[str, Any]:
+    """Сырые строки счёта из reports + pvalues, как они лежат в базе.
+
+    Фильтры необязательные: период — точным совпадением, номер и услуга —
+    подстрокой без учёта регистра. `total` считается по тем же условиям, что
+    и выборка, чтобы постраничный обход не врал про остаток.
+    """
+    where: list[str] = []
+    params: list[Any] = []
+    if month:
+        where.append("r.report_month = ?")
+        params.append(month)
+    if number:
+        where.append("r.subscriber_id LIKE ?")
+        params.append(f"%{number}%")
+    if service:
+        # lower() с обеих сторон: в счетах одна и та же услуга приходит то
+        # «Автоответчик», то «АВТООТВЕТЧИК», искать это глазами невозможно.
+        where.append("lower(pv.service_name) LIKE lower(?)")
+        params.append(f"%{service}%")
+    condition = (" WHERE " + " AND ".join(where)) if where else ""
+
+    # Границы: limit защищает от «отдай мне всё» на сотнях тысяч строк,
+    # offset не должен уезжать в минус — такой запрос база не выполнит.
+    limit = max(1, min(int(limit or 200), RAW_LIMIT_MAX))
+    offset = max(0, int(offset or 0))
+
+    total = int(db.scalar(
+        "SELECT COUNT(*) AS n FROM pvalues pv "
+        "  JOIN reports r ON r.id = pv.report_id" + condition,
+        params, default=0) or 0)
+
+    rows = db.query(
+        "SELECT r.report_month, r.subscriber_id AS number, r.report_date, "
+        "       r.tariff_name, r.total_charged, r.vat, "
+        "       pv.service_name, pv.volume, pv.unit, "
+        "       pv.no_discount, pv.discount, pv.with_discount, "
+        "       pv.parameter_id, r.id AS report_id, pv.id AS value_id "
+        "  FROM pvalues pv "
+        "  JOIN reports r ON r.id = pv.report_id" + condition +
+        " ORDER BY r.report_month DESC, r.subscriber_id, pv.id "
+        " LIMIT ? OFFSET ?",
+        [*params, limit, offset])
+
+    return {
+        "columns": [{"key": key, "title": title} for key, title in RAW_COLUMNS],
+        "rows": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "filters": {"month": month, "number": number, "service": service},
+    }
 
 
 def stats() -> dict[str, Any]:
@@ -1061,6 +1244,17 @@ def get_chip(number: str) -> dict[str, Any]:
     return {**base, **_split_rules(codes, _rule_kinds())}
 
 
+def blank_chip(number: str) -> dict[str, Any]:
+    """Чипс номера, которого никто не настраивал.
+
+    Без обращения к базе: правил у такого номера нет по определению, а
+    значит и сверять не с чем. Нужен расчёту месяца — там ненастроенных
+    номеров большинство, и поход в базу за каждым стоил дороже всего
+    остального расчёта вместе взятого.
+    """
+    return {"number": str(number), **_CHIP_DEFAULTS, **_split_rules([], {})}
+
+
 def all_chips() -> dict[str, dict[str, Any]]:
     """Все настройки чипсов разом — чтобы не дёргать базу на каждый номер."""
     kinds = _rule_kinds()
@@ -1104,7 +1298,9 @@ def save_chip(number: str, data: dict[str, Any]) -> dict[str, Any]:
                 sets.append(f"{field} = ?")
                 params.append(_payer(data[field]))
         if sets:
-            sets.append("updated_at = CURRENT_TIMESTAMP")
+            # Не CURRENT_TIMESTAMP: колонка текстовая, а CURRENT_TIMESTAMP в
+            # PostgreSQL — это timestamptz, и присвоить его тексту нельзя.
+            sets.append(f"updated_at = {db.NOW_TEXT}")
             params.append(number)
             conn.execute(f"UPDATE chip_settings SET {', '.join(sets)} WHERE number = ?", params)
 
@@ -1148,7 +1344,7 @@ def _payer(value: Any) -> str:
 
 
 def _bools(row: dict[str, Any], *fields: str) -> dict[str, Any]:
-    """Превратить 0/1 из SQLite в True/False — фронтенду так удобнее."""
+    """Превратить 0/1 из базы в True/False — фронтенду так удобнее."""
     return {**row, **{f: bool(row.get(f)) for f in fields}}
 
 
@@ -1232,14 +1428,29 @@ def trip_for_month(number: str, month: str) -> dict[str, Any] | None:
     if not number or not month:
         return None
     rows = db.query(
-        "SELECT * FROM business_trips "
-        " WHERE number = ? "
-        "   AND (date_start IS NULL OR date_start = '' OR substr(date_start, 1, 7) <= ?) "
-        "   AND (date_end   IS NULL OR date_end   = '' OR substr(date_end,   1, 7) >= ?) "
+        "SELECT * FROM business_trips WHERE number = ? "
         " ORDER BY approved DESC, date_start",
-        (str(number), month, month),
+        (str(number),),
     )
-    return _bools(rows[0], "approved") if rows else None
+    return pick_trip(rows, month)
+
+
+def pick_trip(rows: list[dict[str, Any]], month: str) -> dict[str, Any] | None:
+    """Выбрать из командировок номера ту, что попадает в расчётный месяц.
+
+    Отбор здесь, а не в SQL, по той же причине, что и у `category_rows`:
+    расчёт месяца читает командировки всего парка одним запросом. Список
+    должен быть уже отсортирован «сначала утверждённые, потом по дате
+    начала» — берём первую подходящую.
+    """
+    if not month:
+        return None
+    for row in rows:
+        start = str(row.get("date_start") or "")
+        end = str(row.get("date_end") or "")
+        if (not start or start[:7] <= month) and (not end or end[:7] >= month):
+            return _bools(row, "approved")
+    return None
 
 
 def delete_trips() -> None:

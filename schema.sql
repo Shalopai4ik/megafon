@@ -1,22 +1,11 @@
--- ═══════════════════════════════════════════════════════════════════════════
---  СХЕМА БАЗЫ ДАННЫХ «Анализ тарифных планов»
---  Диалект: SQLite
---
---  ЭТОТ ФАЙЛ СГЕНЕРИРОВАН, РУКАМИ ЕГО НЕ ПРАВЯТ.
---  Источник схемы — db.py (CORE_DDL + EXTENSION_DDL + RULES_DDL).
---  Пересобрать:  python install.py --dump-schema
---
---  Файл нужен для двух вещей:
---    1. посмотреть структуру, не читая код;
---    2. развернуть базу руками там, где нельзя запускать python.
---  Само приложение этот файл НЕ читает: оно строит схему из db.py, чтобы
---  живая база и код не разъехались.
--- ═══════════════════════════════════════════════════════════════════════════
-
+-- Схема базы «Анализ тарифных планов». PostgreSQL.
+-- ФАЙЛ СГЕНЕРИРОВАН, РУКАМИ НЕ ПРАВЯТ.
+-- Источник: db.py (CORE_DDL + EXTENSION_DDL + RULES_DDL).
+-- Пересобрать: python install.py --dump-schema
 
 -- Справочник услуг оператора.
 CREATE TABLE IF NOT EXISTS pname (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            BIGSERIAL PRIMARY KEY,
     description   TEXT NOT NULL UNIQUE,
     category      TEXT,
     service_type  TEXT
@@ -24,39 +13,39 @@ CREATE TABLE IF NOT EXISTS pname (
 
 -- Каталог тарифных планов.
 CREATE TABLE IF NOT EXISTS tariff_plans (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    id             BIGSERIAL PRIMARY KEY,
     plan_name      TEXT NOT NULL UNIQUE,
-    internet_limit REAL,
+    internet_limit DOUBLE PRECISION,
     voice_limit    INTEGER,
     sms_limit      INTEGER,
-    base_cost      REAL,
-    created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+    base_cost      DOUBLE PRECISION,
+    created_at     TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
     is_flex        INTEGER NOT NULL DEFAULT 0,
     -- Ниже — поля, которых нет в выгрузке: каталог хранит ещё и тарифы
     -- сверх пакета, иначе подбор тарифа считать нечем.
     kind           TEXT DEFAULT 'voice',
     unlimited_net  INTEGER NOT NULL DEFAULT 0,
-    rate_min       REAL DEFAULT 0,
-    rate_sms       REAL DEFAULT 0,
-    rate_mb        REAL DEFAULT 0,
+    rate_min       DOUBLE PRECISION DEFAULT 0,
+    rate_sms       DOUBLE PRECISION DEFAULT 0,
+    rate_mb        DOUBLE PRECISION DEFAULT 0,
     note           TEXT DEFAULT '',
     sort_order     INTEGER DEFAULT 0
 );
 
 -- Шапка месячного счёта одного абонента.
 CREATE TABLE IF NOT EXISTS reports (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            BIGSERIAL PRIMARY KEY,
     report_month  TEXT NOT NULL,
     subscriber_id TEXT NOT NULL,
-    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at    TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
     report_date   TEXT,
     tariff_id     INTEGER,
     check_abon    INTEGER DEFAULT 0,
     -- Сверх выгрузки: название тарифа строкой из счёта (в счёте оно есть
     -- всегда, а сопоставление с tariff_plans может не найтись) и итоги.
     tariff_name   TEXT DEFAULT '',
-    total_charged REAL DEFAULT 0,
-    vat           REAL DEFAULT 0
+    total_charged DOUBLE PRECISION DEFAULT 0,
+    vat           DOUBLE PRECISION DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_reports_month ON reports (report_month);
 CREATE INDEX IF NOT EXISTS idx_reports_subscriber ON reports (subscriber_id);
@@ -65,16 +54,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_subscriber_month
 
 -- Строки начислений счёта.
 CREATE TABLE IF NOT EXISTS pvalues (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    report_id        INTEGER NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
-    parameter_id     INTEGER REFERENCES pname (id),
+    id               BIGSERIAL PRIMARY KEY,
+    report_id        BIGINT NOT NULL REFERENCES reports (id) ON DELETE CASCADE,
+    parameter_id     BIGINT REFERENCES pname (id),
     volume           TEXT,
-    no_discount      REAL,
-    discount         REAL,
-    with_discount    REAL,
+    no_discount      DOUBLE PRECISION,
+    discount         DOUBLE PRECISION,
+    with_discount    DOUBLE PRECISION,
     report_idt       INTEGER,
-    volume_numeric   REAL,
-    calculated_price REAL,
+    volume_numeric   DOUBLE PRECISION,
+    calculated_price DOUBLE PRECISION,
     -- Сверх выгрузки: имя услуги как в счёте. Нужно, когда услуга ещё не
     -- заведена в pname — иначе строка теряет смысл.
     service_name     TEXT DEFAULT '',
@@ -84,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_pvalues_report ON pvalues (report_id);
 
 -- Реквизиты счёта за период.
 CREATE TABLE IF NOT EXISTS invoice_meta (
-    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                    BIGSERIAL PRIMARY KEY,
     report_month          TEXT UNIQUE,
     subscriber_id         TEXT,
     invoice_number        TEXT,
@@ -106,32 +95,32 @@ CREATE TABLE IF NOT EXISTS invoice_meta (
     rs_number             TEXT,
     ks_number             TEXT,
     bik                   TEXT,
-    balance_start         REAL,
-    balance_end           REAL,
-    total_charged         REAL,
-    total_paid            REAL,
-    penies_start          REAL,
-    penies_accrued        REAL,
-    penies_end            REAL,
-    total_due_no_penies   REAL,
-    total_due_with_penies REAL,
+    balance_start         DOUBLE PRECISION,
+    balance_end           DOUBLE PRECISION,
+    total_charged         DOUBLE PRECISION,
+    total_paid            DOUBLE PRECISION,
+    penies_start          DOUBLE PRECISION,
+    penies_accrued        DOUBLE PRECISION,
+    penies_end            DOUBLE PRECISION,
+    total_due_no_penies   DOUBLE PRECISION,
+    total_due_with_penies DOUBLE PRECISION,
     days_to_pay           INTEGER,
-    unpaid_previous       REAL,
-    vat_amount            REAL,
+    unpaid_previous       DOUBLE PRECISION,
+    vat_amount            DOUBLE PRECISION,
     director_name         TEXT,
     -- ДОБАВЛЕНО сверх выгрузки. Причина: парсер счёта достаёт больше полей,
     -- чем есть колонок в боевой схеме, и часть данных иначе просто терялась
     -- бы при сохранении. `raw_json` хранит разобранный счёт целиком — это
     -- страховка от потерь; типизированные колонки нужны для SQL-отчётов.
-    charged               REAL,
-    total_vatable         REAL,
+    charged               DOUBLE PRECISION,
+    total_vatable         DOUBLE PRECISION,
     period_label          TEXT,
     raw_json              TEXT
 );
 
 -- Абоненты: номер, лимит, ФИО, статус, командировка.
 CREATE TABLE IF NOT EXISTS users_numbers (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               BIGSERIAL PRIMARY KEY,
     number           TEXT NOT NULL UNIQUE,
     limit_numbr      INTEGER,
     username         TEXT,
@@ -150,12 +139,11 @@ CREATE INDEX IF NOT EXISTS idx_users_status ON users_numbers (status);
 
 -- Абоненты, исключённые из расчёта. status 0..9 — код причины.
 CREATE TABLE IF NOT EXISTS blacklisted_persons (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     person_id  INTEGER UNIQUE,
     status     INTEGER CHECK (status >= 0 AND status <= 9),
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
 );
-
 
 -- Семантическая палитра. Цвет — это правило: администратор красит номер, и
 -- вместе с цветом на него применяется набор эффектов. Смысл цвета правится
@@ -188,7 +176,7 @@ CREATE TABLE IF NOT EXISTS chip_settings (
     payer_options TEXT DEFAULT 'auto',
     payer_overage TEXT DEFAULT 'auto',
     payer_roaming TEXT DEFAULT 'auto',
-    updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
+    updated_at    TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
 );
 
 -- Дополнительные пометки-теги. На номер их можно навесить несколько.
@@ -215,7 +203,7 @@ CREATE TABLE IF NOT EXISTS chip_mark_links (
 
 -- Правила по названию услуги: что считать корпоративной опцией, а что личной.
 CREATE TABLE IF NOT EXISTS payment_rules (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     priority   INTEGER NOT NULL DEFAULT 100,
     enabled    INTEGER NOT NULL DEFAULT 1,
     -- 'tariff' | 'options' | 'overage' | 'roaming'
@@ -231,7 +219,7 @@ CREATE INDEX IF NOT EXISTS idx_payment_rules_scope ON payment_rules (scope, prio
 
 -- Командировки из выгрузки (komandirovki).
 CREATE TABLE IF NOT EXISTS business_trips (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     number     TEXT NOT NULL,
     username   TEXT DEFAULT '',
     date_start TEXT,
@@ -241,12 +229,12 @@ CREATE TABLE IF NOT EXISTS business_trips (
     order_date TEXT DEFAULT '',
     approved   INTEGER NOT NULL DEFAULT 0,
     memo_no    TEXT DEFAULT '',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
     UNIQUE (number, date_start, date_end)
 );
 CREATE INDEX IF NOT EXISTS idx_trips_number ON business_trips (number);
 
--- Пользовательские статусы абонентов (были в памяти).
+-- Пользовательские статусы абонентов.
 CREATE TABLE IF NOT EXISTS app_statuses (
     id         TEXT PRIMARY KEY,
     label      TEXT NOT NULL,
@@ -260,7 +248,7 @@ CREATE TABLE IF NOT EXISTS app_statuses (
 CREATE TABLE IF NOT EXISTS roster_history (
     number TEXT NOT NULL,
     month  TEXT NOT NULL,
-    total  REAL NOT NULL DEFAULT 0,
+    total  DOUBLE PRECISION NOT NULL DEFAULT 0,
     PRIMARY KEY (number, month)
 );
 
@@ -269,7 +257,6 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
-
 
 CREATE TABLE IF NOT EXISTS chip_rules (
     code          TEXT PRIMARY KEY,

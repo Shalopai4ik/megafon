@@ -15,6 +15,9 @@ megafon.db*
 *.sqlite3
 __pycache__/
 
+# Настройки подключения к базе: в них пароль. Образец — pg.conf.example.
+pg.conf
+
 # Готовые выгрузки конвертера — их всегда можно пересоздать convert.py
 otche.*.csv
 *.bill.csv
