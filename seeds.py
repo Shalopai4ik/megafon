@@ -413,11 +413,15 @@ def ensure_seeds() -> None:
                      rule["match_value"], rule["payer"], rule["note"]),
                 )
 
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            (SEEDED_FLAG, SEEDS_VERSION),
-        )
+        # Отметку о заливке пишем ТОЛЬКО когда её ещё нет. Раньше она
+        # обновлялась на каждом запуске — и каждый старт приложения тащил за
+        # собой запись в базу, то есть лишний запуск psql на ровном месте.
+        if not already:
+            conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (SEEDED_FLAG, SEEDS_VERSION),
+            )
 
 
 def _insert_if_absent(conn, have: dict[str, set], table: str, key_field: str,
