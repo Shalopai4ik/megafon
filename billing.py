@@ -29,7 +29,7 @@ billing.py — КТО ЗА ЧТО ПЛАТИТ и НАСКОЛЬКО ЭТО ВЫ
     3. Пометки номера                       (chip_marks, по порядку сортировки)
     4. Командировка                         (только корзина roaming)
     5. Правило по названию услуги           (payment_rules, только options/overage)
-    6. Умолчания                            (см. DEFAULT_PAYERS)
+    6. Умолчание самой услуги               (поле `pays` в includes.INCLUDES)
 
 Настройки НОМЕРА сильнее правил по УСЛУГЕ: если номер помечен «Личный тариф»,
 то опции на сотруднике, что бы ни говорило правило про «Офис в кармане».
@@ -43,6 +43,11 @@ from __future__ import annotations
 from typing import Any
 
 import domain
+import includes
+
+COMPANY = includes.COMPANY
+EMPLOYEE = includes.EMPLOYEE
+AUTO = "auto"
 
 # Порядок корзин фиксирован — в этом же порядке они показываются в интерфейсе.
 BUCKETS = ("tariff", "options", "overage", "roaming")
@@ -50,22 +55,27 @@ BUCKETS = ("tariff", "options", "overage", "roaming")
 BUCKET_LABELS = {
     "tariff": "Абонентская плата",
     "options": "Опции и сервисы",
-    "overage": "Перерасход пакета",
+    # НЕ «Перерасход пакета». В корзину попадает и настоящий перерасход, и
+    # связь, которую пакет не покрывает в принципе (межгород, международка).
+    # Пока подпись врала, номер с 368 минутами из 4000 показывал «перерасход
+    # 230 ₽» — и человек не понимал, за что платит.
+    "overage": "Связь сверх пакета",
     "roaming": "Роуминг",
 }
 
-# Умолчания — то, что действует, когда ни одно правило не сработало.
-# Ровно то, что просил заказчик: «мы платим абонплату + опции, он — перерасход».
-DEFAULT_PAYERS = {
-    "tariff": "company",
-    "options": "company",
-    "overage": "employee",
-    "roaming": "employee",
+# Умолчание плательщика теперь у КАЖДОЙ УСЛУГИ, а не у корзины целиком:
+# в одной корзине лежат и перерасход пакета (человек), и межгород (общество).
+# Смотри поле `pays` в includes.INCLUDES — там же объяснение по каждой строке.
+# Это самый слабый уровень, его перебивает любое правило.
+#
+# Здесь остался ТОЛЬКО ярлык для ПУСТОЙ корзины: когда денег в ней нет,
+# показать «кто платил бы» всё равно надо, а спрашивать не у кого — строк нет.
+EMPTY_BUCKET_PAYER = {
+    "tariff": COMPANY,
+    "options": COMPANY,
+    "overage": EMPLOYEE,
+    "roaming": EMPLOYEE,
 }
-
-COMPANY = "company"
-EMPLOYEE = "employee"
-AUTO = "auto"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -73,26 +83,28 @@ AUTO = "auto"
 # ═══════════════════════════════════════════════════════════════════════════
 
 def bucket_of(service: str) -> str:
-    """В какую корзину попадает строка счёта."""
-    if domain.is_plan_fee(service):
-        return "tariff"
-    # Роуминг проверяем раньше опций: только на него влияет командировка.
-    if domain.is_roaming(service):
-        return "roaming"
-    if domain.is_addon(service):
-        return "options"
-    return "overage"
+    """В какую корзину попадает строка счёта.
+
+    Решает таблица includes.INCLUDES — там же порядок проверок и объяснение
+    по каждому правилу. Здесь лесенки `if` больше нет: именно её молчаливое
+    «всё остальное — перерасход» и отправляло международные звонки на
+    сотрудника.
+    """
+    return domain.include_of(service).bucket
 
 
 def split_by_bucket(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Разложить строки счёта по четырём корзинам."""
+    """Разложить строки счёта по четырём корзинам.
+
+    Корзина `skip` наружу не выходит: это строки-итоги («Итого начислено»),
+    они суммы, а не услуги, и если их посчитать — счёт задвоится.
+    """
     out: dict[str, list[dict[str, Any]]] = {b: [] for b in BUCKETS}
     for item in items:
-        # Строки-итоги («Итого начислено») — это суммы, а не услуги.
-        # Если их посчитать, счёт задвоится.
-        if domain.is_meta(item.get("service", "")):
+        bucket = bucket_of(item.get("service", ""))
+        if bucket not in out:          # skip и любая будущая нежилая корзина
             continue
-        out[bucket_of(item.get("service", ""))].append(item)
+        out[bucket].append(item)
     return out
 
 
@@ -243,8 +255,13 @@ def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
                 cost = float(line.get("cost") or 0.0)
                 if cost <= 0:
                     continue
-                rule = resolver.rule_for_service(line.get("service", ""), bucket)
-                line_payer = rule["payer"] if rule else DEFAULT_PAYERS[bucket]
+                service = line.get("service", "")
+                rule = resolver.rule_for_service(service, bucket)
+                # Нет правила — берём умолчание САМОЙ УСЛУГИ, а не корзины:
+                # в «Связи сверх пакета» лежат и перерасход (человек), и
+                # межгород с международкой (общество).
+                line_payer = rule["payer"] if rule else includes.pays_by_default(
+                    domain.squash(service))
                 if line_payer == COMPANY:
                     company_part += cost
                 else:
@@ -266,7 +283,7 @@ def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
                 reason = reason or "разные услуги — разные плательщики"
             else:
                 payer = COMPANY if company_part > 0 else (
-                    EMPLOYEE if employee_part > 0 else DEFAULT_PAYERS[bucket])
+                    EMPLOYEE if employee_part > 0 else EMPTY_BUCKET_PAYER[bucket])
                 reason = reason or ("правило по услуге" if matched_rules else "по умолчанию")
 
         company_total += company_part

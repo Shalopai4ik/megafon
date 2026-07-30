@@ -979,7 +979,9 @@ function renderExPayers() {
   const BUCKETS = [
     ['tariff', 'Абонентская плата', 'seg-fee'],
     ['options', 'Опции и сервисы', 'seg-net'],
-    ['overage', 'Перерасход пакета', 'seg-min'],
+    // Не «Перерасход пакета»: в корзине и он, и связь, которую пакет не
+    // покрывает вовсе (межгород, международка). См. includes.INCLUDES.
+    ['overage', 'Связь сверх пакета', 'seg-min'],
     ['roaming', 'Роуминг', 'seg-sms'],
   ];
   const byBucket = ps.company_by_bucket || {};
@@ -1036,7 +1038,7 @@ const PAYER_OPTIONS = [
 const PAYER_BUCKETS = [
   ['payer_tariff', 'Абонплата'],
   ['payer_options', 'Опции'],
-  ['payer_overage', 'Перерасход'],
+  ['payer_overage', 'Сверх пакета'],
   ['payer_roaming', 'Роуминг'],
 ];
 
@@ -3156,7 +3158,7 @@ function renderChipRuleSettings(el) {
 /* ── Правила по услугам ──────────────────────────────────────────────────── */
 const RULE_SCOPES = [
   ['tariff', 'Абонплата'], ['options', 'Опции'],
-  ['overage', 'Перерасход'], ['roaming', 'Роуминг'],
+  ['overage', 'Сверх пакета'], ['roaming', 'Роуминг'],
 ];
 
 /* ═══════════════════════════════════════════════════════════════════════════
