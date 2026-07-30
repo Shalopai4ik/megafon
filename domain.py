@@ -652,6 +652,39 @@ def match_tariff(plan_name: str, plan_fee: float,
     return {**nearest, "fee": round2(fee), "matched_by": "nearest"}
 
 
+def tariff_label(current: dict[str, Any] | None, plan_name: str = "") -> str:
+    """Как называть тариф абонента в тексте рекомендации.
+
+    ЗАЧЕМ ЭТО ОТДЕЛЬНАЯ ФУНКЦИЯ. Названий у тарифа фактически два, и они
+    почти всегда разные:
+
+      * ЧТО НАПИСАНО В СЧЁТЕ — «Федеральный Специальный B2B». Оператор пишет
+        одну подпись на всю компанию, по ней не понять, что докуплено;
+      * ЧТО ЭТО ПО КАТАЛОГУ — «Пакет 400 + Интернет 100». Опознаётся по
+        абонплате (см. match_tariff), и только это годится для сравнения
+        тарифов: пакеты минут и гигабайт есть лишь у каталожной записи.
+
+    Пока рекомендация подставляла второе имя как есть, отчёт сам себе
+    противоречил: в шапке карточки «Федеральный Специальный B2B», а строкой
+    ниже «Пакет избыточен: тариф „Пакет 400 + Интернет 100“…». Человек искал
+    у себя тариф, которого в счёте нет.
+
+    Теперь в тексте стоит имя из счёта, а каталожное — рядом, с прямым
+    указанием, откуда оно взялось.
+    """
+    if current is None:
+        return "не определён по счёту"
+    catalog_name = str(current.get("name") or "")
+    plan = str(plan_name or "").strip()
+    if not plan:
+        return f"«{catalog_name}»"
+    a, b = _norm_name(plan), _norm_name(catalog_name)
+    if not b or a == b or a in b or b in a:
+        return f"«{plan}»"
+    return (f"«{plan}» (по абонплате {money_ru(current.get('fee') or 0)} "
+            f"это «{catalog_name}»)")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Стоимость потребления на конкретном тарифе
 # ═══════════════════════════════════════════════════════════════════════════
@@ -709,6 +742,44 @@ def compare_tariffs(usage: dict[str, float], catalog: list[dict[str, Any]]) -> l
     return estimates
 
 
+# Порог «живой SIM-карты». Несколько минут, пара сообщений и десятки
+# мегабайт набегают сами: оповещения оператора, обновление часов, служебный
+# трафик. Такой номер не работает, за него просто платят.
+IDLE_VOICE_MIN = 5.0
+IDLE_SMS_CNT = 5.0
+IDLE_INTERNET_MB = 50.0
+
+
+def cat_word(label: str) -> str:
+    """Название категории внутри фразы: «Минуты» → «минуты», «SMS» → «SMS».
+
+    Без этого в перечислении получалось «sms — 109 шт»: аббревиатуру ломать
+    нельзя, а обычное слово посреди предложения с большой буквы выглядит так
+    же неряшливо.
+    """
+    return label if label.isupper() else label.lower()
+
+
+def usage_level(usage: dict[str, float]) -> str:
+    """Насколько номер вообще использовался: none / idle / normal.
+
+    Считается по ИСХОДЯЩЕМУ потреблению: входящие звонки и SMS бесплатны и
+    ничего не говорят о том, нужен ли номер.
+
+    Три уровня, потому что говорить о них надо по-разному: «none» — за месяц
+    ноль, тут решение отключать или менять тариф на минимальный; «idle» —
+    единицы минут, то есть служебный трафик; «normal» — обычный разбор.
+    """
+    voice = usage.get("voice_min", 0.0)
+    sms = usage.get("sms_cnt", 0.0)
+    mb = usage.get("internet_mb", 0.0)
+    if voice <= 0 and sms <= 0 and mb <= 0:
+        return "none"
+    if voice < IDLE_VOICE_MIN and sms < IDLE_SMS_CNT and mb < IDLE_INTERNET_MB:
+        return "idle"
+    return "normal"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Рекомендация по тарифу
 # ═══════════════════════════════════════════════════════════════════════════
@@ -727,26 +798,47 @@ def category_verdict(used: float, quota: float, cost: float, *,
     """
     ratio = (used / quota) if quota > 0 else 0.0
 
+    # ПУСТО — ЭТО НЕ «ПОЧТИ ПУСТО».
+    # Флаг `zero` идёт наружу отдельно от типа вердикта: тип нужен сводкам и
+    # фильтрам (нулевой пакет — это тоже недоиспользование), а вот текст на
+    # экране должен различать «использовано 8% пакета» и «не использовано
+    # вообще ничего». Раньше и то и другое подписывалось «почти не
+    # используется», и получалось «почти не используется: 0 мин из 400».
+    zero = used <= 0
+
     if pay_per_use:
-        return {"type": "payg", "ratio": 0.0, "label": "по факту",
+        if zero and cost <= 0:
+            return {"type": "ok", "ratio": 0.0, "label": "не использовалось",
+                    "zero": True,
+                    "text": "Тариф без пакета, и по этой категории за месяц "
+                            "ничего не потрачено — начислений нет."}
+        return {"type": "payg", "ratio": 0.0, "label": "по факту", "zero": zero,
                 "text": f"Тариф без пакета: оплачивается фактическое потребление "
                         f"({fmt_amount(used, key)} на {cost:.2f} ₽)."}
 
     if not has_tariff or quota <= 0:
+        if zero and cost <= 0:
+            return {"type": "ok", "ratio": 0.0, "label": "не использовалось",
+                    "zero": True,
+                    "text": "За месяц не использовалось, начислений нет. Пакет по "
+                            "этой категории не подключён."}
         label, kind = ("вне пакета", "extra") if cost > 0 else ("в пакете", "ok")
-        return {"type": kind, "ratio": 0.0, "label": label,
+        return {"type": kind, "ratio": 0.0, "label": label, "zero": zero,
                 "text": f"{fmt_amount(used, key)}, начислено {cost:.2f} ₽. "
                         f"Пакет по этой категории не подключён."}
 
     if used > quota and cost > 0:
         return {"type": "over", "ratio": round(ratio, 3), "label": "перерасход",
+                "zero": False,
                 "text": f"Пакет {fmt_amount(quota, key)} исчерпан: использовано "
-                        f"{fmt_amount(used, key)}, сверх пакета начислено {cost:.2f} ₽."}
+                        f"{fmt_amount(used, key)} (это {ratio * 100:.0f}% пакета), "
+                        f"сверх пакета начислено {cost:.2f} ₽."}
 
     if used > quota:
         # Пакет по каталогу исчерпан, но начислений нет: реальный пакет больше,
         # чем мы предполагаем (подключена опция, акция или безлимит).
         return {"type": "ok", "ratio": round(ratio, 3), "label": "в пакете",
+                "zero": False,
                 "text": f"Использовано {fmt_amount(used, key)} при пакете "
                         f"{fmt_amount(quota, key)}, но начислений нет — фактический "
                         f"пакет больше указанного в каталоге."}
@@ -755,20 +847,31 @@ def category_verdict(used: float, quota: float, cost: float, *,
         # Потребление внутри пакета, а деньги списаны: это услуги, которые
         # пакет не покрывает (межгород, роуминг, спецномера).
         return {"type": "extra", "ratio": round(ratio, 3), "label": "вне пакета",
+                "zero": zero,
                 "text": f"Пакет использован на {ratio * 100:.0f}%, но {cost:.2f} ₽ "
                         f"начислено отдельно — это услуги вне пакета "
                         f"(межгород, роуминг, короткие номера)."}
 
-    if used <= 0:
+    if zero:
         return {"type": "under", "ratio": 0.0, "label": "не используется",
-                "text": f"Пакет {fmt_amount(quota, key)} не используется совсем."}
+                "zero": True,
+                "text": f"Пакет {fmt_amount(quota, key)} не использован ни на "
+                        f"сколько: за месяц ноль. Платим за него целиком."}
 
     if ratio < 0.4:
+        # Доли процента словами: «использовано всего 0%» противоречит тому, что
+        # ноль разбирается веткой выше.
+        share = "меньше 1%" if ratio * 100 < 1 else f"{ratio * 100:.0f}%"
         return {"type": "under", "ratio": round(ratio, 3), "label": "недоиспользование",
-                "text": f"Использовано всего {ratio * 100:.0f}% пакета — пакет избыточен."}
+                "zero": False,
+                "text": f"Использовано всего {share} пакета "
+                        f"({fmt_amount(used, key)} из {fmt_amount(quota, key)}) — "
+                        f"пакет избыточен."}
 
-    return {"type": "ok", "ratio": round(ratio, 3), "label": "норма",
-            "text": f"Использовано {ratio * 100:.0f}% пакета — объём подобран верно."}
+    return {"type": "ok", "ratio": round(ratio, 3), "label": "норма", "zero": False,
+            "text": f"Использовано {ratio * 100:.0f}% пакета "
+                    f"({fmt_amount(used, key)} из {fmt_amount(quota, key)}) — "
+                    f"объём подобран верно."}
 
 
 # Меньшую выгоду считаем шумом: ради 30 ₽ переводить сотрудника на другой
@@ -810,6 +913,8 @@ def build_recommendation(
     actual_tariff_cost: float,
     avg_tariff_cost: float | None = None,
     categories: list[dict[str, Any]] | None = None,
+    plan_name: str = "",
+    total: float = 0.0,
 ) -> dict[str, Any]:
     """Сформировать рекомендацию «оставить / повысить / понизить / сменить».
 
@@ -849,8 +954,44 @@ def build_recommendation(
     threshold = round2(max(MIN_SAVING_RUB, basis * MIN_SAVING_SHARE))
 
     lines: list[str] = []
-    over = [c for c in (categories or []) if c["verdict"]["type"] == "over"]
-    under = [c for c in (categories or []) if c["verdict"]["type"] == "under"]
+    cats = categories or []
+    over = [c for c in cats if c["verdict"]["type"] == "over"]
+    # Недоиспользование и полный ноль разделены: подписывать «почти не
+    # используется: 0 мин из 400» — значит врать. См. category_verdict.
+    under = [c for c in cats if c["verdict"]["type"] == "under"
+             and not c["verdict"].get("zero")]
+    unused = [c for c in cats if c["verdict"]["type"] == "under"
+              and c["verdict"].get("zero")]
+    # Тариф в тексте называем так, как он подписан в счёте (см. tariff_label).
+    cur_label = tariff_label(current, plan_name)
+
+    # НОМЕР НЕ ИСПОЛЬЗОВАЛСЯ ВООБЩЕ — это первое, что нужно сказать.
+    # Дальше пойдёт обычный подбор тарифа, но начинать разговор с «пакет
+    # избыточен» там, где связи не было ни минуты, бессмысленно: решение тут
+    # другое — отключить SIM или перевести на самый дешёвый тариф.
+    #
+    # Строка держится отдельно и подставляется в начало готового списка. Внутри
+    # разбора по `lines` проверяется «сработала ли защита», и непустой список
+    # там означал бы, что объяснение уже дано, — вердикт по тарифу тогда
+    # потерялся бы (см. ветку `if saving < threshold`).
+    prelude = ""
+    level = usage_level(usage)
+    # В этих двух строках речь про ВЕСЬ счёт номера, а не про тарифную часть:
+    # человек хочет знать, сколько всего платится за молчащую SIM-карту.
+    billed = round2(total) if total > 0 else basis
+    if level == "none":
+        prelude = (
+            f"За месяц номером не пользовались: ни исходящих минут, ни "
+            f"интернета, ни SMS. Начислено {money_ru(billed)} — это абонплата и "
+            f"опции. Прежде чем отключать, проверьте назначение номера: так же "
+            f"выглядят модем, шлагбаум и сигнализация."
+        )
+    elif level == "idle":
+        prelude = (
+            f"Номер почти не используется: {fmt_usage_line(usage)} за месяц — "
+            f"это уровень служебного трафика, а не работы. "
+            f"Начислено {money_ru(billed)}."
+        )
 
     # ═══════════════════════════════════════════════════════════════════════
     # ТРИ ЗАЩИТЫ ОТ НЕВЕРНОЙ РЕКОМЕНДАЦИИ
@@ -901,13 +1042,13 @@ def build_recommendation(
             pass
         elif current is not None and best["tariff_id"] == current["id"]:
             lines.append(
-                f"Тариф «{current['name']}» — оптимальный вариант каталога при "
+                f"Тариф {cur_label} — оптимальный вариант каталога при "
                 f"потреблении {fmt_usage_line(usage)}. Тарифная часть счёта "
                 f"{basis:.0f} ₽/мес."
             )
         elif current is not None:
             lines.append(
-                f"Тариф «{current['name']}» менять не нужно: тарифная часть счёта "
+                f"Тариф {cur_label} менять не нужно: тарифная часть счёта "
                 f"{basis:.0f} ₽/мес, а более дешёвого варианта при потреблении "
                 f"{fmt_usage_line(usage)} в каталоге нет."
             )
@@ -928,7 +1069,7 @@ def build_recommendation(
     elif best["fee"] > current_fee:
         action = "raise"
         lines.append(
-            f"Потребление не помещается в тариф «{current['name']}»: месяц "
+            f"Потребление не помещается в тариф {cur_label}: месяц "
             f"обходится в {basis:.0f} ₽ при абонплате {current_fee:.0f} ₽. "
             f"Пакет «{best['tariff_name']}» ({best['note']}) закрыл бы "
             f"{fmt_usage_line(usage)} за {best['total']:.0f} ₽ — повышение тарифа "
@@ -937,16 +1078,21 @@ def build_recommendation(
     else:
         action = "lower"
         lines.append(
-            f"Пакет избыточен: тариф «{current['name']}» обходится в {basis:.0f} ₽/мес, "
+            f"Пакет избыточен: тариф {cur_label} обходится в {basis:.0f} ₽/мес, "
             f"а фактического потребления ({fmt_usage_line(usage)}) хватает на "
             f"«{best['tariff_name']}» ({best['note']}) за {best['total']:.0f} ₽ — "
             f"экономия {saving:.0f} ₽/мес."
         )
 
     # Что именно уходит в перерасход — по фактическим начислениям.
+    # Пишем и объём пакета: «минуты — 1 666 ₽ (4 812 мин из 4 000 мин, сверх
+    # пакета 812 мин)» отвечает сразу и «сколько денег», и «почему».
     if over:
         lines.append("Сверх пакета начислено: " + ", ".join(
-            f"{c['label'].lower()} — {c['cost']:.2f} ₽ ({c['used_text']})" for c in over) + ".")
+            f"{cat_word(c['label'])} — {money_ru(c['cost'])} "
+            f"({c['used_text']} из {c['quota_text']}, сверх пакета "
+            f"{fmt_amount(max(0.0, c['used'] - c['quota']), c['key'])})"
+            for c in over) + ".")
 
     # ДОБАВЛЕНО. Без этой строки отчёт выглядит противоречиво: «тарифная часть
     # 357 ₽», а рядом «сверх пакета 1666 ₽». Разница — роуминг: он не входит
@@ -958,9 +1104,22 @@ def build_recommendation(
             f"не зависит от тарифа и в сравнение выше не входит: сменой тарифа "
             f"её не убрать, нужен роуминговый пакет или ограничение."
         )
+    # НОЛЬ И «ПОЧТИ НОЛЬ» — ДВЕ РАЗНЫЕ СТРОКИ.
+    # Раньше здесь была одна: «Почти не используется: минуты (0 мин из 400 мин),
+    # интернет (0 МБ из 68,4 ГБ)». Как «почти», если вообще ни разу?
+    if unused:
+        lines.append("Пакет не использован совсем: " + ", ".join(
+            f"{cat_word(c['label'])} — 0 из {c['quota_text']}" for c in unused)
+            + ". За этот объём платим целиком.")
     if under:
-        lines.append("Почти не используется: " + ", ".join(
-            f"{c['label'].lower()} ({c['used_text']} из {c['quota_text']})" for c in under) + ".")
+        # «(0%)» при трёх минутах из четырёх тысяч читается как ноль, а ноль у
+        # нас — отдельная строка выше. Поэтому доли процента подписываем словами.
+        def share_text(ratio: float) -> str:
+            return "меньше 1%" if ratio * 100 < 1 else f"{ratio * 100:.0f}%"
+
+        lines.append("Используется меньше половины пакета: " + ", ".join(
+            f"{cat_word(c['label'])} — {c['used_text']} из {c['quota_text']} "
+            f"({share_text(c['ratio'])})" for c in under) + ".")
 
     return {
         "action": action,
@@ -970,7 +1129,10 @@ def build_recommendation(
         "basis": basis,
         "threshold": threshold,
         "alternatives": estimates[:5],
-        "lines": lines,
+        # Строка про неиспользуемый номер идёт первой: это главное, что нужно
+        # знать про такой счёт, дальше уже подбор тарифа.
+        "lines": ([prelude] if prelude else []) + lines,
+        "usage_level": level,
     }
 
 
@@ -1150,8 +1312,15 @@ def build_record(
     # месяцу (по ней ищем тариф, см. split_plan_fees).
     fees = split_plan_fees(items)
     plan_fee = fees["charged"]
-    addons_cost = round2(sum(it["cost"] for it in items
-                             if is_addon(it["service"]) and not is_plan_fee(it["service"])))
+    addon_items = [it for it in items
+                   if is_addon(it["service"]) and not is_plan_fee(it["service"])]
+    addons_cost = round2(sum(it["cost"] for it in addon_items))
+    # Опции построчно — чтобы в карточке было видно, за ЧТО именно эти деньги:
+    # ВАТС, антифрод, информирование о звонках. Список короткий, две-три
+    # строки, а без него «опции 300 ₽» ничего не объясняют.
+    addons = [{"service": it["service"], "cost": round2(it["cost"])}
+              for it in sorted(addon_items, key=lambda x: x["cost"], reverse=True)
+              if it["cost"] > 0]
 
     total = round2(total_charged) if (total_charged is not None and total_charged > 0) else items_sum
     discrepancy = round2(total - items_sum)
@@ -1177,7 +1346,8 @@ def build_record(
     tariff = match_tariff(plan_name, fees["monthly"], catalog)
     categories = category_breakdown(items, usage, tariff)
     recommendation = build_recommendation(usage, catalog, tariff, tariff_cost,
-                                          avg_tariff_cost, categories)
+                                          avg_tariff_cost, categories,
+                                          plan_name=plan_name, total=total)
 
     # НЕПОЛНЫЙ МЕСЯЦ — ПОВОД НЕ ВЕРИТЬ СРАВНЕНИЮ.
     # Номер проработал не весь месяц: и абонплата, и потребление обрезаны.
@@ -1250,11 +1420,24 @@ def build_record(
         "plan_days": fees["days"],
         "partial_month": fees["partial"],
         "tariff": tariff,
+        # Как называть тариф на экране: имя из счёта плюс каталожное, если они
+        # разошлись (см. tariff_label). Считается один раз здесь, чтобы
+        # карточка и рекомендация не разъезжались в формулировках.
+        "tariff_label": tariff_label(tariff, plan_name),
+        "tariff_matched_by": (tariff or {}).get("matched_by", ""),
+        # Насколько номер вообще использовался: none / idle / normal.
+        "usage_level": usage_level(usage),
         "total": total,
         "items_sum": items_sum,
         "discrepancy": discrepancy if abs(discrepancy) > 1.0 else 0.0,
         "tariff_cost": tariff_cost,
         "addons_cost": addons_cost,
+        "addons": addons,
+        # Начисления, не попавшие ни в абонплату, ни в связь, ни в опции:
+        # разовые услуги, детализация, доставка счёта. Без этой строки итог в
+        # карточке не сходился с суммой показанных строк.
+        "other_cost": round2(items_sum - plan_fee - addons_cost
+                             - sum(c["cost"] for c in categories)),
         "usage": usage,
         "categories": categories,
         "overuse": overuse,

@@ -160,7 +160,7 @@ body {
    единица уже семёрки, и столбец рублей выглядит рваным. */
 .kpi-value, .cost-main, .rank-val, .ex-row-val, .ex-stat-value, .ex-abc-sum,
 .waste-value, .action-count, .limit-pct, .trip-dates, .sm-cost-big,
-.tariff-card-row b, .cmp-sum, .stats-tile-value, .money-flow-cost,
+.tariff-card-row b, .cmp-sum, .stats-tile-value, .bill-cost, .payer-split-amount,
 .svc-cost, .sm-svc-amt, .stats-svc-amt, .rule-count {
   font-variant-numeric: tabular-nums;
 }
@@ -1273,18 +1273,37 @@ button.ex-row:hover { background: var(--surface-2); }
 .limit-chart { display: none; margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--border-strong); }
 .limit-row.open .limit-chart { display: block; animation: reveal .2s ease; }
 
-.money-flow { display: flex; flex-direction: column; gap: 6px; }
-.money-flow-row {
-  display: grid; grid-template-columns: 22px minmax(120px, auto) minmax(60px, auto) 1fr auto;
+/* Разбор счёта «за что платим» (billBreakdown). Одна раскладка на карточку и
+   на модалку: строка — название, подпись мелким, полоса доли, сумма. */
+.bill-flow { display: flex; flex-direction: column; gap: 5px; }
+.bill-row {
+  display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1.3fr) minmax(48px, 1fr) auto;
   align-items: center; gap: 10px; padding: 7px 11px; border-radius: 8px;
   background: var(--surface-2); font-size: 12.5px;
 }
-.money-flow-ico { text-align: center; }
-.money-flow-label { font-weight: 600; }
-.money-flow-used { color: var(--text-muted); font-size: 12.5px; }
-.money-flow-track { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
-.money-flow-fill { display: block; height: 100%; background: var(--primary); border-radius: 4px; }
-.money-flow-cost { font-weight: 700; min-width: 74px; text-align: right; }
+.bill-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bill-note { color: var(--text-muted); font-size: 12px; }
+.bill-track { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.bill-fill { display: block; height: 100%; border-radius: 4px; background: var(--primary); }
+.bill-fill.fill-danger { background: var(--danger); }
+.bill-fill.fill-good { background: var(--good); }
+.bill-fill.fill-accent { background: var(--accent); }
+.bill-cost { font-weight: 700; min-width: 78px; text-align: right; }
+.bill-total {
+  margin-top: 3px; background: var(--surface-3);
+  border-top: 1px solid var(--border-strong); font-size: 13px;
+}
+.bill-total .bill-cost { font-size: 14.5px; }
+
+/* Кто за что платит — только чтение, рядом с разбором счёта. */
+.payer-split { margin-top: 11px; display: flex; flex-direction: column; gap: 5px; }
+.payer-split-row {
+  display: grid; grid-template-columns: minmax(90px, auto) auto auto minmax(0, 1fr);
+  align-items: center; gap: 10px; padding: 6px 11px; border-radius: 8px;
+  background: var(--surface-2); font-size: 12.5px;
+}
+.payer-split-amount { font-weight: 700; }
+.payer-split-why { color: var(--text-muted); font-size: 12px; }
 
 .alt-list { display: flex; flex-direction: column; gap: 7px; }
 .alt-row {
@@ -1434,6 +1453,9 @@ button.ex-row:hover { background: var(--surface-2); }
 /* ═══════════════════════════ КАРТОЧКА: ТАРИФ И ПАНЕЛИ ═══════════════════════════ */
 .card-badges { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
 .badge-trip { background: var(--accent-soft); color: var(--accent); }
+/* «Не используется» — по деньгам такой номер обычно «Норма», поэтому метка
+   своя: спокойная, но заметная. */
+.badge-idle { background: var(--surface-3); color: var(--text-muted); border: 1px dashed var(--border-strong); }
 
 .status-dot {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -1453,6 +1475,12 @@ button.ex-row:hover { background: var(--surface-2); }
   padding: 3px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
 }
 .plan-fee { color: var(--text-muted); white-space: nowrap; }
+/* Каталожный тариф: он опознан по абонплате, а не написан в счёте, поэтому
+   и выглядит подписью, а не равноправным именем. */
+.plan-catalog {
+  color: var(--text-muted); font-size: 11.5px; border-bottom: 1px dotted var(--border-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; cursor: help;
+}
 
 .chip { gap: 4px; }
 .chip-top { display: flex; align-items: center; gap: 5px; }
@@ -1802,8 +1830,12 @@ input[type="color"] {
   .modal-body, .modal-lg, .modal-xl { padding: 18px 14px; max-width: 100vw; max-height: 96vh; border-radius: 0; }
   .sm-header { flex-direction: column; gap: 10px; padding-right: 34px; }
   .sm-head-right { text-align: left; }
-  .money-flow-row { grid-template-columns: 20px 1fr auto; }
-  .money-flow-used, .money-flow-track { display: none; }
+  /* На узком экране от разбора счёта остаются название и сумма:
+     подпись и полоса доли там всё равно нечитаемы. */
+  .bill-row { grid-template-columns: 1fr auto; }
+  .bill-note, .bill-track { display: none; }
+  .payer-split-row { grid-template-columns: 1fr auto auto; }
+  .payer-split-why { display: none; }
   .tariff-editor-head { display: none; }
   .tariff-editor-row { grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
     .card-actions { flex-direction: column; }

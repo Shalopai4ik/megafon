@@ -14,6 +14,10 @@
 
 const MONTH_NAMES = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
   'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+// Тот же месяц в именительном падеже. Нужен для оборота «за ИЮНЬ 2026»:
+// с родительным получалось «за июня 2026».
+const MONTH_NOM = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
 const MONTH_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн',
   'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 
@@ -38,6 +42,22 @@ const CAT_META = {
   voice: { label: 'Минуты', icon: '', unit: 'мин', usageKey: 'voice_min', costKey: 'voice_cost' },
   internet: { label: 'Интернет', icon: '', unit: 'ГБ', usageKey: 'internet_mb', costKey: 'internet_cost' },
   sms: { label: 'SMS', icon: '', unit: 'шт', usageKey: 'sms_cnt', costKey: 'sms_cost' },
+};
+
+/**
+ * Бейдж «номером не пользуются». Уровень считает сервер (domain.usage_level),
+ * здесь только подпись.
+ *
+ * Отдельная от статуса метка нужна потому, что молчащий номер по деньгам
+ * обычно «Норма»: лимит не превышен, перерасхода нет — и на карточке не было
+ * ни следа того, что связи не было вообще. А это как раз самый очевидный
+ * повод отключить SIM.
+ */
+const USAGE_BADGE = {
+  none: '<span class="badge badge-idle" title="За месяц ни исходящих минут,'
+    + ' ни интернета, ни SMS">не используется</span>',
+  idle: '<span class="badge badge-idle" title="За месяц только служебный'
+    + ' трафик: единицы минут и мегабайт">почти не используется</span>',
 };
 
 const VERDICT_COLS = [
@@ -612,14 +632,14 @@ function renderKpis() {
 /**
  * Номера, за которые платят, но которыми не пользуются.
  *
- * Порог берём с запасом: несколько минут или пара мегабайт набегают от
- * служебных сообщений оператора и сами по себе не означают, что SIM живая.
+ * Порог считает сервер (domain.usage_level): несколько минут или пара
+ * мегабайт набегают от служебных сообщений оператора и сами по себе не
+ * означают, что SIM живая. Здесь порогов больше нет намеренно — пока они
+ * были продублированы в браузере, «не используется» на карточке и в виджете
+ * рисковали разойтись между собой.
  */
 function idleSubscribers() {
-  return state.subscribers.filter((s) => {
-    const u = s.usage || {};
-    return (u.voice_min || 0) < 5 && (u.internet_mb || 0) < 50 && (u.sms_cnt || 0) < 5;
-  });
+  return state.subscribers.filter((s) => s.usage_level === 'none' || s.usage_level === 'idle');
 }
 
 function setText(id, value) {
@@ -856,7 +876,7 @@ function renderExTrips() {
   el.innerHTML = exStats([
     ['Всего', String(rows.length)],
     ['Утверждено', String(approved)],
-    [`Попадают в ${formatMonth(state.month)}`, String(active)],
+    [`Попадают в ${monthNom(state.month)}`, String(active)],
   ])
     + `<div class="trip-table">
       <div class="trip-row trip-row-head">
@@ -1389,7 +1409,7 @@ function renderExIdle() {
       title: 'Нет исходящих минут, интернета и SMS за период',
     })).join('')}</div>
     ${idle.length > 8 ? `<div class="panel-hint">Показаны 8 самых дорогих из ${idle.length}.</div>` : ''}
-    <div class="panel-hint">Ни исходящих минут, ни интернета, ни SMS за ${esc(formatMonth(state.month))}.
+    <div class="panel-hint">Ни исходящих минут, ни интернета, ни SMS за ${esc(monthNom(state.month))}.
       Прежде чем отключать, проверьте — это может быть модем, шлагбаум или сигнализация.</div>`;
   bindGoto(el);
 }
@@ -2025,6 +2045,7 @@ function renderCard(s) {
       </div>
       <div class="card-badges">
         <span class="badge badge-${status.cls}">${status.label}</span>
+        ${USAGE_BADGE[s.usage_level] || ''}
         ${s.on_trip ? '<span class="badge badge-trip" title="В командировке">командировка</span>' : ''}
         ${chipColor ? `<span class="badge badge-chip" style="--chip:${esc(chipColor.hex)}"
           title="${esc(chipColor.label)} — правило применено">${esc(chipColor.label)}</span>` : ''}
@@ -2044,6 +2065,11 @@ function renderCard(s) {
     <div class="card-plan">
       <span class="plan-chip" title="Тариф по счёту">${esc(s.plan_name || 'тариф не определён')}</span>
       ${s.plan_fee > 0 ? `<span class="plan-fee">${money(s.plan_fee)}/мес</span>` : '<span class="plan-fee">без абонплаты</span>'}
+      <!-- Каталожный тариф рядом с тем, что написано в счёте. Оператор
+           подписывает план одинаково на всю компанию, а пакеты минут и
+           гигабайт есть только у каталожной записи — и раньше карточка
+           показывала одно имя, а рекомендация под ней другое. -->
+      ${catalogTariffNote(s)}
     </div>
 
     <div class="cost-row">
@@ -2084,6 +2110,39 @@ function renderCard(s) {
   </article>`;
 }
 
+/**
+ * Подпись «а по каталогу это другой тариф».
+ *
+ * Показывается только когда имена действительно разошлись: в счёте оператор
+ * пишет «Федеральный Специальный B2B» на всю компанию, а по абонплате это
+ * «Пакет 400 + Интернет 100». Сравнение тарифов и все пакеты берутся из
+ * каталожной записи, поэтому её название и попадает в рекомендацию — без этой
+ * подписи карточка и текст под ней выглядели как про разные номера.
+ *
+ * matched_by приходит из domain.match_tariff и говорит, насколько уверенно
+ * тариф опознан: 'fee' — сумма совпала копейка в копейку, 'nearest' — просто
+ * ближайший по цене, то есть догадка. Догадку так и подписываем.
+ */
+const MATCH_NOTE = {
+  fee: 'опознан по абонплате',
+  'fee+name': 'опознан по абонплате и названию',
+  'fee~': 'опознан по близкой абонплате',
+  name: 'опознан по названию, абонплата в счёте другая',
+  nearest: 'точного совпадения нет, взят ближайший по цене',
+};
+
+function catalogTariffNote(s) {
+  const catalog = (s.tariff || {}).name || '';
+  if (!catalog) return '';
+  const norm = (t) => String(t || '').toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
+  const a = norm(s.plan_name);
+  const b = norm(catalog);
+  if (!a || a === b || a.includes(b) || b.includes(a)) return '';
+  const note = MATCH_NOTE[s.tariff_matched_by] || 'опознан по абонплате';
+  return `<span class="plan-catalog" title="Пакеты и сравнение тарифов считаются
+    по этой записи каталога — ${esc(note)}">по каталогу: ${esc(catalog)}</span>`;
+}
+
 function catChip(c) {
   const cls = VERDICT_CLS[c.verdict.type] || 'good';
   const pct = c.quota > 0 ? Math.min(100, (c.used / c.quota) * 100) : 0;
@@ -2094,10 +2153,110 @@ function catChip(c) {
   </div>`;
 }
 
+/* ── Разбор счёта: за что именно платим ──────────────────────────────────────
+ *
+ * Один блок на карточку и на модалку. Раньше «Из чего сложился счёт» жило
+ * только в модалке и складывалось из абонплаты, категорий и одной строки
+ * «прочее» — причём «прочее» считалось вычитанием на клиенте и молча
+ * впитывало в себя всё, что не разложилось. Теперь состав приходит с сервера
+ * (addons, other_cost), а строка по категории показывает и объём, и сколько
+ * из этих денег ушло СВЕРХ пакета.
+ * ─────────────────────────────────────────────────────────────────────────── */
+function billBreakdown(s, opts = {}) {
+  const pay = s.payment || {};
+  const rows = [];
+
+  if (s.plan_fee > 0) {
+    // Неполный месяц: плата списана посуточно. Без этой подписи непонятно,
+    // почему тариф за 400 ₽ стоит в счёте 200 ₽.
+    const note = s.partial_month
+      ? `за ${s.plan_days} дн., в пересчёте на месяц ${money(s.plan_fee_monthly)}`
+      : (s.tariff || {}).name || '';
+    rows.push({ label: 'Абонентская плата', note, cost: s.plan_fee });
+  }
+
+  s.categories.forEach((c) => {
+    const over = Math.max(0, (c.used || 0) - (c.quota || 0));
+    const note = [
+      c.quota > 0 ? `${c.used_text} из ${c.quota_text}` : c.used_text,
+      c.cost > 0 && over > 0 && c.quota > 0
+        ? `сверх пакета ${fmtCatAmount(c.key, over)}` : '',
+      c.cost <= 0 ? 'покрыто пакетом' : '',
+    ].filter(Boolean).join(' · ');
+    rows.push({ label: c.label, note, cost: c.cost, cls: c.cost > 0 ? 'danger' : 'good' });
+  });
+
+  // Роуминг деньгами уже сидит внутри категорий, поэтому он не строка, а
+  // сноска: отдельной строкой он удваивал бы итог.
+  (s.addons || []).forEach((a) => {
+    rows.push({ label: a.service, note: 'опция, от тарифа не зависит', cost: a.cost });
+  });
+  if (s.other_cost > 0.5) {
+    rows.push({ label: 'Прочие начисления', note: 'разовые услуги, детализация, доставка счёта',
+      cost: s.other_cost });
+  }
+
+  const sum = rows.reduce((acc, r) => acc + r.cost, 0);
+
+  return `<div class="bill-flow">
+    ${rows.map((r) => `<div class="bill-row">
+      <span class="bill-label" title="${esc(r.label)}">${esc(r.label)}</span>
+      <span class="bill-note">${esc(r.note || '')}</span>
+      <span class="bill-track"><span class="bill-fill fill-${r.cls || 'accent'}"
+        style="width:${(s.total > 0 ? Math.min(100, (r.cost / s.total) * 100) : 0).toFixed(1)}%"></span></span>
+      <span class="bill-cost${r.cost > 0 ? '' : ' txt-muted'}">${money(r.cost)}</span>
+    </div>`).join('')}
+    <div class="bill-row bill-total">
+      <span class="bill-label">Итого за ${esc(monthNom(s.month))}</span>
+      <span class="bill-note">${esc([
+        (s.roaming_cost || 0) > 0 ? `в том числе роуминг ${money(s.roaming_cost)}` : '',
+        pay.company_pays !== undefined
+          ? `платит компания ${money(pay.company_pays)} · сотрудник ${money(pay.employee_pays)}` : '',
+      ].filter(Boolean).join(' · '))}</span>
+      <span class="bill-track"></span>
+      <span class="bill-cost">${money(s.total)}</span>
+    </div>
+    ${Math.abs(s.total - sum) > 1 ? `<div class="panel-hint warn">Сумма показанных строк
+      ${money(sum)} расходится с «Итого начислено» из счёта на
+      ${money(Math.abs(s.total - sum))} — на экране сумма из счёта.</div>` : ''}
+    ${opts.hint === false ? '' : `<div class="panel-hint">Полоса — доля строки в счёте номера.
+      «Покрыто пакетом» значит, что объём израсходован, но денег за него не списано.</div>`}
+  </div>`;
+}
+
+/**
+ * Кто за что платит — по корзинам, только чтение.
+ *
+ * Настройка плательщика живёт в панели «⚙» карточки, а здесь ответ на другой
+ * вопрос: почему счёт разделился именно так. Причина (`reason`) приходит с
+ * сервера — «правило по услуге», «командировка (Китай)», «по умолчанию».
+ */
+function payerBreakdown(s) {
+  const buckets = ((s.payment || {}).buckets || []).filter((b) => b.amount > 0);
+  if (!buckets.length) return '';
+  return `<div class="payer-split">
+    <div class="panel-title">Кто платит</div>
+    ${buckets.map((b) => `<div class="payer-split-row">
+      <span class="payer-split-label">${esc(b.label)}</span>
+      <span class="payer-split-amount">${money(b.amount)}</span>
+      <span class="pill pill-${b.payer === 'company' ? 'good'
+        : b.payer === 'employee' ? 'danger' : 'accent'}">${payerText(b.payer)}</span>
+      <span class="payer-split-why">${esc(b.reason || '')}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
+/** Объём в единицах категории: минуты, ГБ/МБ, штуки. Как на сервере. */
+function fmtCatAmount(key, value) {
+  if (key === 'internet') return value >= 1024 ? fmtGb(value) : `${Math.round(value)} МБ`;
+  if (key === 'voice') return `${Math.round(value)} мин`;
+  return `${Math.round(value)} шт`;
+}
+
 /* ── Панель «Подробнее» внутри карточки ──────────────────────────────────── */
 function cardDetailsPanel(s) {
   const rec = s.recommendation;
-  const top = s.services.filter((x) => x.cost > 0).slice(0, 6);
+  const top = (s.services || []).filter((x) => x.cost > 0).slice(0, 6);
   const hist = (s.history || []).slice(-6);
 
   return `<div class="panel-grid">
@@ -2106,8 +2265,13 @@ function cardDetailsPanel(s) {
       <ul class="rec-list">${rec.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
     </div>
 
+    <div class="panel-section panel-wide">
+      <div class="panel-title">За что платим в ${esc(monthNom(s.month))}</div>
+      ${billBreakdown(s)}
+    </div>
+
     <div class="panel-section">
-      <div class="panel-title">Потребление за ${esc(formatMonth(s.month))}</div>
+      <div class="panel-title">Потребление за ${esc(monthNom(s.month))}</div>
       <div class="limits-list">${s.categories.map((c) => limitRow(s, c)).join('')}</div>
     </div>
 
@@ -2253,7 +2417,7 @@ function tariffPicker(s, alts, rec) {
     <span><i class="seg-sms"></i>SMS сверх пакета</span>
     <span><i class="seg-net"></i>интернет сверх пакета</span>
   </div>
-  <div class="panel-hint">Расчёт по фактическому потреблению за ${esc(formatMonth(s.month))}.
+  <div class="panel-hint">Расчёт по фактическому потреблению за ${esc(monthNom(s.month))}.
     Опции, не зависящие от тарифа, в сравнение не входят.</div>`;
 }
 
@@ -2381,8 +2545,8 @@ function openModal(number) {
         </div>
         <div class="limit-advice">
           ${s.overpayment > 0
-            ? `Расход за ${esc(formatMonth(s.month))} превысил лимит на ${money(s.overpayment)}.`
-            : `Расход за ${esc(formatMonth(s.month))} укладывается в лимит.`}
+            ? `Расход за ${esc(monthNom(s.month))} превысил лимит на ${money(s.overpayment)}.`
+            : `Расход за ${esc(monthNom(s.month))} укладывается в лимит.`}
           ${s.avg_total ? ` Средний расход по истории — ${money(s.avg_total)}.` : ''}
           ${s.chronic ? ' Превышение систематическое, а не разовое.' : ''}
         </div>
@@ -2398,15 +2562,11 @@ function openModal(number) {
   h += `<section class="sm-section">
     ${tariffPicker(s, rec.alternatives || [], rec)}</section>`;
 
-  const other = s.total - s.categories.reduce((sum, c) => sum + c.cost, 0) - s.plan_fee;
+  // Тот же разбор, что и в карточке (billBreakdown): состав счёта считается
+  // в одном месте, иначе карточка и модалка начинают показывать разные суммы.
   h += `<section class="sm-section"><div class="sm-title">Из чего сложился счёт</div>
-    <div class="money-flow">
-      ${s.plan_fee > 0 ? flowRow('', 'Абонентская плата', '', s.plan_fee, s.total) : ''}
-      ${s.categories.map((c) => flowRow(c.icon, c.label, c.used_text, c.cost, s.total)).join('')}
-      ${other > 0.5 ? flowRow('', 'Опции и прочие услуги', '', other, s.total) : ''}
-    </div>
-    ${s.discrepancy ? `<div class="panel-hint warn">Сумма строк отличается от «Итого начислено»
-      на ${money(Math.abs(s.discrepancy))}. Показана сумма из счёта.</div>` : ''}
+    ${billBreakdown(s)}
+    ${payerBreakdown(s)}
   </section>`;
 
   if (s.history && s.history.length > 1) {
@@ -2429,17 +2589,6 @@ function openModal(number) {
 
   $('subModalContent').innerHTML = h;
   $('subModal').hidden = false;
-}
-
-function flowRow(icon, label, used, cost, total) {
-  const pct = total > 0 ? Math.max(0, (cost / total) * 100) : 0;
-  return `<div class="money-flow-row">
-    <span class="money-flow-ico">${icon}</span>
-    <span class="money-flow-label">${esc(label)}</span>
-    <span class="money-flow-used">${esc(used)}</span>
-    <span class="money-flow-track"><span class="money-flow-fill" style="width:${pct.toFixed(1)}%"></span></span>
-    <span class="money-flow-cost">${money(cost)}</span>
-  </div>`;
 }
 
 function closeOverlay(id) {
@@ -3612,6 +3761,12 @@ function fmtGb(mb) {
 function formatMonth(month) {
   const m = /^(\d{4})-(\d{2})$/.exec(String(month || ''));
   return m ? `${MONTH_NAMES[Number(m[2]) - 1]} ${m[1]}` : String(month || '');
+}
+
+/** Месяц в именительном падеже — для оборота «за июнь 2026». */
+function monthNom(month) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(month || ''));
+  return m ? `${MONTH_NOM[Number(m[2]) - 1]} ${m[1]}` : String(month || '');
 }
 
 function shortMonth(month) {
