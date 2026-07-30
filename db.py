@@ -86,8 +86,9 @@ import re
 import shutil
 import subprocess
 import threading
+from concurrent import futures
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -318,16 +319,15 @@ def _spawn_run(sql: str, *, database: str | None = None, tuples: bool = False,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  ЖИВОЙ СЕАНС psql
+#  ЖИВЫЕ СЕАНСЫ psql
 #
 #  ЗАЧЕМ. Запуск процесса psql стоит ~100 мс: развернуть процесс, подключиться
 #  к серверу, разобрать пароль, договориться о кодировке. Само чтение при этом
 #  занимает 1–2 мс. Главный экран собирается из 22 запросов — то есть 2,4 с
 #  ожидания, из которых 2,3 с уходит НЕ на работу с данными.
 #
-#  Поэтому psql запускается ОДИН раз на всё приложение и живёт с открытыми
-#  каналами: SQL уходит ему в stdin, ответ читается из stdout. Тот же экран
-#  собирается за 60 мс.
+#  Поэтому psql запускается заранее и живёт с открытыми каналами: SQL уходит
+#  ему в stdin, ответ читается из stdout. Тот же экран собирается за 60 мс.
 #
 #  КАК ПОНЯТЬ, ЧТО ОТВЕТ ЗАКОНЧИЛСЯ. Процесс не завершается, поэтому «читать
 #  до конца потока» больше нельзя. После каждого скрипта дописываем два
@@ -356,23 +356,43 @@ _SESSION_TIMEOUT = 600.0
 
 
 class _Session:
-    """Один живой psql на всё приложение. Обращения к нему сериализованы."""
+    """Один живой psql. Внутри строго последовательный: канал в процесс один.
+
+    Одновременную работу даёт не сеанс, а пул: каждому потоку выдаётся свой
+    сеанс (см. _Pool ниже).
+    """
 
     def __init__(self) -> None:
         self._proc: subprocess.Popen[bytes] | None = None
-        self._out: queue.Queue[str | None] = queue.Queue()
-        self._err: queue.Queue[str | None] = queue.Queue()
+        # По каналу передаётся не строка, а ЦЕЛЫЙ ответ. Почему — ниже.
+        self._out: queue.Queue[list[str] | None] = queue.Queue()
+        self._err: queue.Queue[list[str] | None] = queue.Queue()
 
     # --- жизненный цикл ---------------------------------------------------
     def _pump(self, stream: Any, into: queue.Queue) -> None:
-        """Отдельный поток на канал: читать нельзя лениво, иначе psql встанет
-        на переполненном буфере вывода ровно в тот момент, когда мы ждём
-        ответа на следующий запрос."""
+        """Читать канал и отдавать ответ ЦЕЛИКОМ, а не по строке.
+
+        Поток нужен потому, что читать лениво нельзя: psql встанет на
+        переполненном буфере вывода ровно тогда, когда мы ждём ответа.
+
+        А вот собирать ответ надо здесь же, до передачи. Построчная передача
+        стоила дороже самой базы: отчёт на сотню абонентов — это 6000 строк
+        ответа, то есть 6000 захватов замка очереди. По профилю на них уходило
+        58% времени сборки экрана — 1,1 с из 1,9 с. Маркер конца мы и так
+        узнаём здесь, так что отдаём разом весь блок: одна передача на запрос
+        вместо сотни.
+        """
+        lines: list[str] = []
         try:
-            for line in iter(stream.readline, b""):
-                into.put(_decode_line(line))
+            for raw in iter(stream.readline, b""):
+                line = _decode_line(raw)
+                if _EOC in line:
+                    into.put(lines)
+                    lines = []
+                else:
+                    lines.append(line)
         finally:
-            into.put(None)
+            into.put(None)          # канал закрылся: psql завершился
 
     def _start(self) -> bool:
         cmd = [psql_path(),
@@ -383,7 +403,7 @@ class _Session:
         try:
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, env=_env(), bufsize=0)
+                stderr=subprocess.PIPE, env=_env(), bufsize=-1)
         except OSError:
             self._proc = None
             return False
@@ -422,18 +442,11 @@ class _Session:
 
     # --- обмен ------------------------------------------------------------
     def _drain(self, source: queue.Queue) -> list[str] | None:
-        """Читать канал до маркера. None — маркера не дождались, сеанс мёртв."""
-        lines: list[str] = []
-        while True:
-            try:
-                line = source.get(timeout=_SESSION_TIMEOUT)
-            except queue.Empty:
-                return None
-            if line is None:          # канал закрылся: psql завершился
-                return None
-            if _EOC in line:
-                return lines
-            lines.append(line)
+        """Дождаться ответа целиком. None — не дождались, сеанс мёртв."""
+        try:
+            return source.get(timeout=_SESSION_TIMEOUT)
+        except queue.Empty:
+            return None
 
     def _exchange(self, script: str) -> tuple[int, str, str]:
         proc = self._proc
@@ -471,7 +484,68 @@ class _Session:
         return self._exchange(script)
 
 
-_session = _Session()
+# ═══════════════════════════════════════════════════════════════════════════
+#  ПУЛ СЕАНСОВ
+#
+#  ЗАЧЕМ. Канал в один psql — один, и два потока в него писать не могут:
+#  ответы перемешаются. Пока сеанс был один на всё приложение, любой запрос
+#  ждал, пока освободится предыдущий, — а веб-сервер у нас многопоточный
+#  (ThreadingHTTPServer, поток на запрос). Открыть настройки, пока грузится
+#  отчёт, значило встать в очередь за ним.
+#
+#  Поэтому сеансов несколько. Поток берёт свободный, работает и возвращает.
+#  Каждый сеанс — свой процесс psql и своё соединение с сервером, поэтому
+#  запросы разных потоков идут по-настоящему одновременно.
+#
+#  ЧЕГО ДЕЛАТЬ НЕЛЬЗЯ. Раскладывать одну транзакцию по разным сеансам. У нас
+#  этого и не бывает: transaction() копит команды в буфер и отдаёт их ОДНИМ
+#  скриптом — то есть в один сеанс, целиком (см. блок «ТРАНЗАКЦИИ»).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Сколько psql держать открытыми. Больше числа одновременных запросов смысла
+# нет, а каждый сеанс — это ещё одно соединение на сервере базы.
+POOL_SIZE = max(1, int(os.environ.get("MEGAFON_DB_POOL", "4")))
+
+
+class _Pool:
+    """Свободные сеансы psql. Занятые в пуле не лежат — они на руках у потока."""
+
+    def __init__(self, size: int) -> None:
+        self._idle: list[_Session] = []
+        self._lock = threading.Lock()
+        # Пропускает не больше `size` потоков разом. Остальные ждут здесь, а
+        # не создают новые процессы: иначе всплеск запросов поднял бы psql
+        # столько же, сколько пришло людей.
+        self._slots = threading.Semaphore(size)
+
+    @contextmanager
+    def take(self) -> Iterator[_Session]:
+        self._slots.acquire()
+        session: _Session | None = None
+        try:
+            with self._lock:
+                session = self._idle.pop() if self._idle else _Session()
+            yield session
+        finally:
+            if session is not None:
+                # Мёртвый сеанс в пул не возвращаем: следующий, кто его
+                # возьмёт, получит ошибку на ровном месте. Пусть лучше
+                # поднимется новый.
+                if session.alive():
+                    with self._lock:
+                        self._idle.append(session)
+                else:
+                    session.close()
+            self._slots.release()
+
+    def close(self) -> None:
+        with self._lock:
+            idle, self._idle = self._idle, []
+        for session in idle:
+            session.close()
+
+
+_pool = _Pool(POOL_SIZE)
 
 
 def _run(sql: str, *, database: str | None = None, tuples: bool = False,
@@ -484,9 +558,9 @@ def _run(sql: str, *, database: str | None = None, tuples: bool = False,
     лежать только строки результата. Смешай их — и текст ошибки поедет в
     разбор JSON вместо данных.
 
-    Обычные запросы идут в живой сеанс (см. блок выше). Отдельный процесс
-    поднимается только там, где сеанс не годится: под другим пользователем
-    или в другую базу — то есть в установщике.
+    Обычные запросы идут в живой сеанс из пула. Отдельный процесс поднимается
+    только там, где сеанс не годится: под другим пользователем или в другую
+    базу — то есть в установщике.
 
     `tuples`, `stop_on_error` и `quiet` в сеансе не нужны: он всегда работает
     в режиме «-t -A», а атомарность даёт BEGIN/COMMIT. Параметры оставлены
@@ -498,15 +572,48 @@ def _run(sql: str, *, database: str | None = None, tuples: bool = False,
                           stop_on_error=stop_on_error, quiet=quiet,
                           user=user, password=password)
 
-    with _LOCK:
-        rc, out, err = _session.run(sql, one_transaction=one_transaction)
-    if rc != 0 and not _session.alive():
+    with _pool.take() as session:
+        rc, out, err = session.run(sql, one_transaction=one_transaction)
+        broken = not session.alive()
+    if rc != 0 and broken:
         # Сеанс отвалился (перезапустили сервер, оборвалась сеть). Один раз
         # пробуем по-старому — так единичный обрыв не превращается в ошибку
         # на экране, а следующий запрос поднимет сеанс заново.
         return _spawn_run(sql, tuples=tuples, one_transaction=one_transaction,
                           stop_on_error=stop_on_error, quiet=quiet)
     return rc, out, err
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ОДНОВРЕМЕННОЕ ЧТЕНИЕ
+# ═══════════════════════════════════════════════════════════════════════════
+
+def parallel(*calls: Callable[[], Any]) -> list[Any]:
+    """Выполнить независимые ЧТЕНИЯ одновременно и вернуть их результаты по
+    порядку. Исключение любого из них выбрасывается наружу как своё.
+
+    ЗАЧЕМ. Отчёт за месяц собирается из десятка справочников, между собой
+    никак не связанных: тарифы, статусы, правила, командировки. По очереди
+    это сумма их времён, разом — время самого долгого.
+
+    ТОЛЬКО ЧТЕНИЕ И ТОЛЬКО ВНЕ transaction(). Буфер транзакции живёт в
+    thread-local: команда, отданная из рабочего потока, в него не попадёт и
+    уедет в базу отдельно, мимо всей атомарности. Поэтому — прямой запрет,
+    а не «мы так не делаем».
+    """
+    if getattr(_state, "buffer", None) is not None:
+        raise DbError("parallel() внутри transaction() не работает: буфер "
+                      "транзакции у каждого потока свой. Соберите данные до "
+                      "блока или выполните запросы по очереди.")
+    if not calls:
+        return []
+    if len(calls) == 1:
+        return [calls[0]()]
+
+    workers = min(len(calls), POOL_SIZE)
+    with futures.ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="db") as pool:
+        return [f.result() for f in [pool.submit(c) for c in calls]]
 
 
 # Метки, которыми psql помечает суть ошибки. Русские — потому что свои
@@ -566,16 +673,30 @@ def _literal(value: Any) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
-def _render(sql: str, params: Sequence[Any] = ()) -> str:
-    """Подставить параметры вместо «?».
+# Разобранные шаблоны запросов: текст → куски между «?».
+#
+# ЗАЧЕМ КЭШ. Разбор идёт посимвольно и стоит ~35 мкс на запрос. Для одного
+# SELECT это ничто, но заливка счёта прогоняет через execute_many тысячи
+# ОДИНАКОВЫХ по тексту команд — и весь разбор повторяется на каждой строке.
+# Разбираем один раз, дальше остаётся только склеить куски со значениями.
+#
+# Длинные тексты не кэшируем: это разовые скрипты (схема, миграции), второй
+# раз тот же текст не придёт, а в памяти он останется.
+_TEMPLATE_CACHE: dict[str, tuple[str, ...]] = {}
+_TEMPLATE_LOCK = threading.Lock()
+_TEMPLATE_MAX_SQL = 4096
+_TEMPLATE_MAX_ENTRIES = 500
 
-    Разбираем текст запроса, а не заменяем вслепую: «?» внутри строкового
-    литерала, внутри кавычек-идентификаторов и внутри комментария — это
-    просто символ, а не место для параметра.
+
+def _split_template(sql: str) -> tuple[str, ...]:
+    """Разбить текст запроса по «?» на куски: между ними встанут значения.
+
+    Разбираем текст, а не режем вслепую: «?» внутри строкового литерала,
+    внутри кавычек-идентификаторов и внутри комментария — это просто символ,
+    а не место для параметра.
     """
-    params = list(params or ())
-    out: list[str] = []
-    used = 0
+    parts: list[str] = []
+    chunk: list[str] = []
     i, n = 0, len(sql)
     while i < n:
         ch = sql[i]
@@ -590,32 +711,65 @@ def _render(sql: str, params: Sequence[Any] = ()) -> str:
                     j += 1
                     break
                 j += 1
-            out.append(sql[i:j])
+            chunk.append(sql[i:j])
             i = j
             continue
         if sql.startswith("--", i):
             j = sql.find("\n", i)
             j = n if j < 0 else j
-            out.append(sql[i:j])
+            chunk.append(sql[i:j])
             i = j
             continue
         if sql.startswith("/*", i):
             j = sql.find("*/", i)
             j = n if j < 0 else j + 2
-            out.append(sql[i:j])
+            chunk.append(sql[i:j])
             i = j
             continue
         if ch == "?":
-            if used >= len(params):
-                raise DbError(f"Параметров меньше, чем «?» в запросе:\n{sql[:300]}")
-            out.append(_literal(params[used]))
-            used += 1
+            parts.append("".join(chunk))
+            chunk = []
             i += 1
             continue
-        out.append(ch)
-        i += 1
-    if used != len(params):
-        raise DbError(f"Передано {len(params)} параметров, а «?» в запросе {used}:\n{sql[:300]}")
+        # Обычный текст копируем куском до ближайшего интересного символа,
+        # а не по одному символу: на длинных запросах это заметно быстрее.
+        j = i + 1
+        while j < n and sql[j] not in "'\"?-/":
+            j += 1
+        chunk.append(sql[i:j])
+        i = j
+    parts.append("".join(chunk))
+    return tuple(parts)
+
+
+def _template(sql: str) -> tuple[str, ...]:
+    if len(sql) > _TEMPLATE_MAX_SQL:
+        return _split_template(sql)
+    cached = _TEMPLATE_CACHE.get(sql)
+    if cached is not None:
+        return cached
+    parts = _split_template(sql)
+    with _TEMPLATE_LOCK:
+        if len(_TEMPLATE_CACHE) >= _TEMPLATE_MAX_ENTRIES:
+            _TEMPLATE_CACHE.clear()
+        _TEMPLATE_CACHE[sql] = parts
+    return parts
+
+
+def _render(sql: str, params: Sequence[Any] = ()) -> str:
+    """Подставить параметры вместо «?»."""
+    parts = _template(sql)
+    expected = len(parts) - 1
+    params = tuple(params or ())
+    if len(params) != expected:
+        raise DbError(f"Передано {len(params)} параметров, "
+                      f"а «?» в запросе {expected}:\n{sql[:300]}")
+    if not expected:
+        return parts[0]
+    out = [parts[0]]
+    for value, tail in zip(params, parts[1:]):
+        out.append(_literal(value))
+        out.append(tail)
     return "".join(out)
 
 
@@ -680,11 +834,17 @@ def _affected(out: str) -> int:
     return total
 
 
+# ЗАМОК СНЯТ. Пока на каждую команду поднимался свой psql, запись
+# сериализовалась глобальным _LOCK. Теперь исключительный доступ даёт сам
+# пул: сеанс на руках у потока, и никто другой в его канал не пишет. Держать
+# сверху ещё и общий замок значило бы вернуть очередь, ради ухода от которой
+# пул и заводился.
+
+
 def run_script(sql: str, *, one_transaction: bool = True) -> None:
     """Выполнить готовый SQL-скрипт. По умолчанию — одной транзакцией."""
     connect()
-    with _LOCK:
-        rc, out, err = _run(sql, one_transaction=one_transaction)
+    rc, out, err = _run(sql, one_transaction=one_transaction)
     if rc != 0:
         _fail(sql, err or out)
 
@@ -701,16 +861,20 @@ def execute(sql: str, params: Sequence[Any] = ()) -> int:
         buffer.append(statement)
         return 0
     connect()
-    with _LOCK:
-        rc, out, err = _run(statement, quiet=False)
+    rc, out, err = _run(statement, quiet=False)
     if rc != 0:
         _fail(statement, err or out)
     return _affected(out)
 
 
-# Сколько команд отправляем за один запуск psql. Ограничение чисто
-# практическое: скрипт на миллион строк незачем держать в памяти целиком.
-BATCH = 500
+# Сколько команд отправляем за один заход. Ограничение чисто практическое:
+# скрипт на миллион строк незачем держать в памяти целиком.
+#
+# Порог поднят с 500: раньше каждый пакет стоил запуска процесса, и большой
+# пакет экономил ощутимо больше, чем стоил по памяти. Теперь заход в живой
+# сеанс стоит миллисекунду, а вот транзакция на полтора миллиона знаков уже
+# заметна — выгоднее резать чаще.
+BATCH = 1000
 
 
 def execute_many(sql: str, rows: Iterable[Sequence[Any]]) -> None:
@@ -1422,11 +1586,11 @@ def _server_alive() -> bool:
 
 
 def close() -> None:
-    """Погасить живой сеанс psql и забыть о проверке схемы."""
+    """Погасить живые сеансы psql и забыть о проверке схемы."""
     global _ready
     with _LOCK:
         _ready = False
-        _session.close()
+        _pool.close()
 
 
 def ping() -> str:
