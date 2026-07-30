@@ -25,6 +25,7 @@ domain.py — прикладная логика («что означают да�
 
 from __future__ import annotations
 
+import functools
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -186,12 +187,24 @@ def squash(text: Any) -> str:
     return " ".join(str(text or "").lower().replace("ё", "е").split())
 
 
+@functools.lru_cache(maxsize=8192)
 def include_of(service: str) -> includes.Include:
     """Правило из includes.INCLUDES, под которое подошла строка счёта.
 
     Единственная точка, где название услуги превращается в решение. Всё
     остальное (корзина, плательщик, «это абонплата?») — производные от неё,
     поэтому разъехаться они не могут.
+
+    ПОЧЕМУ С КЭШЕМ. Названий услуг в счёте несколько десятков, а строк —
+    десятки тысяч, и каждая спрашивает про свою корзину по четыре раза
+    (is_plan_fee, is_roaming, is_addon, bucket_of). Без кэша это сорок тысяч
+    проходов по таблице с поиском подстрок — почти половина времени сборки
+    отчёта. С кэшем таблица честно просматривается по разу на КАЖДОЕ
+    РАЗЛИЧНОЕ название, дальше берётся готовый ответ.
+
+    Таблица правится в исходниках, на ходу не меняется, поэтому кэш не
+    протухает. Если когда-нибудь понадобится менять её из интерфейса —
+    сбрасывать через include_of.cache_clear().
     """
     return includes.match(squash(service))
 
@@ -217,8 +230,13 @@ def is_addon(service: str) -> bool:
     return include_of(service).bucket == "options"
 
 
+@functools.lru_cache(maxsize=4096)
 def is_outgoing(service: str) -> bool:
-    """Исходящая ли услуга. Входящие вызовы и SMS пакет не расходуют."""
+    """Исходящая ли услуга. Входящие вызовы и SMS пакет не расходуют.
+
+    Кэш по той же причине, что и у include_of: названий несколько десятков,
+    а строк счёта — десятки тысяч.
+    """
     s = squash(service)
     if "входящ" in s:
         return False
@@ -235,8 +253,13 @@ def is_roaming(service: str) -> bool:
     return include_of(service).bucket == "roaming"
 
 
+@functools.lru_cache(maxsize=8192)
 def categorize(service: str, category: str = "", service_type: str = "", unit: str = "") -> str:
-    """Отнести услугу к корзине voice / internet / sms / other."""
+    """Отнести услугу к корзине voice / internet / sms / other.
+
+    Кэшируется: разных сочетаний «название + единица» в счёте несколько
+    десятков, а зовут её на каждую строку.
+    """
     text = squash(" ".join(x for x in (service, category, service_type) if x))
     if is_plan_fee(text) or is_meta(text):
         return "other"
@@ -688,11 +711,55 @@ def _fits_internet_only(usage: dict[str, float]) -> bool:
             and usage.get("internet_mb", 0.0) > 0.0)
 
 
-def compare_tariffs(usage: dict[str, float], catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Оценка месяца на каждом подходящем тарифе, от дешёвого к дорогому."""
+def _month_total_on(tariff: dict[str, Any], usage: dict[str, float]) -> float:
+    """Во сколько встал бы месяц на этом тарифе. Только сумма, без разбора.
+
+    Обрезанная версия estimate_cost: те же формулы, но ничего не округляется
+    и не складывается в словарь. Нужна, чтобы отсортировать каталог, не
+    собирая полный разбор по каждому тарифу.
+    """
+    over_min = max(0.0, max(0.0, usage.get("voice_min", 0.0)) - tariff["minutes"])
+    over_sms = max(0.0, max(0.0, usage.get("sms_cnt", 0.0)) - tariff["sms"])
+    over_mb = 0.0 if tariff["unlimited_internet"] else max(
+        0.0, max(0.0, usage.get("internet_mb", 0.0)) - tariff["internet_mb"])
+    return (tariff["fee"] + over_min * tariff["rate_min"]
+            + over_sms * tariff["rate_sms"] + over_mb * tariff["rate_mb"])
+
+
+# Сколько вариантов показываем в подборе тарифа. Больше пяти в карточку не
+# помещается, а считать «на всякий случай» весь каталог — это и есть та
+# работа, которую отчёт делал зря.
+TARIFF_CHOICES = 5
+
+
+def compare_tariffs(usage: dict[str, float], catalog: list[dict[str, Any]],
+                    current_id: Any = None) -> list[dict[str, Any]]:
+    """Оценка месяца на подходящих тарифах, от дешёвого к дорогому.
+
+    ПОЧЕМУ НЕ ВЕСЬ КАТАЛОГ. Наружу уходит пятёрка лучших (alternatives) плюс
+    оценка ТЕКУЩЕГО тарифа — остальное вызывающий код не смотрит. А каталог
+    это полсотни комбинаций, и на каждую собирался словарь из тринадцати
+    полей с семью округлениями: полсотни словарей на номер, из которых
+    выживало шесть. На парке в две тысячи номеров — сто тысяч выброшенных
+    словарей на каждую сборку отчёта.
+
+    Теперь сортируем по дешёвой сумме (несколько умножений), а полный разбор
+    собираем только для тех, кто кому-то нужен. Порядок и содержимое
+    результата от этого не меняются.
+    """
     kind = "internet" if _fits_internet_only(usage) else "voice"
     candidates = [t for t in catalog if t["kind"] == kind] or catalog
-    estimates = [estimate_cost(t, usage) for t in candidates]
+
+    ranked = sorted(candidates, key=lambda t: (_month_total_on(t, usage), t["fee"]))
+    keep = ranked[:TARIFF_CHOICES]
+    if current_id is not None:
+        # Текущий тариф нужен всегда, даже если он далеко не в лидерах:
+        # по нему считается «сколько платим сейчас».
+        current = next((t for t in ranked if t["id"] == current_id), None)
+        if current is not None and current not in keep:
+            keep.append(current)
+
+    estimates = [estimate_cost(t, usage) for t in keep]
     estimates.sort(key=lambda e: (e["total"], e["fee"]))
     return estimates
 
@@ -888,7 +955,8 @@ def build_recommendation(
     Опираемся на среднее по истории (avg_tariff_cost), если она есть: один
     аномальный месяц не должен менять тариф.
     """
-    estimates = compare_tariffs(usage, catalog)
+    estimates = compare_tariffs(usage, catalog,
+                                current_id=current["id"] if current else None)
     basis = avg_tariff_cost if (avg_tariff_cost and avg_tariff_cost > 0) else actual_tariff_cost
     basis = round2(max(0.0, basis))
 
