@@ -221,7 +221,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   on('searchInput', 'input', debounce((e) => {
     state.search = e.target.value.trim().toLowerCase();
-    renderUsers();
+    renderUsers(true);
   }, 180));
 
   bindFilters();
@@ -236,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     $$('.sort').forEach((b) => { b.classList.remove('active'); b.removeAttribute('data-dir'); });
     btn.classList.add('active');
     btn.dataset.dir = state.sortDir;
-    renderUsers();
+    renderUsers(true);
   }));
 
   on('gridView', 'click', () => setView('grid'));
@@ -294,7 +294,7 @@ function bindFilters() {
       $$('.filter').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       state.filter = btn.dataset.filter;
-      renderUsers();
+      renderUsers(true);
     });
   });
 }
@@ -389,6 +389,7 @@ async function uploadFile(file, kind) {
       state.filter = 'all'; state.sort = 'waste'; state.sortDir = 'desc';
       state.openPanels = {};
       resetFilterButtons();
+      resetCardBatch();
     } else if (kind === 'roster') {
       state.hasRoster = true;
     }
@@ -429,6 +430,8 @@ function uploadSummary(data, kind, fileName) {
 async function loadMonth(month) {
   if (!month || month === state.month) return;
   showLoading('Загрузка периода…', 50);
+  // Другой период — другой список, показываем его с начала.
+  resetCardBatch();
   try {
     applyView(await getJSON(`/api/subscribers?month=${encodeURIComponent(month)}`));
     hideLoading();
@@ -769,21 +772,36 @@ function renderUsageTotals() {
  * — иначе пустое место читается как поломка.
  * ═════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Блоки расширенной аналитики: id блока → чем рисуется.
+ *
+ * Таблица нужна, чтобы НЕ РИСОВАТЬ ВЫКЛЮЧЕННОЕ. Каждый блок проходит по всему
+ * парку номеров и собирает свою разметку; при отключённом блоке эта работа
+ * уходила в никуда — элемент всё равно скрыт через applyWidgetVisibility.
+ * На сотне номеров разница незаметна, на двух тысячах это четырнадцать
+ * лишних проходов и сотни килобайт разметки в скрытых блоках.
+ */
+const EXTRA_WIDGETS = [
+  ['exTrips', renderExTrips],
+  ['exOversized', renderExOversized],
+  ['exPayers', renderExPayers],
+  ['exStructure', renderExStructure],
+  ['exDistribution', renderExDistribution],
+  ['exPareto', renderExPareto],
+  ['exTopCost', renderExTopCost],
+  ['exIdle', renderExIdle],
+  ['exLimits', renderExLimits],
+  ['exRoaming', renderExRoaming],
+  ['exAnomalies', renderExAnomalies],
+  ['exPositions', renderExPositions],
+  ['exHeat', renderExHeat],
+  ['exMatrix', renderExMatrix],
+];
+
 function renderExtras() {
-  renderExTrips();
-  renderExOversized();
-  renderExPayers();
-  renderExStructure();
-  renderExDistribution();
-  renderExPareto();
-  renderExTopCost();
-  renderExIdle();
-  renderExLimits();
-  renderExRoaming();
-  renderExAnomalies();
-  renderExPositions();
-  renderExHeat();
-  renderExMatrix();
+  EXTRA_WIDGETS.forEach(([id, draw]) => {
+    if (widgetOn(id)) draw();
+  });
 }
 
 /* ── Примитивы ───────────────────────────────────────────────────────────── */
@@ -1870,7 +1888,12 @@ function renderTariffCompare() {
 }
 
 /* ── Карточки абонентов ──────────────────────────────────────────────────── */
-function renderUsers() {
+/**
+ * `fresh` — список начинается заново, с первой порции (поиск, фильтр,
+ * сортировка). Без него перерисовка сохраняет прежний размер списка,
+ * см. drawCardBatch.
+ */
+function renderUsers(fresh = false) {
   const grid = $('usersGrid');
   if (!grid) return;
 
@@ -1939,57 +1962,185 @@ function renderUsers() {
 
   if (!list.length) {
     grid.innerHTML = '<div class="empty-state">По выбранному фильтру абонентов нет.</div>';
+    grid.dataset.drawn = '0';
     return;
   }
 
-  grid.innerHTML = list.map(renderCard).join('');
+  drawCardBatch(grid, true, fresh);
   bindCardActions(grid);
 }
 
+/* ── Карточки рисуются порциями ───────────────────────────────────────────────
+ *
+ * ПОЧЕМУ. Одна карточка — это 3,5 КБ разметки. Сто карточек ещё терпимо, а на
+ * реальном счёте их без малого две тысячи: семь мегабайт HTML в одном
+ * присваивании innerHTML. Браузер на это время замирает целиком — и именно
+ * так выглядела «загрузка отчёта».
+ *
+ * Рисуем первую порцию, а дальше догружаем по мере прокрутки: в конце списка
+ * стоит маячок, и когда он попадает в видимую область, добавляется следующая
+ * порция. Пользователь всё равно не может смотреть на две тысячи карточек
+ * сразу, а прокрутка догоняет его быстрее, чем он успевает доскроллить.
+ *
+ * Порции добавляются через insertAdjacentHTML, а не переприсваиванием
+ * innerHTML: переприсваивание уничтожило бы уже нарисованные карточки вместе
+ * с раскрытыми в них панелями.
+ * ─────────────────────────────────────────────────────────────────────────── */
+const CARD_BATCH = 24;
+
+/**
+ * Нарисовать очередную порцию списка. Общий механизм: им живут и карточки
+ * абонентов, и список номеров в настройках.
+ *
+ * `host.dataset.drawn` хранит, сколько уже нарисовано, — состояние держится на
+ * самом элементе, поэтому две разные порционные раскладки на экране друг другу
+ * не мешают.
+ */
+function batchList(host, items, renderItem, opts = {}) {
+  const { batch = CARD_BATCH, more = null, after = null,
+          reset = false, keepDrawn = false } = opts;
+  // Сколько рисуем в ЭТОТ заход. Обычно порцию, но при перерисовке того же
+  // списка — столько же, сколько было нарисовано до неё (см. keepDrawn).
+  let size = batch;
+  if (reset) {
+    // ПЕРЕРИСОВКА НЕ ДОЛЖНА СХЛОПЫВАТЬ СПИСОК.
+    // Человек доскроллил до трёхсотой карточки и поправил там чипс —
+    // сохранение пересобирает отчёт на сервере и перерисовывает весь список.
+    // Без этого на экране оставались бы первые 24 карточки: и его карточка,
+    // и раскрытая в ней панель, и место в прокрутке — всё пропадало.
+    if (keepDrawn) size = Math.max(batch, Number(host.dataset.drawn || 0));
+    host.innerHTML = '';
+    host.dataset.drawn = '0';
+  }
+  const drawn = Number(host.dataset.drawn || 0);
+  const slice = items.slice(drawn, drawn + size);
+  if (!slice.length) return;
+
+  const old = host.querySelector('.cards-sentinel');
+  if (old) old.remove();
+  // insertAdjacentHTML, а не переприсваивание innerHTML: переприсваивание
+  // уничтожило бы уже нарисованное вместе с раскрытыми панелями и введённым
+  // в поля текстом.
+  host.insertAdjacentHTML('beforeend', slice.map(renderItem).join(''));
+  host.dataset.drawn = String(drawn + slice.length);
+  if (after) after(slice, host);
+
+  const left = items.length - (drawn + slice.length);
+  if (left <= 0) return;
+  host.insertAdjacentHTML('beforeend',
+    `<div class="cards-sentinel">${more ? more(left) : `Ещё ${left}…`}</div>`);
+  observeSentinel(host, () => batchList(host, items, renderItem, { ...opts, reset: false }));
+}
+
+/**
+ * Маячок конца списка: пока он в зоне видимости, дорисовывается следующая
+ * порция. IntersectionObserver вместо обработчика прокрутки — он не будит нас
+ * на каждый пиксель и сам разбирается, в какой прокручиваемой области лежит
+ * список (список абонентов в настройках прокручивается внутри модалки).
+ */
+const LIST_OBSERVERS = new WeakMap();
+
+function observeSentinel(host, onHit) {
+  const sentinel = host.querySelector('.cards-sentinel');
+  if (!sentinel || typeof IntersectionObserver !== 'function') return;
+  const old = LIST_OBSERVERS.get(host);
+  if (old) old.disconnect();
+  const obs = new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting)) onHit();
+  }, { rootMargin: '600px 0px' });
+  LIST_OBSERVERS.set(host, obs);
+  obs.observe(sentinel);
+}
+
+/**
+ * `fresh` — начать список заново, с первой порции. Так ведут себя поиск,
+ * фильтр и сортировка: там на экране заведомо другой список и человек ждёт
+ * его начала. Обычная же перерисовка (пересчёт отчёта после сохранения)
+ * восстанавливает список в прежнем размере.
+ */
+/**
+ * Забыть, сколько карточек было нарисовано. Нужно там, где на экран приезжает
+ * ДРУГОЙ список — новый счёт или другой период: восстанавливать прежний размер
+ * там незачем, а прежняя прокрутка всё равно ни на что не указывает.
+ */
+function resetCardBatch() {
+  const grid = $('usersGrid');
+  if (grid) grid.dataset.drawn = '0';
+}
+
+function drawCardBatch(grid, reset = false, fresh = false) {
+  batchList(grid, state.filtered, renderCard, {
+    reset,
+    keepDrawn: !fresh,
+    after: (slice) => restoreOpenPanels(grid, slice),
+    more: (left) => `Ещё ${left} ${plural(left, 'номер', 'номера', 'номеров')} —`
+      + ' дорисуются при прокрутке',
+  });
+}
+
 function bindCardActions(root) {
-  // Кнопки «Подробнее» и «Детально по тарифам» раскрывают панели прямо в карточке.
-  $$('.act', root).forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+  // ОДИН обработчик на весь список вместо четырёх на каждую карточку.
+  // Кнопок «Подробнее» / «Детально по тарифам» / «⚙» на две тысячи карточек
+  // получалось шесть тысяч подписок, и все они создавались заново после
+  // каждой правки фильтра. Событие всплывает до контейнера — там и разбираем.
+  if (root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('.act');
+    const card = e.target.closest('.user-card');
+    if (!card) return;
+
+    if (btn) {
       e.stopPropagation();
-      const card = btn.closest('.user-card');
-      const number = card.dataset.number;
-      const which = btn.dataset.act;
-      const panel = card.querySelector(`.panel-${which}`);
-      const open = !panel.classList.contains('show');
-
-      // Одновременно раскрыта одна панель — иначе карточка становится нечитаемой.
-      $$('.panel', card).forEach((p) => p.classList.remove('show'));
-      $$('.act', card).forEach((b) => b.classList.remove('open'));
-
-      if (open) {
-        const sub = state.subscribers.find((x) => x.number === number);
-        panel.innerHTML = panelHtml(which, sub);
-        if (which === 'chip') bindChipPanel(panel);
-        panel.classList.add('show');
-        btn.classList.add('open');
-        state.openPanels[number] = which;
-      } else {
-        delete state.openPanels[number];
-      }
-    });
+      return toggleCardPanel(card, btn);
+    }
+    // Клик по самой карточке открывает модалку, но не по раскрытой панели:
+    // внутри панели есть свои кнопки и поля.
+    if (e.target.closest('.panel')) return;
+    openModal(card.dataset.number);
   });
+}
 
-  $$('.user-card', root).forEach((card) => {
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('.act') || e.target.closest('.panel')) return;
-      openModal(card.dataset.number);
-    });
-  });
+/** Раскрыть / свернуть панель карточки. Одновременно открыта одна. */
+function toggleCardPanel(card, btn) {
+  const number = card.dataset.number;
+  const which = btn.dataset.act;
+  const panel = card.querySelector(`.panel-${which}`);
+  if (!panel) return;
+  const open = !panel.classList.contains('show');
 
-  // Восстанавливаем панели, раскрытые до перерисовки.
-  Object.entries(state.openPanels).forEach(([number, which]) => {
-    const card = root.querySelector(`.user-card[data-number="${CSS.escape(number)}"]`);
+  $$('.panel', card).forEach((p) => p.classList.remove('show'));
+  $$('.act', card).forEach((b) => b.classList.remove('open'));
+
+  if (!open) {
+    delete state.openPanels[number];
+    return;
+  }
+  const sub = state.subscribers.find((x) => x.number === number);
+  panel.innerHTML = panelHtml(which, sub);
+  if (which === 'chip') bindChipPanel(panel);
+  panel.classList.add('show');
+  btn.classList.add('open');
+  state.openPanels[number] = which;
+}
+
+/**
+ * Вернуть на место панели, раскрытые до перерисовки.
+ *
+ * Идём по ТОЛЬКО ЧТО НАРИСОВАННОЙ порции, а не по всем открытым панелям:
+ * карточка из следующей порции ещё не существует, и искать её в разметке
+ * бессмысленно. Панель раскроется, когда до неё дойдёт своя порция.
+ */
+function restoreOpenPanels(root, slice) {
+  slice.forEach((sub) => {
+    const which = state.openPanels[sub.number];
+    if (!which) return;
+    const card = root.querySelector(`.user-card[data-number="${CSS.escape(sub.number)}"]`);
     if (!card) return;
     const panel = card.querySelector(`.panel-${which}`);
     const btn = card.querySelector(`.act[data-act="${which}"]`);
     if (!panel || !btn) return;
-    const sub = state.subscribers.find((x) => x.number === number);
-    if (!sub) return;
     panel.innerHTML = panelHtml(which, sub);
     if (which === 'chip') bindChipPanel(panel);
     panel.classList.add('show');
@@ -2320,6 +2471,18 @@ function cardTariffPanel(s) {
  * из колонок с минимальными ширинами не сжималась и вылезала за границы
  * узкой карточки абонента.
  */
+/**
+ * Название и подпись тарифа по его id.
+ *
+ * В оценках вариантов (recommendation.alternatives) названий больше нет: они
+ * одни и те же у всех номеров, и на две тысячи абонентов это были лишние
+ * сотни килобайт в каждом обновлении отчёта (см. server.slim_for_list).
+ * Каталог приходит с отчётом отдельным полем — оттуда и берём.
+ */
+function tariffOf(id) {
+  return (state.tariffs || []).find((t) => t.id === id) || {};
+}
+
 function tariffPicker(s, alts, rec) {
   const title = '<div class="tp-title">Подбор тарифа по фактическому потреблению</div>';
   if (!alts.length) return `${title}<div class="empty">Каталог тарифов пуст.</div>`;
@@ -2365,12 +2528,12 @@ function tariffPicker(s, alts, rec) {
     return row({
       cls: `${isBest ? ' cmp-best' : ''}${isCurrent ? ' cmp-current' : ''}`,
       rank: i + 1,
-      name: a.tariff_name,
+      name: tariffOf(a.tariff_id).name || 'тариф без названия',
       tags: `${isCurrent ? '<span class="pill pill-muted">текущий</span>' : ''}`
         + `${isBest && !isCurrent ? '<span class="pill pill-good">выгоднее</span>' : ''}`,
       bars,
       sum: money(a.total),
-      note: a.note || '',
+      note: tariffOf(a.tariff_id).note || '',
       diff: !isCurrent && Math.abs(delta) >= 1
         ? `<span class="cmp-diff ${delta < 0 ? 'txt-good' : 'txt-danger'}">`
           + `${delta < 0 ? '−' : '+'}${money(Math.abs(delta))}</span>`
@@ -2389,7 +2552,7 @@ function tariffPicker(s, alts, rec) {
     <div class="tp-cell">
       <span class="tp-cell-label">Дешевле всего</span>
       <span class="tp-cell-value">${best ? money(best.total) : '—'}</span>
-      <span class="tp-cell-note">${esc(best ? best.tariff_name : 'вариантов нет')}</span>
+      <span class="tp-cell-note">${esc(best ? (tariffOf(best.tariff_id).name || '') : 'вариантов нет')}</span>
     </div>
     <div class="tp-cell tp-cell-${saving > 0 ? 'good' : 'muted'}">
       <span class="tp-cell-label">${saving > 0 ? 'Экономия' : 'Разница'}</span>
@@ -2579,16 +2742,54 @@ function openModal(number) {
     </section>`;
   }
 
-  h += `<section class="sm-section"><div class="sm-title">Все начисления (${s.services.length})</div>
-    <div class="sm-services">${s.services.map((it) => `
+  // ВСЕ НАЧИСЛЕНИЯ — ДОГРУЖАЮТСЯ.
+  // В списочном отчёте у каждого номера лежат только крупнейшие строки (см.
+  // server.slim_for_list): полный список нужен ровно здесь, а на весь парк это
+  // лишние сотни килобайт в каждом обновлении отчёта. Показываем то, что есть,
+  // и дополняем, когда придёт ответ.
+  h += `<section class="sm-section" id="smServices">
+    ${servicesHtml(s.services, s.services_count || s.services.length,
+      (s.services_count || 0) > s.services.length)}</section>`;
+
+  $('subModalContent').innerHTML = h;
+  $('subModal').hidden = false;
+
+  if ((s.services_count || 0) > s.services.length) loadAllServices(s);
+}
+
+/** Список начислений. `partial` — показаны не все, остальные ещё едут. */
+function servicesHtml(services, total, partial) {
+  return `<div class="sm-title">Все начисления (${total})</div>
+    <div class="sm-services">${services.map((it) => `
       <div class="sm-svc">
         <span class="sm-svc-name" title="${esc(it.service)}">${esc(it.service)}</span>
         <span class="sm-svc-vol">${esc(it.raw_volume || '—')}</span>
         <span class="sm-svc-amt${it.cost > 0 ? ' txt-danger' : ''}">${money(it.cost)}</span>
-      </div>`).join('')}</div></section>`;
+      </div>`).join('')}</div>
+    ${partial ? '<div class="panel-hint">Показаны крупнейшие, остальные загружаются…</div>' : ''}`;
+}
 
-  $('subModalContent').innerHTML = h;
-  $('subModal').hidden = false;
+async function loadAllServices(s) {
+  const host = $('smServices');
+  if (!host) return;
+  try {
+    const full = await getJSON(`/api/subscriber/${encodeURIComponent(s.number)}`
+      + `?month=${encodeURIComponent(s.month)}`);
+    const services = full.services || [];
+    if (!services.length) return;
+    // Модалку могли за это время открыть на ДРУГОМ номере. Тогда на странице
+    // лежит уже новый #smServices, а наш host — оторванный от документа кусок
+    // прошлой модалки, и дописывать в него нечего. Сравниваем сами элементы:
+    // проверки «такой id существует» тут мало — id-то одинаковый.
+    if (host !== document.getElementById('smServices')) return;
+    // Кладём в state, чтобы повторное открытие обошлось без запроса.
+    s.services = services;
+    s.services_count = services.length;
+    host.innerHTML = servicesHtml(services, services.length, false);
+  } catch (_) {
+    const hint = host.querySelector('.panel-hint');
+    if (hint) hint.textContent = 'Остальные начисления загрузить не удалось.';
+  }
 }
 
 function closeOverlay(id) {
@@ -2982,12 +3183,18 @@ const ROAMING_COLUMNS = [
 let roamingZones = [];
 
 async function renderRoamingSettings(el) {
-  el.innerHTML = '<div class="empty">Загрузка…</div>';
-  try {
-    roamingZones = (await getJSON('/api/roaming')).zones || [];
-  } catch (err) {
-    el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
-    return;
+  // Справочник читаем с сервера ОДИН раз за сеанс: он меняется только здесь
+  // же, и сохранение сразу возвращает новый список. Раньше каждое открытие
+  // вкладки (и каждая правка одной ставки) начиналось с «Загрузка…» и похода
+  // на сервер за теми же строками.
+  if (!roamingZones.length) {
+    el.innerHTML = '<div class="empty">Загрузка…</div>';
+    try {
+      roamingZones = (await getJSON('/api/roaming')).zones || [];
+    } catch (err) {
+      el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
+      return;
+    }
   }
 
   el.innerHTML = `
@@ -3057,12 +3264,16 @@ async function renderRoamingSettings(el) {
 let paymentRules = [];
 
 async function renderRuleSettings(el) {
-  el.innerHTML = '<div class="empty">Загрузка…</div>';
-  try {
-    paymentRules = (await getJSON('/api/payment-rules')).rules || [];
-  } catch (err) {
-    el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
-    return;
+  // Как и роуминг: список правил читается один раз за сеанс, дальше он живёт
+  // в памяти и обновляется ответом на сохранение (см. saveRule).
+  if (!paymentRules.length) {
+    el.innerHTML = '<div class="empty">Загрузка…</div>';
+    try {
+      paymentRules = (await getJSON('/api/payment-rules')).rules || [];
+    } catch (err) {
+      el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
+      return;
+    }
   }
 
   el.innerHTML = `
@@ -3131,13 +3342,25 @@ async function renderRuleSettings(el) {
 
 /* ── Командировки ────────────────────────────────────────────────────────── */
 async function renderTripSettings(el) {
-  el.innerHTML = '<div class="empty">Загрузка…</div>';
-  let trips = [];
-  try {
-    trips = (await getJSON('/api/trips')).trips || [];
-  } catch (err) {
-    el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
-    return;
+  // Командировки приходят вместе с отчётом (build_month_view → trips), поэтому
+  // при загруженном счёте вкладка открывается сразу, без «Загрузка…» и похода
+  // на сервер за тем же списком: загрузка файла и очистка возвращают
+  // пересчитанный отчёт, а вместе с ним и свежие командировки.
+  //
+  // ПОКА СЧЁТА НЕТ — отчёта тоже нет, и сервер на загрузку командировок
+  // возвращает view: null. Тогда state.trips так и остаётся пустым, и вкладка
+  // показывала «Командировки не загружены» сразу после успешной загрузки
+  // файла. В этом случае — и только в нём — спрашиваем список отдельно.
+  let trips = state.trips || [];
+  if (!state.month) {
+    el.innerHTML = '<div class="empty">Загрузка…</div>';
+    try {
+      trips = (await getJSON('/api/trips')).trips || [];
+      state.trips = trips;
+    } catch (err) {
+      el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
+      return;
+    }
   }
 
   el.innerHTML = `
@@ -3169,6 +3392,10 @@ async function renderTripSettings(el) {
     try {
       const data = await postJSON('/api/trips/clear', {});
       if (data.view) applyView(data.view);
+      // Отчёта может не быть вовсе (счёт ещё не загружен) — тогда сервер
+      // возвращает view: null, и список нужно обнулить вручную, иначе вкладка
+      // покажет уже удалённые командировки.
+      else state.trips = [];
       renderSettings();
       flashHint('Командировки удалены, отчёт пересчитан.');
     } catch (err) { flashHint(err.message, 'error'); }
@@ -3218,7 +3445,10 @@ function drawSubscriberList() {
   const statusOptions = state.statuses.map((st) =>
     `<option value="${esc(st.id)}">${esc(st.label)}</option>`).join('');
 
-  list.innerHTML = rows.map((s) => {
+  // Порциями, как и карточки: в строке выпадающий список и три поля ввода, и
+  // на всём парке номеров это самая тяжёлая разметка в программе. Из-за неё
+  // настройки и открывались с задержкой.
+  batchList(list, rows, (s) => {
     const st = state.statuses.find((x) => x.id === s.user_status) || state.statuses[0] || {};
     return `<div class="subscriber-item" data-number="${esc(s.number)}"
                  style="border-left-color:${esc(st.color || 'var(--border)')}">
@@ -3251,17 +3481,26 @@ function drawSubscriberList() {
         </div>
       </div>
     </div>`;
-  }).join('');
-
-  // Значение <select> ставим свойством, а не атрибутом selected в разметке:
-  // так шаблон строки одинаков для всех и браузер разбирает его быстрее.
-  $$('.status-select', list).forEach((sel, i) => {
-    sel.value = rows[i].user_status || '';
-    // Статус могли удалить из справочника, а у номера он ещё записан. Тогда
-    // value не находит своего option и список показывает пустоту. Раньше в
-    // такой ситуации ни у одного option не было selected и браузер сам
-    // показывал первый — повторяем это поведение.
-    if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  }, {
+    reset: true,
+    more: (left) => `Ещё ${left} ${plural(left, 'номер', 'номера', 'номеров')} —`
+      + ' дорисуются при прокрутке. Поиск ищет по всему списку.',
+    // Значение <select> ставим свойством, а не атрибутом selected в разметке:
+    // так шаблон строки одинаков для всех и браузер разбирает его быстрее.
+    // Только по нарисованной порции — остальных строк ещё нет.
+    after: (slice) => {
+      slice.forEach((s) => {
+        const sel = list.querySelector(
+          `.subscriber-item[data-number="${CSS.escape(s.number)}"] .status-select`);
+        if (!sel) return;
+        sel.value = s.user_status || '';
+        // Статус могли удалить из справочника, а у номера он ещё записан. Тогда
+        // value не находит своего option и список показывает пустоту. Раньше в
+        // такой ситуации ни у одного option не было selected и браузер сам
+        // показывал первый — повторяем это поведение.
+        if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+      });
+    },
   });
 
   attachSubscriberListeners(list);
@@ -3611,7 +3850,10 @@ function renderWidgetSettings(el) {
     applyWidgetVisibility();
     if (state.subscribers.length) {
       drawTrendChart();
-      renderExMatrix();
+      // Выключенные блоки больше не рисуются вовсе (см. renderExtras), поэтому
+      // только что включённый пуст — его нужно нарисовать здесь. Заодно это и
+      // есть пересчёт раскладки: renderExtras рисует ровно включённые.
+      renderExtras();
     }
     renderWidgetSettings(el);
   };

@@ -1390,6 +1390,51 @@ def _averages(history: list[dict[str, Any]],
     return avg_total, avg_tariff
 
 
+# Сколько строк начислений отдавать в списочном отчёте. Карточка показывает
+# шесть крупнейших, полный список нужен только в модалке — она догружает его
+# отдельным запросом (/api/subscriber/<номер>).
+LIST_SERVICES = 8
+
+
+def slim_for_list(record: dict[str, Any]) -> dict[str, Any]:
+    """Убрать из записи то, чего списочный отчёт не показывает.
+
+    ЗАЧЕМ. Отчёт на сотню номеров — это почти мегабайт JSON, и он целиком
+    разбирается браузером до первой нарисованной карточки. На реальном счёте
+    номеров под две тысячи. Всё, что здесь вычищается, либо не читается
+    интерфейсом вовсе, либо доступно другим путём:
+
+      * services  — полный список начислений. Карточке нужны шесть
+        крупнейших, модалке — все, и она их догружает сама;
+      * payment.buckets[].lines — построчная раскладка внутри корзины. Считать
+        её надо (из неё получаются суммы «мы / сотрудник»), а показывать
+        интерфейс её нигде не показывает;
+      * recommendation.current — оценка ТЕКУЩЕГО тарифа по модели. Нужна была
+        внутри расчёта, наружу не выводится;
+      * названия и подписи тарифов в alternatives — они одни и те же у всех
+        номеров, а каталог и так едет в отчёте отдельным полем. Браузер
+        находит их по tariff_id.
+    """
+    services = record["services"]
+    record["services_count"] = len(services)
+    record["services"] = services[:LIST_SERVICES]
+
+    payment = record.get("payment")
+    if payment:
+        for bucket in payment.get("buckets", ()):
+            bucket.pop("lines", None)
+
+    rec = record.get("recommendation")
+    if rec:
+        rec.pop("current", None)
+        rec["alternatives"] = [
+            {k: v for k, v in alt.items()
+             if k not in ("tariff_name", "note", "kind", "over_min", "over_sms", "over_mb")}
+            for alt in rec.get("alternatives", ())
+        ]
+    return record
+
+
 def build_month_view(month: str) -> dict[str, Any]:
     catalog = domain.normalize_catalog(queries.get_tariffs())
 
@@ -1453,6 +1498,9 @@ def build_month_view(month: str) -> dict[str, Any]:
     billing.assign_waste_index(records)
 
     records.sort(key=lambda r: (r["saving"], r["total"]), reverse=True)
+    # Чистка ПОСЛЕ всех расчётов: и индекс невыгодности, и сводки считаются по
+    # полным записям, а урезанная запись нужна только для передачи.
+    records = [slim_for_list(r) for r in records]
     return {
         "month": month,
         "months": queries.months(),
