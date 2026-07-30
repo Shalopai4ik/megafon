@@ -17,8 +17,19 @@ psycopg2, asyncpg) — внешняя зависимость: колесо по�
 
 Зато `psql` на машине УЖЕ ЕСТЬ: он ставится вместе с самим PostgreSQL и
 обновляется вместе с ним. Поэтому весь обмен с базой идёт через него —
-запускаем процесс, отдаём SQL в stdin, забираем ответ из stdout. Ставить
-и сопровождать нечего вообще.
+отдаём SQL в stdin, забираем ответ из stdout. Ставить и сопровождать нечего
+вообще.
+
+ОДИН psql НА ВСЁ ПРИЛОЖЕНИЕ
+---------------------------
+psql запускается ОДИН раз и живёт с открытыми каналами до конца работы.
+Раньше процесс поднимался на каждый запрос, и это стоило ~100 мс против
+1–2 мс на само чтение: главный экран собирается из 22 запросов, то есть
+2,4 секунды ожидания почти целиком уходили на запуск процессов.
+
+Устройство сеанса, маркеры конца ответа и разбор ошибок — в комментарии
+к классу `_Session` ниже. Разовый запуск процесса (`_spawn_run`) остался
+для установщика: он ходит в базу под другим пользователем.
 
 КАК УСТРОЕН ОБМЕН
 -----------------
@@ -70,6 +81,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -259,20 +271,32 @@ def _decode(data: bytes) -> str:
     return data.decode("cp1251", errors="replace")
 
 
-def _run(sql: str, *, database: str | None = None, tuples: bool = False,
-         one_transaction: bool = False, stop_on_error: bool = True,
-         quiet: bool = True, user: str | None = None,
-         password: str | None = None) -> tuple[int, str, str]:
-    """Выполнить SQL и вернуть (код возврата, stdout, stderr).
+def _decode_line(data: bytes) -> str:
+    """То же, что _decode, но для одной строки живого сеанса.
 
-    stdout и stderr разделены НАМЕРЕННО: в режиме `tuples` в stdout должны
-    лежать только строки результата. Смешай их — и текст ошибки поедет в
-    разбор JSON вместо данных.
+    Построчно это ВАЖНЕЕ, чем целым куском: в stderr перемешаны сообщения
+    сервера (UTF-8, мы сами так попросили) и подписи самого psql вроде
+    «СТРОКА 1:» (кодировка системы, на русской Windows cp1251). Одним куском
+    такая смесь не разбирается ни одной кодировкой — а построчно каждая
+    строка попадает в свою.
+    """
+    for enc in ("utf-8", "cp1251"):
+        try:
+            return data.decode(enc).rstrip("\r\n")
+        except UnicodeDecodeError:
+            continue
+    return data.decode("cp1251", errors="replace").rstrip("\r\n")
 
-    `quiet` (ключ -q) убирает служебные отметки вроде «SET» и «INSERT 0 1».
-    Для чтения он ОБЯЗАТЕЛЕН: две строки «SET» из шапки скрипта иначе
-    приедут в stdout вместе с данными и сломают разбор JSON. Снимаем его
-    только там, где эти отметки и нужны, — чтобы узнать число строк.
+
+def _spawn_run(sql: str, *, database: str | None = None, tuples: bool = False,
+               one_transaction: bool = False, stop_on_error: bool = True,
+               quiet: bool = True, user: str | None = None,
+               password: str | None = None) -> tuple[int, str, str]:
+    """Разовый запуск psql: отдельный процесс на один скрипт.
+
+    Остаётся ради установщика — он ходит в базу под ДРУГИМ пользователем и в
+    ДРУГУЮ базу (postgres), а живой сеанс держится один и под своими. Плюс
+    это запасной путь, если сеанс почему-то не поднялся.
     """
     cmd = [psql_path(),
            "-h", CFG["host"], "-p", CFG["port"],
@@ -291,6 +315,198 @@ def _run(sql: str, *, database: str | None = None, tuples: bool = False,
     proc = subprocess.run(cmd, input=(PROLOGUE + sql).encode("utf-8"),
                           capture_output=True, env=_env(password))
     return proc.returncode, _decode(proc.stdout), _decode(proc.stderr)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ЖИВОЙ СЕАНС psql
+#
+#  ЗАЧЕМ. Запуск процесса psql стоит ~100 мс: развернуть процесс, подключиться
+#  к серверу, разобрать пароль, договориться о кодировке. Само чтение при этом
+#  занимает 1–2 мс. Главный экран собирается из 22 запросов — то есть 2,4 с
+#  ожидания, из которых 2,3 с уходит НЕ на работу с данными.
+#
+#  Поэтому psql запускается ОДИН раз на всё приложение и живёт с открытыми
+#  каналами: SQL уходит ему в stdin, ответ читается из stdout. Тот же экран
+#  собирается за 60 мс.
+#
+#  КАК ПОНЯТЬ, ЧТО ОТВЕТ ЗАКОНЧИЛСЯ. Процесс не завершается, поэтому «читать
+#  до конца потока» больше нельзя. После каждого скрипта дописываем два
+#  маркера — по одному в каждый канал:
+#
+#      \echo <МАРКЕР>                      → в stdout, печатает сам psql
+#      DO $$ RAISE WARNING '<МАРКЕР>' $$   → в stderr, печатает сервер
+#
+#  Второй нужен потому, что ошибки идут в stderr, и без своего маркера
+#  непонятно, дочитали мы их или ещё нет. RAISE WARNING выбран нарочно:
+#  \warn появился только в PostgreSQL 13, а RAISE есть везде.
+#
+#  ОШИБКИ. ON_ERROR_STOP здесь не годится: по нему psql ЗАВЕРШАЕТСЯ, и сеанс
+#  умирал бы от первой же опечатки. Вместо него атомарность даёт явный
+#  BEGIN/COMMIT: после ошибки транзакция обрывается, COMMIT превращается в
+#  ROLLBACK — ровно то же «либо всё, либо ничего», что давал ключ -1.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Маркер конца ответа. Нарочно уродливый: в данных такого не встретится.
+_EOC = "__MEGAFON_EOC_7f3a91__"
+
+# Сколько ждать ответа, прежде чем счесть сеанс мёртвым. Не таймаут запроса:
+# заливка счёта на сотню абонентов идёт одним скриптом и может длиться долго.
+# Это защита от зависания навсегда, если psql умер, не закрыв каналы.
+_SESSION_TIMEOUT = 600.0
+
+
+class _Session:
+    """Один живой psql на всё приложение. Обращения к нему сериализованы."""
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._out: queue.Queue[str | None] = queue.Queue()
+        self._err: queue.Queue[str | None] = queue.Queue()
+
+    # --- жизненный цикл ---------------------------------------------------
+    def _pump(self, stream: Any, into: queue.Queue) -> None:
+        """Отдельный поток на канал: читать нельзя лениво, иначе psql встанет
+        на переполненном буфере вывода ровно в тот момент, когда мы ждём
+        ответа на следующий запрос."""
+        try:
+            for line in iter(stream.readline, b""):
+                into.put(_decode_line(line))
+        finally:
+            into.put(None)
+
+    def _start(self) -> bool:
+        cmd = [psql_path(),
+               "-h", CFG["host"], "-p", CFG["port"],
+               "-U", CFG["user"], "-d", CFG["database"],
+               "-X",              # не читать ~/.psqlrc
+               "-t", "-A"]        # без заголовков и рамок — как при чтении
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=_env(), bufsize=0)
+        except OSError:
+            self._proc = None
+            return False
+
+        self._out = queue.Queue()
+        self._err = queue.Queue()
+        for stream, into in ((self._proc.stdout, self._out),
+                             (self._proc.stderr, self._err)):
+            threading.Thread(target=self._pump, args=(stream, into),
+                             daemon=True).start()
+
+        # Шапка сеанса — та же, что раньше уходила с каждым скриптом. Теперь
+        # достаточно один раз: настройки живут до конца соединения.
+        rc, _, err = self._exchange(PROLOGUE)
+        if rc != 0:
+            self.close()
+            return False
+        return True
+
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    # --- обмен ------------------------------------------------------------
+    def _drain(self, source: queue.Queue) -> list[str] | None:
+        """Читать канал до маркера. None — маркера не дождались, сеанс мёртв."""
+        lines: list[str] = []
+        while True:
+            try:
+                line = source.get(timeout=_SESSION_TIMEOUT)
+            except queue.Empty:
+                return None
+            if line is None:          # канал закрылся: psql завершился
+                return None
+            if _EOC in line:
+                return lines
+            lines.append(line)
+
+    def _exchange(self, script: str) -> tuple[int, str, str]:
+        proc = self._proc
+        if proc is None or proc.stdin is None:
+            return 1, "", "сеанс psql не запущен"
+
+        # QUIET глушим только на время маркера — иначе в stdout прилетит его
+        # собственная отметка «DO» и попадёт в разбор ответа.
+        payload = (script.rstrip() + "\n"
+                   + "\\set QUIET on\n"
+                   + f"DO $$ BEGIN RAISE WARNING '{_EOC}'; END $$;\n"
+                   + "\\set QUIET off\n"
+                   + f"\\echo {_EOC}\n")
+        try:
+            proc.stdin.write(payload.encode("utf-8"))
+            proc.stdin.flush()
+        except OSError as exc:
+            self.close()
+            return 1, "", f"сеанс psql оборвался: {exc}"
+
+        out = self._drain(self._out)
+        err = self._drain(self._err) if out is not None else None
+        if out is None or err is None:
+            self.close()
+            return 1, "", "сеанс psql не ответил"
+        # Код возврата эмулируем: у живого процесса его нет, а вызывающий код
+        # различает удачу и ошибку именно по нему.
+        failed = any(mark in line for line in err for mark in _ERROR_MARKS)
+        return (1 if failed else 0), "\n".join(out), "\n".join(err)
+
+    def run(self, sql: str, *, one_transaction: bool) -> tuple[int, str, str]:
+        if not self.alive() and not self._start():
+            return 1, "", "не удалось запустить сеанс psql"
+        script = f"BEGIN;\n{sql.rstrip()}\nCOMMIT;" if one_transaction else sql
+        return self._exchange(script)
+
+
+_session = _Session()
+
+
+def _run(sql: str, *, database: str | None = None, tuples: bool = False,
+         one_transaction: bool = False, stop_on_error: bool = True,
+         quiet: bool = True, user: str | None = None,
+         password: str | None = None) -> tuple[int, str, str]:
+    """Выполнить SQL и вернуть (код возврата, stdout, stderr).
+
+    stdout и stderr разделены НАМЕРЕННО: в режиме `tuples` в stdout должны
+    лежать только строки результата. Смешай их — и текст ошибки поедет в
+    разбор JSON вместо данных.
+
+    Обычные запросы идут в живой сеанс (см. блок выше). Отдельный процесс
+    поднимается только там, где сеанс не годится: под другим пользователем
+    или в другую базу — то есть в установщике.
+
+    `tuples`, `stop_on_error` и `quiet` в сеансе не нужны: он всегда работает
+    в режиме «-t -A», а атомарность даёт BEGIN/COMMIT. Параметры оставлены
+    ради разового запуска, чтобы не переписывать вызовы.
+    """
+    if database or user or password:
+        return _spawn_run(sql, database=database, tuples=tuples,
+                          one_transaction=one_transaction,
+                          stop_on_error=stop_on_error, quiet=quiet,
+                          user=user, password=password)
+
+    with _LOCK:
+        rc, out, err = _session.run(sql, one_transaction=one_transaction)
+    if rc != 0 and not _session.alive():
+        # Сеанс отвалился (перезапустили сервер, оборвалась сеть). Один раз
+        # пробуем по-старому — так единичный обрыв не превращается в ошибку
+        # на экране, а следующий запрос поднимет сеанс заново.
+        return _spawn_run(sql, tuples=tuples, one_transaction=one_transaction,
+                          stop_on_error=stop_on_error, quiet=quiet)
+    return rc, out, err
 
 
 # Метки, которыми psql помечает суть ошибки. Русские — потому что свои
@@ -1206,10 +1422,11 @@ def _server_alive() -> bool:
 
 
 def close() -> None:
-    """Совместимость. Закрывать нечего: соединение не живёт между запросами."""
+    """Погасить живой сеанс psql и забыть о проверке схемы."""
     global _ready
     with _LOCK:
         _ready = False
+        _session.close()
 
 
 def ping() -> str:
