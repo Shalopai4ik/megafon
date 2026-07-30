@@ -404,6 +404,15 @@ async function uploadFile(file, kind) {
 }
 
 function uploadSummary(data, kind, fileName) {
+  // Из книги Excel мы берём ОДИН лист (сотрудники — второй, командировки —
+  // четвёртый, см. server.XLSX_SHEET). Какой именно взяли — говорим вслух:
+  // если листы в книге переставили, это видно сразу, а не по пропавшим
+  // строкам. Для CSV поле пустое и приписки нет.
+  const sheet = data.sheet ? ` Взят ${data.sheet}.` : '';
+  return uploadSummaryText(data, kind, fileName) + sheet;
+}
+
+function uploadSummaryText(data, kind, fileName) {
   if (kind === 'bill') {
     const s = data.stats || {};
     return `Счёт «${fileName}» загружен: ${data.saved} абонентов, `

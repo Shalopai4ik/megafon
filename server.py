@@ -53,6 +53,7 @@ from typing import Any, Iterable, NamedTuple
 import billing
 import db
 import domain
+import xlsx
 
 # Консоль Windows по умолчанию не в UTF-8, а мы печатаем по-русски.
 try:
@@ -107,11 +108,15 @@ def decode_bytes(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-# Подписи офисных форматов в первых байтах файла. XLSX — это ZIP («PK»),
-# старый XLS и DOC — контейнер OLE2, PDF подписан прямо словом.
+# Подписи форматов, которые прочитать НЕ УМЕЕМ. Старый XLS и DOC — контейнер
+# OLE2, PDF подписан прямо словом, «PK» — любой ZIP.
+#
+# XLSX здесь тоже «PK», но до этой проверки он не доходит: книгу мы читаем
+# сами (xlsx.is_xlsx смотрит, есть ли внутри архива xl/workbook.xml). Так что
+# сюда попадёт разве что обычный zip, присланный по ошибке.
 _BINARY_SIGNATURES = (
-    (b"PK\x03\x04", "XLSX/ZIP"),
-    (b"\xd0\xcf\x11\xe0", "XLS"),
+    (b"PK\x03\x04", "ZIP-архив"),
+    (b"\xd0\xcf\x11\xe0", "XLS (старый формат Excel)"),
     (b"%PDF", "PDF"),
 )
 
@@ -123,11 +128,65 @@ def binary_format_of(raw: bytes) -> str:
     не находится ни номеров, ни дат — и человек получал ответ «в файле не
     найдено ни одной командировки», хотя файл правильный, просто не сохранён
     в CSV. Проверка по подписи даёт вместо этого понятный совет.
+
+    XLSX сюда больше не попадает: книгу мы теперь читаем сами (см. xlsx.py).
+    Остались форматы, которые действительно не прочитать, — старый XLS и PDF.
     """
     for signature, name in _BINARY_SIGNATURES:
         if raw.startswith(signature):
             return name
     return ""
+
+
+# КАКОЙ ЛИСТ КНИГИ БРАТЬ. Считается от единицы, как в самом Excel.
+#
+# В книге, которую присылают, листы стоят на своих местах: сотрудники —
+# второй лист, командировки — четвёртый. Порядок берётся из workbook.xml, а
+# не из имён файлов внутри архива: sheet1.xml запросто оказывается третьим
+# листом книги, если листы двигали мышью.
+#
+# Если книга придёт другой раскладкой, номер листа правится здесь.
+XLSX_SHEET = {"bill": 1, "roster": 2, "trips": 4}
+
+
+def _sheet_looks_usable(text: str) -> bool:
+    """Есть ли на листе то, ради чего его открывали: шапка и абонентские номера."""
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if len(lines) < 2:
+        return False
+    return bool(re.search(r"\b\d{10,11}\b", text))
+
+
+def xlsx_to_text(raw: bytes, kind: str) -> tuple[str, str]:
+    """Книга Excel → CSV-текст нужного листа.
+
+    Возвращает (текст, пояснение), где пояснение — с какого листа взято.
+    Оно уходит в ответ и показывается человеку: если в книге переставили
+    листы, он увидит это сразу, а не будет искать пропавшие строки.
+
+    ЕСЛИ НУЖНОГО ЛИСТА НЕТ ИЛИ ОН ПУСТ, книгу обходим целиком и берём первый
+    лист, на котором есть шапка и абонентские номера. Ошибиться местом листа
+    человек может, а вот принести не тот файл — вряд ли.
+    """
+    names = xlsx.sheet_names(raw)
+    want = XLSX_SHEET.get(kind, 1)
+
+    if 1 <= want <= len(names):
+        text = xlsx.to_csv(raw, want)
+        if _sheet_looks_usable(text):
+            return text, f"лист {want} «{names[want - 1]}»"
+
+    for i, name in enumerate(names, start=1):
+        if i == want:
+            continue
+        text = xlsx.to_csv(raw, i)
+        if _sheet_looks_usable(text):
+            return text, (f"лист {i} «{name}» (на {want}-м листе данных не нашлось)")
+
+    # Ничего подходящего — отдаём запрошенный лист как есть, пусть разборщик
+    # объяснит, чего именно ему не хватило.
+    fallback = min(max(want, 1), len(names))
+    return xlsx.to_csv(raw, fallback), f"лист {fallback} «{names[fallback - 1]}»"
 
 
 DELIMITERS = (";", "|", "\t")
@@ -2111,16 +2170,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not raw:
             return self._error(400, "Файл не найден в запросе")
 
-        binary = binary_format_of(raw)
-        if binary:
-            return self._error(
-                400,
-                f"Это файл {binary}, а не таблица текстом. Откройте его в Excel "
-                f"и сохраните как «CSV (разделители — точки с запятой)», после "
-                f"этого загрузите заново."
-            )
-
-        text = decode_bytes(raw)
+        # КНИГУ EXCEL ЧИТАЕМ САМИ. Раньше здесь стоял отказ с советом
+        # «сохраните как CSV» — ручная работа на каждую загрузку, да ещё и с
+        # шансом сохранить не тот лист.
+        sheet_note = ""
+        if xlsx.is_xlsx(raw):
+            try:
+                text, sheet_note = xlsx_to_text(raw, kind)
+            except xlsx.XlsxError as exc:
+                return self._error(400, f"Книга Excel не читается: {exc}")
+        else:
+            binary = binary_format_of(raw)
+            if binary:
+                return self._error(
+                    400,
+                    f"Это файл {binary}, а не таблица текстом. Откройте его в Excel "
+                    f"и сохраните как «CSV (разделители — точки с запятой)» либо "
+                    f"пересохраните в XLSX — его мы читаем сами."
+                )
+            text = decode_bytes(raw)
 
         if kind == "bill":
             parsed = parse_bill(text)
@@ -2133,7 +2201,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 )
             result = apply_bill(parsed)
             month = result["month"]
-            return self._json(200, {"ok": True, **result,
+            return self._json(200, {"ok": True, **result, "sheet": sheet_note,
                                     "view": build_month_view(month)})
 
         if kind == "trips":
@@ -2159,7 +2227,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             saved = queries.save_trips(parsed["rows"])
             month = self._current_month()
             return self._json(200, {"ok": True, "saved": saved,
-                                    "stats": parsed["stats"],
+                                    "stats": parsed["stats"], "sheet": sheet_note,
                                     "view": build_month_view(month) if month else None})
 
         parsed = parse_roster(text)
@@ -2171,7 +2239,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             )
         result = apply_roster(parsed)
         month = self._current_month()
-        return self._json(200, {"ok": True, **result,
+        return self._json(200, {"ok": True, **result, "sheet": sheet_note,
                                 "view": build_month_view(month) if month else None})
 
     # --- статика ---------------------------------------------------------
