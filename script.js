@@ -314,8 +314,20 @@ async function getJSON(url) {
   return data;
 }
 
+/**
+ * Дописать к адресу выбранный период.
+ *
+ * ЗАЧЕМ. Правка настройки пересчитывает отчёт на сервере, и он возвращает его
+ * целиком. Без периода сервер собирал отчёт за ПОСЛЕДНИЙ загруженный месяц —
+ * и любое сохранение перекидывало экран с выбранного периода на него.
+ */
+function withMonth(url) {
+  if (!state.month) return url;
+  return url + (url.includes('?') ? '&' : '?') + `month=${encodeURIComponent(state.month)}`;
+}
+
 async function postJSON(url, payload) {
-  const resp = await fetch(url, {
+  const resp = await fetch(withMonth(url), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload || {}),
@@ -342,7 +354,10 @@ async function uploadFile(file, kind) {
   form.append('file', file);
 
   try {
-    const resp = await fetch(meta.url, {
+    // Счёт сам приносит свой период — его и покажем. Список абонентов и
+    // командировки period не меняют, поэтому отчёт пересобираем на том,
+    // который открыт сейчас.
+    const resp = await fetch(isBill ? meta.url : withMonth(meta.url), {
       method: 'POST', body: form,
     });
     let data = null;
@@ -2393,7 +2408,12 @@ async function openStats() {
   $('statsModal').hidden = false;
   el.innerHTML = '<div class="empty">Загрузка…</div>';
   try {
-    const data = await getJSON('/api/invoice');
+    // Период передаём явно: окно показывает тот счёт, который выбран в шапке.
+    // Без него сервер всегда отдавал последний загруженный месяц, и после
+    // переключения периода тут оставались чужие реквизиты.
+    const url = state.month
+      ? `/api/invoice?month=${encodeURIComponent(state.month)}` : '/api/invoice';
+    const data = await getJSON(url);
     el.innerHTML = statsHtml(data.invoice || {}, data.storage || {});
   } catch (err) {
     el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;

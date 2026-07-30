@@ -1353,7 +1353,9 @@ def build_month_view(month: str) -> dict[str, Any]:
         "payment_summary": billing.summarize(records),
         "tariff_stats": domain.build_tariff_stats(records),
         "trend": queries.trend(),
-        "invoice": queries.get_invoice(),
+        # Реквизиты — ЗА ЭТОТ месяц, а не за последний загруженный. Иначе
+        # шапка отчёта и суммы под ней приезжают из разных счетов.
+        "invoice": queries.get_invoice(month),
         "tariffs": catalog,
         "statuses": queries.get_statuses(),
         "chip_colors": queries.get_chip_colors(),
@@ -1677,6 +1679,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:               # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(parsed.path)
+        # Период, открытый в браузере. Нужен потому, что почти каждая запись
+        # возвращает пересчитанный отчёт, и собирать его надо ЗА ЭТОТ месяц.
+        query = urllib.parse.parse_qs(parsed.query)
+        self.view_month = (query.get("month") or [""])[0].strip()
         try:
             self._api_post(path)
         except ConnectionError:
@@ -1740,8 +1746,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/statuses":
             return self._json(200, {"statuses": queries.get_statuses()})
         if path == "/api/invoice":
-            invoice = queries.get_invoice()
-            month = queries.latest_month()
+            # Период берём из адреса: окно «Общая статистика» показывает тот
+            # счёт, который выбран на экране. Без этого оно всегда рисовало
+            # ПОСЛЕДНИЙ загруженный месяц — переключение периода на него не
+            # действовало, и реквизиты не сходились с цифрами на главной.
+            month = (query.get("month") or [""])[0].strip() or queries.latest_month()
+            invoice = queries.get_invoice(month)
             # Свод по услугам есть не во всякой выгрузке — тогда считаем его
             # сами по сохранённым строкам, чтобы окно не осталось пустым.
             if not invoice.get("services") and month:
@@ -1815,7 +1825,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("Ожидается объект с настройками абонента")
             user = queries.update_user_settings(number, payload)
-            month = queries.latest_month()
+            month = self._current_month()
             return self._json(200, {"ok": True, "user": user,
                                     "view": build_month_view(month) if month else None})
         if path == "/api/statuses":
@@ -1828,7 +1838,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = self._read_json()
             status_id = str((payload or {}).get("id") or "")
             statuses = queries.delete_status(status_id)
-            month = queries.latest_month()
+            month = self._current_month()
             return self._json(200, {"statuses": statuses,
                                     "view": build_month_view(month) if month else None})
         # ── ЧИПСЫ: настройки конкретного номера ──────────────────────────
@@ -1840,7 +1850,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("Ожидается объект с настройками чипса")
             chip = queries.save_chip(number, payload)
-            month = queries.latest_month()
+            month = self._current_month()
             return self._json(200, {"ok": True, "chip": chip,
                                     "view": build_month_view(month) if month else None})
 
@@ -1878,6 +1888,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"ok": True})
         return self._error(404, "Неизвестный эндпоинт")
 
+    # Период, выбранный в браузере. Заполняется в do_POST на каждый запрос.
+    view_month = ""
+
+    def _current_month(self) -> str:
+        """Период, за который пересобирать отчёт после записи.
+
+        ИСПРАВЛЕНО. Раньше здесь всегда стоял latest_month(), и правка любой
+        настройки во время просмотра январского счёта возвращала отчёт за
+        последний загруженный месяц — экран молча перескакивал на другой
+        период, а человек видел «опять тот же месяц».
+
+        Присланный период проверяем по списку загруженных: устаревшая вкладка
+        может попросить месяц, который уже вычистили из базы.
+        """
+        asked = self.view_month
+        if asked and any(m["month"] == asked for m in queries.months()):
+            return asked
+        return queries.latest_month()
+
     def _fresh_view(self) -> dict[str, Any] | None:
         """Пересобрать отчёт после изменения справочника.
 
@@ -1885,7 +1914,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         поэтому фронтенду сразу возвращается пересчитанный отчёт — иначе на
         экране остались бы старые суммы.
         """
-        month = queries.latest_month()
+        month = self._current_month()
         return build_month_view(month) if month else None
 
     # --- вспомогательные -------------------------------------------------
@@ -1952,7 +1981,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "«Страна», «Утверждено»."
                 )
             saved = queries.save_trips(parsed["rows"])
-            month = queries.latest_month()
+            month = self._current_month()
             return self._json(200, {"ok": True, "saved": saved,
                                     "stats": parsed["stats"],
                                     "view": build_month_view(month) if month else None})
@@ -1965,7 +1994,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "Ожидаются колонки «Абонентский номер», «Лимит», «ФИО»."
             )
         result = apply_roster(parsed)
-        month = queries.latest_month()
+        month = self._current_month()
         return self._json(200, {"ok": True, **result,
                                 "view": build_month_view(month) if month else None})
 
