@@ -393,7 +393,12 @@ function uploadSummary(data, kind, fileName) {
     return `Командировки «${fileName}»: ${data.saved} `
       + `${plural(data.saved, 'запись', 'записи', 'записей')}`
       + (s.approved ? `, утверждено ${s.approved}` : '')
-      + (s.skipped ? `, пропущено строк без номера — ${s.skipped}` : '') + '.';
+      + (s.skipped ? `, пропущено строк без номера — ${s.skipped}` : '')
+      // Строка с номером, но без периода — не командировка, а чаще всего
+      // строка из списка сотрудников. Молчать об этом нельзя: человек
+      // должен понять, почему записей меньше, чем строк в файле.
+      + (s.no_dates ? `, без периода командировки — ${s.no_dates} (не сохранены)` : '')
+      + '.';
   }
   const parts = [`Список «${fileName}»: ${data.applied} записей`];
   if (data.with_limit) parts.push(`лимитов ${data.with_limit}`);
@@ -431,8 +436,45 @@ function resetFilterButtons() {
   });
 }
 
-/* ── Применение представления ────────────────────────────────────────────── */
+/* ── Применение представления ─────────────────────────────────────────────
+ *
+ * ПОЧЕМУ ЗДЕСЬ ДВА ЭТАПА, А НЕ ОДИН.
+ *
+ * Любая правка настройки возвращает с сервера ПЕРЕСЧИТАННЫЙ ОТЧЁТ ЦЕЛИКОМ —
+ * иначе суммы на экране разъедутся с правилами. Но перерисовать по этому
+ * поводу главный экран значит собрать заново сотню карточек (полмегабайта
+ * разметки), четыре графика и все сводки. А главный экран в этот момент
+ * закрыт панелью настроек, и человек его не видит.
+ *
+ * Именно на этом всё и подвисало: щёлкнул галку «в командировке» — и жди,
+ * пока браузер перестроит то, чего на экране нет.
+ *
+ * Поэтому: данные кладём всегда, тяжёлую отрисовку — только когда главный
+ * экран виден. Пока открыты настройки, ставим отметку mainStale и наверстаем
+ * всё разом при закрытии.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+let mainStale = false;
+
+function settingsOpen() {
+  const panel = $('settingsPanel');
+  return !!panel && !panel.hidden;
+}
+
 function applyView(data) {
+  applyViewData(data);
+  if (settingsOpen()) { mainStale = true; return; }
+  renderMain();
+}
+
+/** Догнать главный экран, если пока он был закрыт, данные успели смениться. */
+function refreshMainIfStale() {
+  if (!mainStale) return;
+  mainStale = false;
+  renderMain();
+}
+
+function applyViewData(data) {
   state.month = data.month || '';
   state.months = data.months || [];
   state.subscribers = data.subscribers || [];
@@ -447,7 +489,10 @@ function applyView(data) {
   state.chipMarks = data.chip_marks || state.chipMarks;
   state.trips = data.trips || state.trips;
   state.hasRoster = state.hasRoster || state.subscribers.some((s) => s.limit_set || s.username);
+}
 
+/** Вся отрисовка главного экрана. Дорого: сотня карточек и четыре графика. */
+function renderMain() {
   const hasData = state.subscribers.length > 0;
   toggle('welcomeSection', !hasData);
   applyWidgetVisibility();
@@ -2399,7 +2444,11 @@ function flowRow(icon, label, used, cost, total) {
 
 function closeOverlay(id) {
   const el = $(id);
-  if (el) el.hidden = true;
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  // Пока настройки были открыты, отрисовку главного экрана мы откладывали
+  // (см. applyView). Теперь он на виду — наверстаем разом.
+  if (id === 'settingsPanel') refreshMainIfStale();
 }
 
 /* ── Общая статистика по счёту ───────────────────────────────────────────── */
@@ -3014,8 +3063,11 @@ function drawSubscriberList() {
     return;
   }
 
-  const statusOptions = (selected) => state.statuses.map((st) =>
-    `<option value="${esc(st.id)}"${st.id === selected ? ' selected' : ''}>${esc(st.label)}</option>`).join('');
+  // Список статусов один на всех — собираем его РАЗ, а не на каждую строку.
+  // Отмечать выбранный через selected не нужно: значение проставим свойством
+  // value уже готовому <select>, это и быстрее, и короче.
+  const statusOptions = state.statuses.map((st) =>
+    `<option value="${esc(st.id)}">${esc(st.label)}</option>`).join('');
 
   list.innerHTML = rows.map((s) => {
     const st = state.statuses.find((x) => x.id === s.user_status) || state.statuses[0] || {};
@@ -3030,17 +3082,15 @@ function drawSubscriberList() {
       <div class="subscriber-controls">
         <label class="control-group">
           <span class="control-label">Статус</span>
-          <select class="status-select" data-number="${esc(s.number)}">${statusOptions(s.user_status)}</select>
+          <select class="status-select" data-number="${esc(s.number)}">${statusOptions}</select>
         </label>
         <div class="control-group">
           <label class="trip-toggle">
             <input type="checkbox" class="trip-check" data-number="${esc(s.number)}"
                    ${s.is_business_trip ? 'checked' : ''}> В командировке
           </label>
-          <div class="trip-dates${s.is_business_trip ? ' active' : ''}">
-            <input type="date" class="trip-start" data-number="${esc(s.number)}" value="${esc(s.trip_start_date || '')}">
-            <input type="date" class="trip-end" data-number="${esc(s.number)}" value="${esc(s.trip_end_date || '')}">
-          </div>
+          <div class="trip-dates${s.is_business_trip ? ' active' : ''}">${
+            s.is_business_trip ? tripDateInputs(s) : ''}</div>
         </div>
         <div class="control-group">
           <span class="control-label">Лимит, ₽</span>
@@ -3054,25 +3104,75 @@ function drawSubscriberList() {
     </div>`;
   }).join('');
 
+  // Значение <select> ставим свойством, а не атрибутом selected в разметке:
+  // так шаблон строки одинаков для всех и браузер разбирает его быстрее.
+  $$('.status-select', list).forEach((sel, i) => {
+    sel.value = rows[i].user_status || '';
+    // Статус могли удалить из справочника, а у номера он ещё записан. Тогда
+    // value не находит своего option и список показывает пустоту. Раньше в
+    // такой ситуации ни у одного option не было selected и браузер сам
+    // показывал первый — повторяем это поведение.
+    if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  });
+
   attachSubscriberListeners(list);
 }
 
-function attachSubscriberListeners(root) {
-  $$('.status-select', root).forEach((sel) => {
-    sel.addEventListener('change', (e) => {
-      const item = e.target.closest('.subscriber-item');
-      const st = state.statuses.find((x) => x.id === e.target.value);
-      if (item && st) item.style.borderLeftColor = st.color;
-      saveSubscriber(e.target.dataset.number, { status: e.target.value });
-    });
-  });
+/**
+ * Поля дат командировки. Рисуются ТОЛЬКО для тех, кто в командировке.
+ *
+ * ЗАЧЕМ ЛЕНИВО. `input type="date"` — самый дорогой из полей ввода: браузер
+ * поднимает под него теневое дерево с кнопками и календарём. В командировке
+ * же обычно единицы человек из сотни, а поля создавались всем — двести
+ * календарей, из которых видно четыре. Остальным кладём пустой контейнер и
+ * наполняем его, когда галку поставят (см. attachSubscriberListeners).
+ */
+function tripDateInputs(s) {
+  return `<input type="date" class="trip-start" data-number="${esc(s.number)}" value="${esc(s.trip_start_date || '')}">
+          <input type="date" class="trip-end" data-number="${esc(s.number)}" value="${esc(s.trip_end_date || '')}">`;
+}
 
-  $$('.trip-check', root).forEach((box) => {
-    box.addEventListener('change', (e) => {
-      const dates = e.target.closest('.control-group').querySelector('.trip-dates');
-      dates.classList.toggle('active', e.target.checked);
-      const payload = { is_business_trip: e.target.checked };
-      if (e.target.checked) {
+/**
+ * Обработчики списка абонентов — ТРИ ШТУКИ НА ВЕСЬ СПИСОК.
+ *
+ * БЫЛО: по слушателю на каждый элемент управления. На сотне абонентов это
+ * пять проходов по дереву и около пятисот подписок — и всё это заново после
+ * каждого сохранения и каждой буквы в поиске. Отсюда и подвисание при
+ * открытии настроек.
+ *
+ * СТАЛО: событие всплывает до контейнера, и уже там мы смотрим, во что
+ * попали. Подписка одна, вешается один раз за жизнь списка — сколько бы
+ * строк в нём ни перерисовали.
+ */
+function attachSubscriberListeners(root) {
+  if (root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+
+  const numberOf = (el) => el.dataset.number
+    || el.closest('.subscriber-item')?.dataset.number || '';
+
+  root.addEventListener('change', (e) => {
+    const t = e.target;
+
+    if (t.classList.contains('status-select')) {
+      const item = t.closest('.subscriber-item');
+      const st = state.statuses.find((x) => x.id === t.value);
+      if (item && st) item.style.borderLeftColor = st.color;
+      return saveSubscriber(numberOf(t), { status: t.value });
+    }
+
+    if (t.classList.contains('trip-check')) {
+      const dates = t.closest('.control-group').querySelector('.trip-dates');
+      dates.classList.toggle('active', t.checked);
+      const payload = { is_business_trip: t.checked };
+      if (t.checked) {
+        const number = numberOf(t);
+        // Полей может ещё не быть: всем подряд мы их не рисуем (см.
+        // tripDateInputs). Раз галку поставили — вот теперь и создадим.
+        if (!dates.querySelector('.trip-start')) {
+          const sub = state.subscribers.find((x) => x.number === number) || { number };
+          dates.innerHTML = tripDateInputs(sub);
+        }
         const start = dates.querySelector('.trip-start');
         const end = dates.querySelector('.trip-end');
         const today = new Date().toISOString().slice(0, 10);
@@ -3081,31 +3181,30 @@ function attachSubscriberListeners(root) {
         payload.trip_start_date = start.value;
         payload.trip_end_date = end.value;
       }
-      saveSubscriber(e.target.dataset.number, payload);
-    });
+      return saveSubscriber(numberOf(t), payload);
+    }
+
+    if (t.classList.contains('trip-start') || t.classList.contains('trip-end')) {
+      const field = t.classList.contains('trip-start') ? 'trip_start_date' : 'trip_end_date';
+      return saveSubscriber(numberOf(t), { [field]: t.value });
+    }
   });
 
-  $$('.trip-start, .trip-end', root).forEach((input) => {
-    input.addEventListener('change', (e) => {
-      const field = e.target.classList.contains('trip-start') ? 'trip_start_date' : 'trip_end_date';
-      saveSubscriber(e.target.dataset.number, { [field]: e.target.value });
-    });
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('.save-limit');
+    if (!btn) return;
+    const item = btn.closest('.subscriber-item');
+    const input = item && item.querySelector('.limit-input');
+    if (!input) return;
+    saveSubscriber(numberOf(btn), { limit: input.value === '' ? 0 : Number(input.value) }, btn);
   });
 
-  $$('.save-limit', root).forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      const number = e.target.dataset.number;
-      const input = root.querySelector(`.limit-input[data-number="${CSS.escape(number)}"]`);
-      saveSubscriber(number, { limit: input.value === '' ? 0 : Number(input.value) }, btn);
-    });
-  });
-
-  $$('.limit-input', root).forEach((input) => {
-    input.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      root.querySelector(`.save-limit[data-number="${CSS.escape(input.dataset.number)}"]`).click();
-    });
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.classList.contains('limit-input')) return;
+    e.preventDefault();
+    const item = e.target.closest('.subscriber-item');
+    const btn = item && item.querySelector('.save-limit');
+    if (btn) btn.click();
   });
 }
 
@@ -3116,7 +3215,10 @@ async function saveSubscriber(number, payload, btn) {
     if (data.view) applyView(data.view);
     if (btn) { btn.textContent = 'Сохранено'; setTimeout(() => { btn.textContent = 'Сохранить'; }, 1400); }
     else flashHint(`Настройки ${formatPhone(number)} сохранены.`);
-    if (settingsTab === 'subscribers') drawSubscriberList();
+    // Список НЕ перерисовываем. Всё, что тут видно, — номер, ФИО, должность,
+    // сумма счёта и то, что человек только что сам и поменял; ни одно из
+    // этого от сохранения не меняется. А перерисовка сбрасывала фокус прямо
+    // из-под курсора и заново собирала сотню строк на каждую галочку.
   } catch (err) {
     flashHint(`Не удалось сохранить: ${err.message}`, 'error');
     if (btn) btn.textContent = 'Сохранить';

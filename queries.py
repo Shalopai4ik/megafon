@@ -706,7 +706,7 @@ def month_dataset(month: str) -> dict[str, Any]:
         roster[str(row["number"])][row["month"]] = float(row["total"] or 0.0)
 
     trips: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in db.query("SELECT * FROM business_trips "
+    for row in db.query(f"SELECT * FROM business_trips WHERE {_REAL_TRIP} "
                         " ORDER BY approved DESC, date_start"):
         trips[str(row["number"])].append(row)
 
@@ -1175,7 +1175,11 @@ def stats() -> dict[str, Any]:
             "SELECT COUNT(*) AS n FROM pvalues pv "
             "  JOIN reports r ON r.id = pv.report_id", default=0) or 0),
         "chip_settings": int(db.scalar("SELECT COUNT(*) AS n FROM chip_settings", default=0) or 0),
-        "business_trips": int(db.scalar("SELECT COUNT(*) AS n FROM business_trips", default=0) or 0),
+        # Считаем только строки с периодом — то же, что видно в таблице
+        # командировок (см. _REAL_TRIP). Иначе сводка обещала бы записи,
+        # которых на экране нет.
+        "business_trips": int(db.scalar(
+            f"SELECT COUNT(*) AS n FROM business_trips WHERE {_REAL_TRIP}", default=0) or 0),
         "payment_rules": int(db.scalar(
             "SELECT COUNT(*) AS n FROM payment_rules WHERE enabled = 1", default=0) or 0),
     }
@@ -1612,6 +1616,19 @@ def delete_roaming_zone(code: str) -> list[dict[str, Any]]:
 #  КОМАНДИРОВКИ
 # ═══════════════════════════════════════════════════════════════════════════
 
+# КОМАНДИРОВКОЙ СЧИТАЕТСЯ ТОЛЬКО СТРОКА С ПЕРИОДОМ.
+#
+# Пустая дата в pick_trip означает «границы нет» — то есть командировку без
+# конца, действующую в любом месяце. Для ручной галочки это удобно и сделано
+# намеренно, а вот в загруженном файле строка без периода — просто мусор:
+# один раз загруженный не тем файлом список сотрудников превращал в вечно
+# командированный весь парк. Условие стоит во всех местах чтения, поэтому уже
+# попавший в базу мусор перестаёт влиять на расчёт и исчезает из таблицы;
+# вычищается он кнопкой «Очистить все».
+_REAL_TRIP = "date_start <> '' AND date_end <> '' " \
+             "AND date_start IS NOT NULL AND date_end IS NOT NULL"
+
+
 def save_trips(rows: list[dict[str, Any]]) -> int:
     """Сохранить строки командировок. Повторная загрузка не плодит дубли:
     ключ — (номер, дата начала, дата конца)."""
@@ -1635,10 +1652,11 @@ def save_trips(rows: list[dict[str, Any]]) -> int:
 
 def get_trips(number: str = "") -> list[dict[str, Any]]:
     if number:
-        rows = db.query("SELECT * FROM business_trips WHERE number = ? ORDER BY date_start",
-                        (str(number),))
+        rows = db.query(f"SELECT * FROM business_trips WHERE number = ? AND {_REAL_TRIP} "
+                        " ORDER BY date_start", (str(number),))
     else:
-        rows = db.query("SELECT * FROM business_trips ORDER BY date_start DESC, number")
+        rows = db.query(f"SELECT * FROM business_trips WHERE {_REAL_TRIP} "
+                        " ORDER BY date_start DESC, number")
     return [_bools(r, "approved") for r in rows]
 
 
@@ -1652,7 +1670,7 @@ def trip_for_month(number: str, month: str) -> dict[str, Any] | None:
     if not number or not month:
         return None
     rows = db.query(
-        "SELECT * FROM business_trips WHERE number = ? "
+        f"SELECT * FROM business_trips WHERE number = ? AND {_REAL_TRIP} "
         " ORDER BY approved DESC, date_start",
         (str(number),),
     )
@@ -1672,7 +1690,11 @@ def pick_trip(rows: list[dict[str, Any]], month: str) -> dict[str, Any] | None:
     for row in rows:
         start = str(row.get("date_start") or "")
         end = str(row.get("date_end") or "")
-        if (not start or start[:7] <= month) and (not end or end[:7] >= month):
+        # Строка без периода — не командировка (см. _REAL_TRIP). Проверка
+        # дублирует SQL: сюда список может прийти и не из базы.
+        if not (start and end):
+            continue
+        if start[:7] <= month and end[:7] >= month:
             return _bools(row, "approved")
     return None
 

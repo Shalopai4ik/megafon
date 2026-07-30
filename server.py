@@ -107,6 +107,29 @@ def decode_bytes(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+# Подписи офисных форматов в первых байтах файла. XLSX — это ZIP («PK»),
+# старый XLS и DOC — контейнер OLE2, PDF подписан прямо словом.
+_BINARY_SIGNATURES = (
+    (b"PK\x03\x04", "XLSX/ZIP"),
+    (b"\xd0\xcf\x11\xe0", "XLS"),
+    (b"%PDF", "PDF"),
+)
+
+
+def binary_format_of(raw: bytes) -> str:
+    """Имя офисного формата, если файл двоичный, иначе пустая строка.
+
+    ЗАЧЕМ. Excel-файл, прочитанный как текст, превращается в мусор, в котором
+    не находится ни номеров, ни дат — и человек получал ответ «в файле не
+    найдено ни одной командировки», хотя файл правильный, просто не сохранён
+    в CSV. Проверка по подписи даёт вместо этого понятный совет.
+    """
+    for signature, name in _BINARY_SIGNATURES:
+        if raw.startswith(signature):
+            return name
+    return ""
+
+
 DELIMITERS = (";", "|", "\t")
 
 
@@ -1000,8 +1023,13 @@ def _parse_spaced_row(line: str, month_columns: list[tuple[int, str]]) -> dict[s
 #  Так файл читается, даже если добавили или переставили колонку.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Дата в формате ДД.ММ.ГГГГ (в выгрузке используется только он).
-_TRIP_DATE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b")
+# Дата периода. Разделитель любой из «.-/», год двух- или четырёхзначный:
+# в одной выгрузке пишут 24.06.2023, в другой 24/06/23.
+_TRIP_DATE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\b")
+
+# Та же дата, но уже в сортируемом виде: Excel часто отдаёт ГГГГ-ММ-ДД.
+# Под _TRIP_DATE она не попадает: там первая группа не длиннее двух цифр.
+_TRIP_DATE_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 # Слова шапки — по ним строка распознаётся как заголовок и пропускается.
 _TRIP_HEADER_KW = ("абонентский номер", "фио", "период командировки",
@@ -1009,12 +1037,35 @@ _TRIP_HEADER_KW = ("абонентский номер", "фио", "период 
 
 
 def _iso_date(text: str) -> str:
-    """ДД.ММ.ГГГГ → ГГГГ-ММ-ДД. В базе даты хранятся сортируемым форматом."""
-    m = _TRIP_DATE.search(str(text or ""))
-    if not m:
-        return ""
-    day, month, year = m.groups()
-    return f"{year}-{int(month):02d}-{int(day):02d}"
+    """Первая дата строки → ГГГГ-ММ-ДД. В базе даты хранятся так же."""
+    found = _dates_in(text)
+    return found[0] if found else ""
+
+
+def _dates_in(text: str) -> list[str]:
+    """ВСЕ даты текста в порядке появления, в формате ГГГГ-ММ-ДД.
+
+    Нужен список, а не одна дата: период командировки бывает свёрнут в одну
+    ячейку — «24.06.2023-01.07.2023» или «с 24.06.2023 по 01.07.2023». Пока
+    отсюда возвращалась одна дата, у такой выгрузки конец периода терялся и
+    командировка превращалась в однодневную.
+    """
+    s = str(text or "")
+    out: list[tuple[int, str]] = []
+    for m in _TRIP_DATE_ISO.finditer(s):
+        year, month, day = m.groups()
+        out.append((m.start(), f"{year}-{int(month):02d}-{int(day):02d}"))
+    for m in _TRIP_DATE.finditer(s):
+        day, month, year = m.groups()
+        if len(year) == 2:
+            # Двузначный год: 23 → 2023. Выгрузки командировок про прошлый век
+            # не бывают, поэтому окно простое — всё в 2000-х.
+            year = f"20{year}"
+        if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
+            continue
+        out.append((m.start(), f"{year}-{int(month):02d}-{int(day):02d}"))
+    out.sort(key=lambda x: x[0])
+    return [iso for _, iso in out]
 
 
 def _is_trip_header(line: str) -> bool:
@@ -1027,11 +1078,17 @@ def _is_trip_header(line: str) -> bool:
 _TRIP_COLUMNS = (
     ("number", ("абонентский номер", "номер телефона", "телефон")),
     ("username", ("фио", "сотрудник", "ф.и.о")),
+    ("period", ("период командировки", "период", "дата начала", "начало")),
     ("country", ("страна",)),
     ("order_no", ("номер заказа", "заказ")),
     ("approved", ("утверждено", "согласовано")),
     ("memo_no", ("сз", "служебная записка")),
 )
+
+# Колонка «Дата» из блока «Примечание» — это дата ЗАЯВКИ, а не период.
+# Сверка точным равенством, а не вхождением: «дата начала» тоже содержит
+# «дата», и по вхождению эта колонка съедала начало периода.
+_TRIP_ORDER_DATE_TITLES = ("дата", "дата заказа", "дата заявки", "дата сз")
 
 
 def _trip_header_map(line: str, delim: str) -> dict[str, int]:
@@ -1039,6 +1096,9 @@ def _trip_header_map(line: str, delim: str) -> dict[str, int]:
     cells = [" ".join(c.strip().strip('"').lower().replace("ё", "е").split())
              for c in line.split(delim)]
     out: dict[str, int] = {}
+    for idx, cell in enumerate(cells):
+        if cell in _TRIP_ORDER_DATE_TITLES and "order_date" not in out:
+            out["order_date"] = idx
     for key, aliases in _TRIP_COLUMNS:
         for idx, cell in enumerate(cells):
             if cell and any(a in cell for a in aliases) and key not in out:
@@ -1060,12 +1120,21 @@ def parse_trips(text: str) -> dict[str, Any]:
     если в ФИО есть цифры («Сотрудник 9596»): такое поле не считалось
     текстовым, именем становилась страна, а «№ СЗ» подхватывал цифры из
     фамилии. Теперь при наличии заголовка колонки берутся строго по нему.
+
+    КОМАНДИРОВКА БЕЗ ПЕРИОДА — НЕ КОМАНДИРОВКА.
+    Раньше строка без дат всё равно сохранялась, с пустыми date_start и
+    date_end. А пустая дата в pick_trip означает «границы нет», то есть
+    ВЕЧНУЮ командировку: номер считался командированным в любом месяце. Стоило
+    один раз ошибиться файлом и загрузить сюда список сотрудников — и весь
+    парк оказывался в командировке, а таблица командировок показывала всех
+    подряд. Теперь строки без периода не сохраняются, а считаются отдельно
+    (stats.no_dates), чтобы объяснить человеку, что за файл он принёс.
     """
     lines = [ln.rstrip() for ln in
              text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     lines = [ln for ln in lines if ln.strip()]
     if not lines:
-        return {"rows": [], "stats": {"rows": 0, "skipped": 0}}
+        return {"rows": [], "stats": {"rows": 0, "skipped": 0, "no_dates": 0}}
 
     delim = detect_delimiter(lines[:200])
     # Шапка ДВУХСТРОЧНАЯ: в первой строке «Примечание» на две колонки, во
@@ -1091,17 +1160,28 @@ def parse_trips(text: str) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     skipped = 0
-
-    def cell(cells: list[str], key: str) -> str:
-        idx = columns.get(key)
-        return cells[idx].strip() if idx is not None and idx < len(cells) else ""
+    no_dates = 0
 
     for line in lines:
         if _is_trip_header(line):
             continue
 
-        cells = [c.strip().strip('"') for c in line.split(delim)] if delim in line \
+        # РАЗДЕЛИТЕЛЬ У КАЖДОЙ СТРОКИ СВОЙ.
+        # Колонки из шапки — это номера полей, разрезанных ТЕМ ЖЕ символом.
+        # Если строка разрезана пробелами (копипаст из Excel в блокнот), а
+        # шапка была по «;», то индексы указывают в никуда: ФИО из трёх слов
+        # даёт три поля вместо одного, и «Страна» уезжает на место фамилии.
+        # Поэтому по шапке работаем только с теми строками, что разрезаны
+        # тем же разделителем; остальные идут вторым путём, по содержимому.
+        by_delim = bool(delim) and delim in line
+        cells = [c.strip().strip('"') for c in line.split(delim)] if by_delim \
             else line.split()
+        cols = columns if (by_delim and columns) else {}
+
+        def cell(key: str, _cells: list[str] = cells,
+                 _cols: dict[str, int] = cols) -> str:
+            idx = _cols.get(key)
+            return _cells[idx].strip() if idx is not None and idx < len(_cells) else ""
 
         # 1. Абонентский номер. Из колонки заголовка, иначе — первое поле
         #    из 10–11 цифр.
@@ -1109,7 +1189,7 @@ def parse_trips(text: str) -> dict[str, Any]:
         #    затирала бы функцию cell() выше и разбор падал бы с
         #    «'str' object is not callable».
         number = ""
-        by_header = cell(cells, "number")
+        by_header = cell("number")
         if by_header:
             digits = re.sub(r"\D", "", by_header)
             if 10 <= len(digits) <= 11:
@@ -1124,39 +1204,67 @@ def parse_trips(text: str) -> dict[str, Any]:
             skipped += 1
             continue
 
-        # 2. Даты: первые две в строке — период командировки, третья (если
-        #    есть) — дата заявки из блока «Примечание».
-        dates = [f"{y}-{int(m):02d}-{int(d):02d}"
-                 for d, m, y in _TRIP_DATE.findall(line)]
-        date_start = dates[0] if dates else ""
-        date_end = dates[1] if len(dates) > 1 else date_start
-        order_date = dates[2] if len(dates) > 2 else ""
+        # 2. ПЕРИОД. Дату заявки из блока «Примечание» в период не пускаем:
+        #    когда её колонка опознана, она вычёркивается из кандидатов, а не
+        #    надеемся на то, что она окажется третьей по порядку.
+        order_date = _iso_date(cell("order_date"))
+        order_date_idx = cols.get("order_date")
+        period_cells = [c for i, c in enumerate(cells) if i != order_date_idx]
+
+        dates: list[str] = []
+        for c in period_cells:
+            dates.extend(_dates_in(c))
+        if not dates:
+            # Номер есть, периода нет — это не командировка. Считаем отдельно:
+            # такие строки означают, что принесли не тот файл.
+            no_dates += 1
+            continue
+        if not order_date and len(dates) > 2:
+            order_date = dates[2]
+        date_start, date_end = dates[0], dates[1] if len(dates) > 1 else dates[0]
+        if date_end < date_start:
+            date_start, date_end = date_end, date_start
 
         # 3–6. Остальные поля. Если заголовок разобран — берём строго по нему;
         #      иначе угадываем по содержимому (см. докстроку функции).
-        username = cell(cells, "username")
-        country = cell(cells, "country")
-        order_no = re.sub(r"\D", "", cell(cells, "order_no"))
-        memo_no = re.sub(r"\D", "", cell(cells, "memo_no"))
-        approved_cell = cell(cells, "approved").lower()
+        username = cell("username")
+        country = cell("country")
+        order_no = re.sub(r"\D", "", cell("order_no"))
+        memo_no = re.sub(r"\D", "", cell("memo_no"))
 
-        if "approved" in columns:
-            approved = approved_cell in ("да", "yes", "+", "1")
+        if "approved" in cols:
+            approved = cell("approved").lower() in ("да", "yes", "+", "1")
         else:
             # Отдельная ячейка «да», а не подстрока: иначе «Данные» сойдёт за «да».
             approved = any(c.strip().lower() in ("да", "yes", "+", "1") for c in cells)
 
-        if not columns:
-            # Запасной путь: ФИО — самое длинное поле без цифр, страна — сле́дующее.
-            text_cells = [c for c in cells if c and not re.search(r"\d", c)]
-            username = max(text_cells, key=len) if text_cells else ""
-            for c in text_cells:
-                if c != username and c.lower() not in ("да", "нет", "-", "—"):
-                    country = c
-                    break
+        if not cols:
+            # ЗАПАСНОЙ ПУТЬ: колонок нет, идём по содержимому.
+            #
+            # Текстовые поля склеиваем ГРУППАМИ ИЗ СОСЕДНИХ. Причина: строка,
+            # разрезанная пробелами, дробит ФИО на три поля, и «самое длинное
+            # поле без цифр» — это одно слово, чаще всего отчество. Соседние
+            # текстовые поля между цифрами — это одна ячейка исходной таблицы.
+            groups: list[str] = []
+            current: list[str] = []
+            for c in cells:
+                if c and not re.search(r"\d", c):
+                    current.append(c)
+                elif current:
+                    groups.append(" ".join(current))
+                    current = []
+            if current:
+                groups.append(" ".join(current))
+
+            # Порядок колонок в таких выгрузках один: номер, ФИО, период,
+            # страна. Поэтому берём по порядку, а не «самое длинное поле»:
+            # длинное название страны иначе выигрывало у короткого ФИО.
+            named = [g for g in groups if g.lower() not in ("да", "нет", "-", "—")]
+            username = named[0] if named else ""
+            country = named[1] if len(named) > 1 else ""
             for c in cells:
                 digits = re.sub(r"\D", "", c)
-                if not digits or digits == re.sub(r"\D", "", number) or _TRIP_DATE.search(c):
+                if not digits or digits == re.sub(r"\D", "", number) or _dates_in(c):
                     continue
                 if len(digits) >= 6 and not order_no:
                     order_no = digits
@@ -1173,7 +1281,7 @@ def parse_trips(text: str) -> dict[str, Any]:
 
     return {
         "rows": rows,
-        "stats": {"rows": len(rows), "skipped": skipped,
+        "stats": {"rows": len(rows), "skipped": skipped, "no_dates": no_dates,
                   "approved": sum(1 for r in rows if r["approved"]),
                   "delimiter": delim},
     }
@@ -1955,6 +2063,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not raw:
             return self._error(400, "Файл не найден в запросе")
 
+        binary = binary_format_of(raw)
+        if binary:
+            return self._error(
+                400,
+                f"Это файл {binary}, а не таблица текстом. Откройте его в Excel "
+                f"и сохраните как «CSV (разделители — точки с запятой)», после "
+                f"этого загрузите заново."
+            )
+
         text = decode_bytes(raw)
 
         if kind == "bill":
@@ -1974,6 +2091,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if kind == "trips":
             parsed = parse_trips(text)
             if not parsed["rows"]:
+                # Номера в файле есть, а периодов нет — почти всегда это список
+                # сотрудников, загруженный не в ту кнопку. Так и говорим, иначе
+                # человек ищет ошибку в файле командировок, которого не давал.
+                if parsed["stats"].get("no_dates"):
+                    return self._error(
+                        400,
+                        f"Ни в одной строке нет периода командировки: номеров "
+                        f"нашлось {parsed['stats']['no_dates']}, дат — ни одной. "
+                        f"Похоже, это список сотрудников, а не командировки — "
+                        f"список грузится кнопкой «Список сотрудников»."
+                    )
                 return self._error(
                     400,
                     "В файле не найдено ни одной командировки. Ожидаются колонки "
