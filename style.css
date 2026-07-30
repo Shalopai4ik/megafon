@@ -249,6 +249,10 @@ button { font-family: inherit; }
   padding: 10px 12px; border: none; border-radius: var(--radius-sm);
   background: none; font-family: inherit; text-align: left; cursor: pointer;
   color: var(--text); min-height: 44px;
+  /* Пункт меню бывает и ссылкой (документация открывается в новой вкладке),
+     а у ссылки по умолчанию есть подчёркивание — рядом с кнопками оно
+     выглядит чужеродно. */
+  text-decoration: none;
   transition: background .12s ease;
 }
 .menu-item:hover { background: var(--surface-2); }

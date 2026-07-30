@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Черемша — как считаются деньги</title>
+<style>
+:root{
+  --bg:#ffffff; --fg:#14201a; --muted:#6b7c74; --line:#dfe7e3; --line2:#eef3f1;
+  --card:#f7faf9; --accent:#1f7a5c; --ok:#1f7a5c; --warn:#b4472c; --code:#f0f4f2;
+}
+:root[data-theme="dark"], html[data-theme="dark"]{
+  --bg:#111714; --fg:#e6eeea; --muted:#93a49c; --line:#26332d; --line2:#1b241f;
+  --card:#161e1a; --accent:#4fd1a5; --ok:#4fd1a5; --warn:#ff9878; --code:#1b241f;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#111714; --fg:#e6eeea; --muted:#93a49c; --line:#26332d; --line2:#1b241f;
+    --card:#161e1a; --accent:#4fd1a5; --ok:#4fd1a5; --warn:#ff9878; --code:#1b241f;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+.wrap{max-width:1100px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:34px;line-height:1.15;margin:0 0 6px}
+h2{font-size:23px;margin:52px 0 14px;padding-top:14px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:28px 0 10px}
+p{margin:10px 0}
+code{background:var(--code);padding:1px 5px;border-radius:4px;
+  font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}
+.lead{font-size:17px;color:var(--muted);margin-bottom:4px}
+.stamp{color:var(--muted);font-size:13px;margin-top:18px}
+.muted{color:var(--muted);font-size:13px}
+em.muted{font-style:italic}
+
+/* ── оглавление ─────────────────────────────────────────────────────────── */
+.toc{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:16px 20px;margin:26px 0}
+.toc ol{margin:6px 0 0;padding-left:22px}
+.toc li{margin:4px 0}
+.toc a{color:var(--accent);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+
+/* ── таблицы ────────────────────────────────────────────────────────────── */
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:14px 0}
+table.grid{border-collapse:collapse;width:100%;min-width:640px;font-size:14px}
+table.grid th,table.grid td{border:1px solid var(--line);padding:8px 10px;
+  text-align:left;vertical-align:top}
+table.grid th{background:var(--card);font-weight:600;font-size:13px}
+table.grid tbody tr:nth-child(even){background:var(--line2)}
+td.num,th.num{text-align:right;white-space:nowrap}
+td.why{color:var(--muted);font-size:13px}
+.also{margin-top:4px;color:var(--muted);font-size:12px}
+.swatch{display:inline-block;width:11px;height:11px;border-radius:3px;
+  margin-right:6px;border:1px solid var(--line);vertical-align:baseline}
+
+.pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;
+  white-space:nowrap;border:1px solid transparent}
+.pill-ok{background:rgba(31,122,92,.13);color:var(--ok);border-color:rgba(31,122,92,.35)}
+.pill-warn{background:rgba(180,71,44,.13);color:var(--warn);border-color:rgba(180,71,44,.35)}
+.pill-muted{background:var(--code);color:var(--muted);border-color:var(--line)}
+
+/* ── схемы ──────────────────────────────────────────────────────────────── */
+.flow{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin:18px 0}
+.flow .step{flex:1 1 140px;min-width:130px;background:var(--card);
+  border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.flow .step b{display:block;font-size:14px;margin-bottom:3px}
+.flow .step span{display:block;color:var(--muted);font-size:12.5px;line-height:1.45}
+.flow .step em{display:block;margin-top:6px;font-style:normal;font-size:11.5px;
+  color:var(--accent);font-family:ui-monospace,Consolas,monospace}
+.flow .step.accent{border-color:var(--accent)}
+.flow .arrow{align-self:center;color:var(--muted);font-size:19px;flex:0 0 auto}
+.flow-v{flex-direction:column;align-items:stretch}
+.flow-v .arrow{align-self:center}
+.flow .step.wide{flex:1 1 100%}
+.split{display:flex;gap:8px;flex-wrap:wrap}
+.split .step{flex:1 1 220px}
+
+.ladder{margin:16px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.rung{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+  border-bottom:1px solid var(--line)}
+.rung:last-child{border-bottom:0}
+.rung:nth-child(even){background:var(--line2)}
+.rung-n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--accent);
+  color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:700}
+.rung-body{flex:1 1 auto;min-width:200px}
+.rung-body b{display:block;font-size:14.5px}
+.rung-body span{display:block;color:var(--muted);font-size:13px}
+.rung-src{flex:0 0 auto;align-self:center}
+
+.note{background:var(--card);border-left:3px solid var(--accent);
+  border-radius:0 8px 8px 0;padding:12px 16px;margin:16px 0}
+.note b{display:block;margin-bottom:3px}
+.warn-box{background:rgba(180,71,44,.10);border-left:3px solid var(--warn);
+  border-radius:0 8px 8px 0;padding:12px 16px;margin:16px 0;font-size:14px}
+.formula{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;margin:14px 0;font:13.5px/1.9 ui-monospace,Consolas,monospace;
+  overflow-x:auto}
+</style>
+</head><body>
+<div class="wrap">
+<h1>Черемша</h1>
+<p class="lead">Как в этой программе получаются деньги: откуда берутся суммы,
+почему услуга попала в эту корзину и кто в итоге платит.</p>
+<p class="muted">Для администраторов и разработчиков. Таблицы в документе
+собраны из самого кода и базы — разъехаться с исходниками они не могут.</p>
+
+<div class="toc">
+  <b>О чём здесь</b>
+  <ol>
+    <li><a href="#map">Карта: путь от файла до карточки</a></li>
+    <li><a href="#price">Как получается цена</a></li>
+    <li><a href="#includes">Таблица разнесения: какая услуга в какую корзину</a></li>
+    <li><a href="#who">Кто платит: лестница правил</a></li>
+    <li><a href="#chips">Чипсы: цвета, пометки, правила по услугам</a></li>
+    <li><a href="#tariffs">Подбор тарифа и ставки</a></li>
+    <li><a href="#files">Загрузка файлов и листы книги Excel</a></li>
+    <li><a href="#edit">Хочу изменить — где править</a></li>
+  </ol>
+</div>
+
+<h2 id="map">1. Карта: путь от файла до карточки</h2>
+<p>Пять модулей, у каждого своя работа. Разделение жёсткое: пока оно
+соблюдается, любой вопрос «почему такая сумма» имеет ровно один адрес.</p>
+
+<div class="flow">
+  <div class="step"><b>Файл</b><span>счёт оператора,<br>список сотрудников,<br>командировки</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>Разбор</b><span>server.py<br>xlsx.py</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>База</b><span>queries.py<br>PostgreSQL</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>Смысл</b><span>domain.py<br>категории, тарифы,<br>рекомендации</span></div>
+  <div class="arrow">→</div>
+  <div class="step"><b>Деньги</b><span>includes.py<br>billing.py<br>кто за что платит</span></div>
+  <div class="arrow">→</div>
+  <div class="step accent"><b>Карточка</b><span>script.js</span></div>
+</div>
+<div class="note">
+  <b>Главное правило</b>
+  <code>domain.py</code> отвечает на вопрос «что это значит»,
+  <code>includes.py</code> и <code>billing.py</code> — на вопрос «кто за это платит».
+  Смешивать нельзя: именно из-за смешения международные звонки когда-то
+  попадали в «перерасход пакета» и вешались на человека.
+</div>
+
+<h2 id="price">2. Как получается цена</h2>
+<p>Сумма в карточке не пересчитывается нами заново — она берётся из счёта
+оператора. Наша работа в другом: разложить эти деньги так, чтобы было видно,
+за что они и чьи они.</p>
+<p>Каждая строка счёта проходит по двум независимым осям.</p>
+
+<div class="flow flow-v">
+  <div class="step wide"><b>Строка счёта</b>
+    <span>«Исходящие международные вызовы; 70 мин; 229,50»</span></div>
+  <div class="arrow">↓</div>
+  <div class="split">
+    <div class="step"><b>Категория</b>
+      <span>чего потратили:<br>минуты / интернет / SMS</span>
+      <em>domain.categorize</em></div>
+    <div class="step"><b>Корзина</b>
+      <span>кто платит:<br>абонплата / опции /<br>сверх пакета / роуминг</span>
+      <em>includes.match</em></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="split">
+    <div class="step"><b>Вердикт по пакету</b>
+      <span>перерасход, вне пакета,<br>недоиспользование</span>
+      <em>domain.category_verdict</em></div>
+    <div class="step"><b>Плательщик</b>
+      <span>общество или человек</span>
+      <em>billing.split_payment</em></div>
+  </div>
+</div>
+
+<h3>Ось первая: категория — чего потратили</h3>
+<p>Нужна, чтобы сравнить потребление с пакетом тарифа и подобрать другой
+тариф. Определяется по словам в названии, а если название незнакомое — по
+единице измерения. Единица надёжнее: оператор придумывает новые формулировки
+быстрее, чем мы их вносим, а «Мбайт» остаётся «Мбайт».</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Категория</th><th>Слова в названии</th>
+        <th>Или единица измерения</th></tr></thead>
+      <tbody><tr><td><b>Интернет</b><div class="muted">internet</div></td><td><code>интернет</code>, <code>трафик</code>, <code>передача данных</code>, <code>gprs</code>, <code>data</code></td><td><code>мбайт</code>, <code>гбайт</code>, <code>кбайт</code>, <code>байт</code></td></tr><tr><td><b>SMS</b><div class="muted">sms</div></td><td><code>sms</code>, <code>смс</code>, <code>сообщени</code>, <code>mms</code>, <code>ммс</code></td><td>—</td></tr><tr><td><b>Минуты</b><div class="muted">voice</div></td><td><code>вызов</code>, <code>минут</code>, <code>звон</code>, <code>голос</code>, <code>разговор</code>, <code>телефон</code></td><td><code>мин</code></td></tr><tr><td><b>Прочее</b><div class="muted">other</div></td><td colspan="2"><em class="muted">всё, что не подошло выше, а также абонплата и строки-итоги</em></td></tr></tbody>
+    </table></div>
+
+<h3>Ось вторая: корзина — кто платит</h3>
+<p>Корзин четыре. Их ровно четыре не случайно: на каждую в базе заведена своя
+колонка <code>payer_*</code> в четырёх таблицах, и пятая означала бы миграцию
+уже установленных контуров. Услуге, которой нужен свой плательщик, он
+задаётся полем <code>pays</code> в таблице разнесения, а не новой корзиной.</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Корзина</th><th>Ключ в коде</th>
+        <th>Колонка в базе</th><th>Плательщик пустой корзины</th></tr></thead>
+      <tbody><tr><td><b>Абонентская плата</b></td><td><code>tariff</code></td><td><code>payer_tariff</code></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><b>Опции и сервисы</b></td><td><code>options</code></td><td><code>payer_options</code></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><b>Связь сверх пакета</b></td><td><code>overage</code></td><td><code>payer_overage</code></td><td><span class="pill pill-warn">человек</span></td></tr><tr><td><b>Роуминг</b></td><td><code>roaming</code></td><td><code>payer_roaming</code></td><td><span class="pill pill-warn">человек</span></td></tr></tbody>
+    </table></div>
+
+<h3>Вердикт по пакету</h3>
+<p>Главный признак перерасхода — <b>деньги в счёте, а не наш расчёт</b>.
+Размеры пакетов в каталоге это наше предположение: оператор мог подключить
+опцию или акцию. А начисление по категории — факт.</p>
+<div class="formula">
+если за категорию списано 0 ₽ .......... перерасхода не было, сколько бы ни потратили<br>
+если потрачено больше пакета и списано . перерасход<br>
+если потрачено меньше пакета, но списано &gt; 0 .. «вне пакета»<br>
+&nbsp;&nbsp;&nbsp;&nbsp;это межгород, международка или спецномера:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;пакет их не покрывает в принципе<br>
+если потрачено меньше половины пакета ... недоиспользование<br>
+если не потрачено вовсе ................ пакет не использован
+</div>
+<div class="note">
+  <b>Почему это важно</b>
+  Номер с 368 минутами из 4000 показывал красное «Перерасход пакета 230 ₽»
+  и вешал его на человека. Пакет был почти не тронут — платили за
+  международные звонки, которые пакетом не покрываются вообще. Вердикт по
+  категории это понимал верно, а раскладка по корзинам врала.
+</div>
+
+<h2 id="includes">3. Таблица разнесения</h2>
+<p>Единственное место, где название услуги превращается в решение.
+Файл <code>includes.py</code>, список <code>INCLUDES</code>.</p>
+<p><b>Как читается:</b> правила проверяются сверху вниз, побеждает первое
+подошедшее. Поэтому частное стоит выше общего. Строка счёта подходит правилу,
+если её название содержит любую подстроку из колонки «Срабатывает».
+Если у правила заполнено «и одновременно» — название обязано содержать
+вдобавок что-то оттуда.</p>
+<p>Сравнение идёт по «сплющенному» названию: нижний регистр, схлопнутые
+пробелы. Поэтому в таблице всё строчными, и про то, сколько пробелов оператор
+поставил в этот раз, думать не надо.</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr>
+        <th>№</th><th>Корзина</th><th>Платит<br>по умолчанию</th>
+        <th>Срабатывает, если в названии есть</th><th>Что это</th>
+      </tr></thead>
+      <tbody><tr><td class="num">1</td><td><b>— (в деньги не идёт)</b><div class="muted">skip</div></td><td>—</td><td><code>итого начислено</code>, <code>итого по услугам</code>, <code>в том числе ндс</code>, <code>в т.ч. ндс</code>, <code>в т.ч ндс</code></td><td class="why">строка-итог, не услуга</td></tr><tr><td class="num">2</td><td><b>Абонентская плата</b><div class="muted">tariff</div></td><td><span class="pill pill-ok">общество</span></td><td><code>абонентская плата по тарифному плану</code>, <code>абонентская плата за тариф</code></td><td class="why">база тарифа</td></tr><tr><td class="num">3</td><td><b>Абонентская плата</b><div class="muted">tariff</div></td><td><span class="pill pill-ok">общество</span></td><td><code>абонентская плата</code>, <code>абонплата</code><div class="also">и одновременно: <code>интернет</code>, <code>трафик</code>, <code>передача данных</code></div></td><td class="why">докупленный пакет интернета — тоже абонплата</td></tr><tr><td class="num">4</td><td><b>Роуминг</b><div class="muted">roaming</div></td><td><span class="pill pill-warn">человек</span></td><td><code>роуминг</code>, <code>путешеств</code>, <code>страны пребывания</code>, <code>региона пребывания</code>, <code>за пределами домашнего региона</code></td><td class="why">связь вне домашнего региона</td></tr><tr><td class="num">5</td><td><b>Опции и сервисы</b><div class="muted">options</div></td><td><span class="pill pill-ok">общество</span></td><td><code>виртуальная атс</code>, <code>ватс</code>, <code>офис в кармане</code>, <code>защита сотрудников</code>, <code>ми.</code>, <code>мобильное информирование</code>, <code>детализация</code>, <code>видеостриминг</code>, <code>premium voice</code>, <code>замена sim</code>, <code>блокировка номера</code>, <code>доставка счета</code>, <code>дополнительный номер</code>, <code>дополнительный городской номер</code>, <code>автоответчик</code>, <code>голосовая почта</code>, <code>удержание вызова</code>, <code>запрет развлекательного</code>, <code>бизнес без границ</code>, <code>экспресс-набор</code>, <code>разовые услуги</code>, <code>прочие начисления</code>, <code>m2m</code></td><td class="why">опция или сервис, от тарифа не зависит</td></tr><tr><td class="num">6</td><td><b>Опции и сервисы</b><div class="muted">options</div></td><td><span class="pill pill-ok">общество</span></td><td><code>абонентская плата за услугу</code>, <code>абонентская плата за опцию</code></td><td class="why">подписка на опцию под незнакомым названием</td></tr><tr><td class="num">7</td><td><b>Связь сверх пакета</b><div class="muted">overage</div></td><td><span class="pill pill-ok">общество</span></td><td><code>международн</code>, <code>междугородн</code></td><td class="why">межгород и международная связь: пакетом не покрывается</td></tr><tr><td class="num">8</td><td><b>Связь сверх пакета</b><div class="muted">overage</div></td><td><span class="pill pill-warn">человек</span></td><td><em class="muted">любое название — это хвост таблицы</em></td><td class="why">перерасход пакета: минуты, интернет и SMS сверх включённого</td></tr></tbody>
+    </table></div>
+
+<h2 id="who">4. Кто платит: лестница правил</h2>
+<p>Плательщик корзины ищется сверху вниз. Первое сработавшее правило
+побеждает, до нижних дело не доходит.</p>
+<div class="ladder"><div class="rung"><div class="rung-n">1</div><div class="rung-body"><b>Ручной переключатель в карточке</b><span>Настройки плательщика прямо на номере. Сильнее всего: поставили руками — значит так и надо.</span></div><div class="rung-src"><code>chip_settings.payer_*</code></div></div><div class="rung"><div class="rung-n">2</div><div class="rung-body"><b>Цвет номера</b><span>«Личный тариф — платит сам», «Безлимит», «Устройство». Один цвет на номер.</span></div><div class="rung-src"><code>chip_rules (kind=color)</code></div></div><div class="rung"><div class="rung-n">3</div><div class="rung-body"><b>Пометки номера</b><span>Несколько на номер, применяются по порядку sort_order.</span></div><div class="rung-src"><code>chip_rules (kind=mark)</code></div></div><div class="rung"><div class="rung-n">4</div><div class="rung-body"><b>Командировка</b><span>Действует ТОЛЬКО на корзину «Роуминг»: утверждённая командировка переводит её на общество.</span></div><div class="rung-src"><code>business_trips</code></div></div><div class="rung"><div class="rung-n">5</div><div class="rung-body"><b>Правило по названию услуги</b><span>Построчно внутри корзины: в одной корзине бывают и рабочие, и личные услуги.</span></div><div class="rung-src"><code>payment_rules</code></div></div><div class="rung"><div class="rung-n">6</div><div class="rung-body"><b>Умолчание самой услуги</b><span>Самый слабый уровень. Поле pays в таблице разнесения.</span></div><div class="rung-src"><code>includes.INCLUDES</code></div></div></div>
+<div class="note">
+  <b>Настройки номера сильнее правил по услуге</b>
+  Если номер помечен «Личный тариф», опции остаются на человеке, что бы ни
+  говорило правило про «Офис в кармане». Каждое решение сопровождается
+  объяснением — в карточке видно не только «общество», но и почему.
+</div>
+<p>Корзина может оказаться <b>смешанной</b>: в «Связи сверх пакета» лежат и
+перерасход пакета (человек), и межгород с международкой (общество). Тогда
+плашка так и пишет — «разные услуги, разные плательщики», а разбор по строкам
+виден в подробной карточке абонента.</p>
+
+<h2 id="chips">5. Чипсы</h2>
+<h3>Цвета и пометки номера</h3>
+<p>Цвет на номере один, пометок может быть несколько. Значение
+<code>auto</code> означает «не вмешиваться, пусть решают правила ниже».</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Правило номера</th><th>Абонентская плата</th><th>Опции и сервисы</th><th>Связь сверх пакета</th><th>Роуминг</th></tr></thead>
+      <tbody><tr><td><span class="swatch" style="background:#8a9a94"></span><b>Обычный</b><div class="muted"><code>normal</code> · цвет</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><span class="swatch" style="background:#2f6fd0"></span><b>Безлимит — не учитываем</b><div class="muted"><code>unlimited</code> · цвет</div></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><span class="swatch" style="background:#b07f16"></span><b>Личный тариф — платит сам</b><div class="muted"><code>personal</code> · цвет</div></td><td><span class="pill pill-warn">человек</span></td><td><span class="pill pill-warn">человек</span></td><td><span class="pill pill-warn">человек</span></td><td><span class="pill pill-warn">человек</span></td></tr><tr><td><span class="swatch" style="background:#6b7a74"></span><b>Устройство (M2M)</b><div class="muted"><code>device</code> · цвет</div></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><span class="swatch" style="background:#7b4fbf"></span><b>Руководитель — всё на компании</b><div class="muted"><code>vip</code> · цвет</div></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><span class="swatch" style="background:#2f8f6b"></span><b>Разъездной — роуминг на компании</b><div class="muted"><code>field</code> · цвет</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><span class="swatch" style="background:#c6504f"></span><b>На контроле</b><div class="muted"><code>watch</code> · цвет</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><b>Проверить</b><div class="muted"><code>check</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><span class="swatch" style="background:#6b7a74"></span><b>Не учитывать</b><div class="muted"><code>no_count</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><span class="swatch" style="background:#b07f16"></span><b>Опции за свой счёт</b><div class="muted"><code>own_options</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-warn">человек</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><span class="swatch" style="background:#2f8f6b"></span><b>Роуминг согласован</b><div class="muted"><code>roaming_ok</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-ok">общество</span></td></tr><tr><td><span class="swatch" style="background:#7b4fbf"></span><b>Перерасход на компании</b><div class="muted"><code>overage_company</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-ok">общество</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr><tr><td><span class="swatch" style="background:#c6504f"></span><b>Заблокирован</b><div class="muted"><code>blocked</code> · пометка</div></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td><td><span class="pill pill-muted">как решат правила</span></td></tr></tbody>
+    </table></div>
+<h3>Правила по названию услуги</h3>
+<p>Работают построчно внутри корзины: в одной корзине бывают и рабочие, и
+личные услуги.</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Приоритет</th><th>Если в названии есть</th>
+        <th>Корзина</th><th>Платит</th><th>Почему</th></tr></thead>
+      <tbody><tr><td class="num">10</td><td><code>premium voice</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">Контент-провайдеры: платные подписки и короткие номера — личное.</td></tr><tr><td class="num">11</td><td><code>контент-провайдер</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">То же самое, если оператор назвал строку иначе.</td></tr><tr><td class="num">12</td><td><code>видеостриминг</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">Просмотр видео — развлечение, не работа.</td></tr><tr><td class="num">13</td><td><code>звонок за счет друга</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">Личная услуга абонента.</td></tr><tr><td class="num">14</td><td><code>мобильные sms-сервис</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">Платные SMS-сервисы — личное.</td></tr><tr><td class="num">15</td><td><code>мультимедийных сообщени</code></td><td>Опции и сервисы</td><td><span class="pill pill-warn">человек</span></td><td class="why">MMS — личное.</td></tr><tr><td class="num">40</td><td><code>виртуальная атс</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Корпоративная телефония.</td></tr><tr><td class="num">41</td><td><code>ватс</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Она же, сокращённо.</td></tr><tr><td class="num">42</td><td><code>офис в кармане</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Рабочий сервис.</td></tr><tr><td class="num">43</td><td><code>защита сотрудник</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Корпоративная услуга безопасности.</td></tr><tr><td class="num">44</td><td><code>экспресс-набор</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">FMC — короткие номера внутри компании.</td></tr><tr><td class="num">45</td><td><code>m2m</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Устройства без сотрудника.</td></tr><tr><td class="num">46</td><td><code>ми.</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Мобильное информирование: рассылки клиентам — расход компании.</td></tr><tr><td class="num">47</td><td><code>мегафон таргет</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Реклама и рассылки — расход компании.</td></tr><tr><td class="num">48</td><td><code>бизнес без</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Корпоративная опция «Бизнес безграниц+».</td></tr><tr><td class="num">49</td><td><code>антифрод</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Защита от мошенничества.</td></tr><tr><td class="num">50</td><td><code>детализац</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Детализация счёта нужна бухгалтерии, а не сотруднику.</td></tr><tr><td class="num">51</td><td><code>блокировка номера</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Административное действие.</td></tr><tr><td class="num">52</td><td><code>замена sim</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Административное действие.</td></tr><tr><td class="num">53</td><td><code>переоформление договора</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Административное действие.</td></tr><tr><td class="num">54</td><td><code>доставка счета</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Административное действие.</td></tr><tr><td class="num">55</td><td><code>дополнительный номер</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Рабочий номер.</td></tr><tr><td class="num">56</td><td><code>дополнительный городской номер</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Рабочий номер.</td></tr><tr><td class="num">57</td><td><code>запрет развлекательного</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Ограничение, которое ставит компания.</td></tr><tr><td class="num">58</td><td><code>помощник ева</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Рабочий сервис.</td></tr><tr><td class="num">59</td><td><code>автоответчик</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Базовый сервис.</td></tr><tr><td class="num">60</td><td><code>голосовая почта</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Базовый сервис.</td></tr><tr><td class="num">61</td><td><code>удержание вызова</code></td><td>Опции и сервисы</td><td><span class="pill pill-ok">общество</span></td><td class="why">Базовый сервис.</td></tr></tbody>
+    </table>
+    <p class="muted">Проверяются сверху вниз, побеждает первое подошедшее.
+      Правятся в интерфейсе: Настройки → Правила оплаты.</p></div>
+
+<h2 id="tariffs">6. Подбор тарифа и ставки</h2>
+<p>Считается только тарифозависимая часть: абонплата плюс перерасход по
+минутам, SMS и интернету. Опции (ВАТС, антифрод, роуминговые пакеты) в
+сравнение не входят — иначе тарифы сравнивались бы нечестно.</p>
+<div class="formula">
+месяц на тарифе = абонплата<br>
+&nbsp;&nbsp;+ max(0, минуты − пакет_минут) × ставка_минуты<br>
+&nbsp;&nbsp;+ max(0, SMS − пакет_SMS) × ставка_SMS<br>
+&nbsp;&nbsp;+ max(0, МБ − пакет_МБ) × ставка_МБ&nbsp;&nbsp;<span class="muted">(0, если интернет безлимитный)</span>
+</div>
+<div class="note">
+  <b>Рекомендация выдаётся, только если модель побеждает факт с запасом</b>
+  Если наш каталог неточен — например, у абонента подключена опция, о которой
+  мы не знаем, — модель окажется дороже факта, и тариф честно оставят как есть.
+  Придуманной экономии не будет.
+</div>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Имя в domain.py</th><th>Ставка</th><th>За что</th></tr></thead>
+      <tbody><tr><td><code>RATE_MIN</code></td><td class="num">0.18 ₽</td><td>минута сверх пакета, другие операторы</td></tr><tr><td><code>RATE_MIN_INTERCITY</code></td><td class="num">0.50 ₽</td><td>минута междугородного вызова по России</td></tr><tr><td><code>RATE_SMS</code></td><td class="num">0.05 ₽</td><td>SMS сверх пакета абонентам РФ</td></tr><tr><td><code>RATE_SMS_ABROAD</code></td><td class="num">1.00 ₽</td><td>SMS абонентам СНГ и других стран</td></tr><tr><td><code>RATE_MMS</code></td><td class="num">0.50 ₽</td><td>MMS абонентам РФ</td></tr><tr><td><code>RATE_MMS_ABROAD</code></td><td class="num">1.50 ₽</td><td>MMS абонентам СНГ и других стран</td></tr><tr><td><code>RATE_MB</code></td><td class="num">0.05 ₽</td><td>мегабайт сверх пакета</td></tr><tr><td><code>FMC_FEE</code></td><td class="num">16.95 ₽</td><td>городской номер на трубке, в месяц</td></tr></tbody>
+    </table></div>
+<h3>Каталог тарифов по умолчанию</h3>
+<p>Реальный набор — это комбинации: голосовая база × FMC × интернет-пакет.
+Отсюда суммы, которых нет ни в одной строке тарифной сетки оператора.
+Каталог правится в интерфейсе (Настройки → Тарифы); ниже — то, с чем
+начинает работать чистая установка.</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Тариф</th><th>Абонплата, ₽</th><th>Минут</th>
+        <th>SMS</th><th>Интернет</th><th>Из чего собран</th></tr></thead>
+      <tbody><tr><td>Федеральный Специальный</td><td class="num">0.00</td><td class="num">0</td><td class="num">0</td><td class="num">0 МБ</td><td class="why">Без абонплаты, всё по факту потребления</td></tr><tr><td>Мобильный интернет 30</td><td class="num">30.00</td><td class="num">0</td><td class="num">0</td><td class="num">1536 МБ</td><td class="why">1,5 ГБ</td></tr><tr><td>Мобильный интернет 100</td><td class="num">100.00</td><td class="num">0</td><td class="num">0</td><td class="num">8192 МБ</td><td class="why">8 ГБ</td></tr><tr><td>Пакет 140</td><td class="num">140.00</td><td class="num">700</td><td class="num">300</td><td class="num">15000 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ</td></tr><tr><td>Мобильный интернет 220</td><td class="num">220.00</td><td class="num">0</td><td class="num">0</td><td class="num">15360 МБ</td><td class="why">15 ГБ</td></tr><tr><td>Пакет 230</td><td class="num">230.00</td><td class="num">1500</td><td class="num">500</td><td class="num">25000 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ</td></tr><tr><td>Мобильный интернет 310</td><td class="num">310.00</td><td class="num">0</td><td class="num">0</td><td class="num">30720 МБ</td><td class="why">30 ГБ</td></tr><tr><td>Пакет 400</td><td class="num">400.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">70000 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ</td></tr><tr><td>Мобильный интернет 400</td><td class="num">400.00</td><td class="num">0</td><td class="num">0</td><td class="num">без ограничения</td><td class="why">Без ограничения объёма</td></tr><tr><td>Федеральный Специальный + FMC</td><td class="num">16.95</td><td class="num">0</td><td class="num">0</td><td class="num">0 МБ</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC</td></tr><tr><td>Федеральный Специальный + Интернет 30</td><td class="num">30.00</td><td class="num">0</td><td class="num">0</td><td class="num">1536 МБ</td><td class="why">Без абонплаты, всё по факту потребления + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + Интернет 100</td><td class="num">100.00</td><td class="num">0</td><td class="num">0</td><td class="num">8192 МБ</td><td class="why">Без абонплаты, всё по факту потребления + 8 ГБ</td></tr><tr><td>Пакет 140 + FMC</td><td class="num">156.95</td><td class="num">700</td><td class="num">300</td><td class="num">15000 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC</td></tr><tr><td>Пакет 140 + Интернет 30</td><td class="num">170.00</td><td class="num">700</td><td class="num">300</td><td class="num">16536 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + Интернет 220</td><td class="num">220.00</td><td class="num">0</td><td class="num">0</td><td class="num">15360 МБ</td><td class="why">Без абонплаты, всё по факту потребления + 15 ГБ</td></tr><tr><td>Пакет 140 + Интернет 100</td><td class="num">240.00</td><td class="num">700</td><td class="num">300</td><td class="num">23192 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ + 8 ГБ</td></tr><tr><td>Пакет 230 + FMC</td><td class="num">246.95</td><td class="num">1500</td><td class="num">500</td><td class="num">25000 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC</td></tr><tr><td>Пакет 230 + Интернет 30</td><td class="num">260.00</td><td class="num">1500</td><td class="num">500</td><td class="num">26536 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + Интернет 310</td><td class="num">310.00</td><td class="num">0</td><td class="num">0</td><td class="num">30720 МБ</td><td class="why">Без абонплаты, всё по факту потребления + 30 ГБ</td></tr><tr><td>Пакет 230 + Интернет 100</td><td class="num">330.00</td><td class="num">1500</td><td class="num">500</td><td class="num">33192 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ + 8 ГБ</td></tr><tr><td>Пакет 140 + Интернет 220</td><td class="num">360.00</td><td class="num">700</td><td class="num">300</td><td class="num">30360 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ + 15 ГБ</td></tr><tr><td>Федеральный Специальный + Интернет 400</td><td class="num">400.00</td><td class="num">0</td><td class="num">0</td><td class="num">без ограничения</td><td class="why">Без абонплаты, всё по факту потребления + безлимитный интернет</td></tr><tr><td>Пакет 400 + FMC</td><td class="num">416.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">70000 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC</td></tr><tr><td>Пакет 400 + Интернет 30</td><td class="num">430.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">71536 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ + 1,5 ГБ</td></tr><tr><td>Пакет 140 + Интернет 310</td><td class="num">450.00</td><td class="num">700</td><td class="num">300</td><td class="num">45720 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ + 30 ГБ</td></tr><tr><td>Пакет 230 + Интернет 220</td><td class="num">450.00</td><td class="num">1500</td><td class="num">500</td><td class="num">40360 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ + 15 ГБ</td></tr><tr><td>Пакет 400 + Интернет 100</td><td class="num">500.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">78192 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ + 8 ГБ</td></tr><tr><td>Пакет 140 + Интернет 400</td><td class="num">540.00</td><td class="num">700</td><td class="num">300</td><td class="num">без ограничения</td><td class="why">700 мин · 300 SMS · 15 000 МБ + безлимитный интернет</td></tr><tr><td>Пакет 230 + Интернет 310</td><td class="num">540.00</td><td class="num">1500</td><td class="num">500</td><td class="num">55720 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ + 30 ГБ</td></tr><tr><td>Пакет 400 + Интернет 220</td><td class="num">620.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">85360 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ + 15 ГБ</td></tr><tr><td>Пакет 230 + Интернет 400</td><td class="num">630.00</td><td class="num">1500</td><td class="num">500</td><td class="num">без ограничения</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ + безлимитный интернет</td></tr><tr><td>Пакет 400 + Интернет 310</td><td class="num">710.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">100720 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ + 30 ГБ</td></tr><tr><td>Пакет 400 + Интернет 400</td><td class="num">800.00</td><td class="num">4000</td><td class="num">1000</td><td class="num">без ограничения</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ + безлимитный интернет</td></tr><tr><td>Федеральный Специальный + FMC + Интернет 30</td><td class="num">46.95</td><td class="num">0</td><td class="num">0</td><td class="num">1536 МБ</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + FMC + Интернет 100</td><td class="num">116.95</td><td class="num">0</td><td class="num">0</td><td class="num">8192 МБ</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC + 8 ГБ</td></tr><tr><td>Пакет 140 + FMC + Интернет 30</td><td class="num">186.95</td><td class="num">700</td><td class="num">300</td><td class="num">16536 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + FMC + Интернет 220</td><td class="num">236.95</td><td class="num">0</td><td class="num">0</td><td class="num">15360 МБ</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC + 15 ГБ</td></tr><tr><td>Пакет 140 + FMC + Интернет 100</td><td class="num">256.95</td><td class="num">700</td><td class="num">300</td><td class="num">23192 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC + 8 ГБ</td></tr><tr><td>Пакет 230 + FMC + Интернет 30</td><td class="num">276.95</td><td class="num">1500</td><td class="num">500</td><td class="num">26536 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC + 1,5 ГБ</td></tr><tr><td>Федеральный Специальный + FMC + Интернет 310</td><td class="num">326.95</td><td class="num">0</td><td class="num">0</td><td class="num">30720 МБ</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC + 30 ГБ</td></tr><tr><td>Пакет 230 + FMC + Интернет 100</td><td class="num">346.95</td><td class="num">1500</td><td class="num">500</td><td class="num">33192 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC + 8 ГБ</td></tr><tr><td>Пакет 140 + FMC + Интернет 220</td><td class="num">376.95</td><td class="num">700</td><td class="num">300</td><td class="num">30360 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC + 15 ГБ</td></tr><tr><td>Федеральный Специальный + FMC + Интернет 400</td><td class="num">416.95</td><td class="num">0</td><td class="num">0</td><td class="num">без ограничения</td><td class="why">Без абонплаты, всё по факту потребления · городской номер FMC + безлимитный интернет</td></tr><tr><td>Пакет 400 + FMC + Интернет 30</td><td class="num">446.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">71536 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC + 1,5 ГБ</td></tr><tr><td>Пакет 140 + FMC + Интернет 310</td><td class="num">466.95</td><td class="num">700</td><td class="num">300</td><td class="num">45720 МБ</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC + 30 ГБ</td></tr><tr><td>Пакет 230 + FMC + Интернет 220</td><td class="num">466.95</td><td class="num">1500</td><td class="num">500</td><td class="num">40360 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC + 15 ГБ</td></tr><tr><td>Пакет 400 + FMC + Интернет 100</td><td class="num">516.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">78192 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC + 8 ГБ</td></tr><tr><td>Пакет 140 + FMC + Интернет 400</td><td class="num">556.95</td><td class="num">700</td><td class="num">300</td><td class="num">без ограничения</td><td class="why">700 мин · 300 SMS · 15 000 МБ · городской номер FMC + безлимитный интернет</td></tr><tr><td>Пакет 230 + FMC + Интернет 310</td><td class="num">556.95</td><td class="num">1500</td><td class="num">500</td><td class="num">55720 МБ</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC + 30 ГБ</td></tr><tr><td>Пакет 400 + FMC + Интернет 220</td><td class="num">636.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">85360 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC + 15 ГБ</td></tr><tr><td>Пакет 230 + FMC + Интернет 400</td><td class="num">646.95</td><td class="num">1500</td><td class="num">500</td><td class="num">без ограничения</td><td class="why">1 500 мин · 500 SMS · 25 000 МБ · городской номер FMC + безлимитный интернет</td></tr><tr><td>Пакет 400 + FMC + Интернет 310</td><td class="num">726.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">100720 МБ</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC + 30 ГБ</td></tr><tr><td>Пакет 400 + FMC + Интернет 400</td><td class="num">816.95</td><td class="num">4000</td><td class="num">1000</td><td class="num">без ограничения</td><td class="why">4 000 мин · 1 000 SMS · 70 000 МБ · городской номер FMC + безлимитный интернет</td></tr></tbody>
+    </table></div>
+
+<h2 id="files">7. Загрузка файлов</h2>
+<p>Книга Excel читается сама, конвертировать в CSV руками не нужно. Внутри
+книги берётся один лист:</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Что грузим</th><th>Ключ</th><th>Лист книги Excel</th></tr></thead>
+      <tbody><tr><td><b>Счёт оператора</b></td><td><code>bill</code></td><td class="num">1</td></tr><tr><td><b>Список сотрудников</b></td><td><code>roster</code></td><td class="num">2</td></tr><tr><td><b>Командировки</b></td><td><code>trips</code></td><td class="num">4</td></tr></tbody>
+    </table></div>
+<p>Порядок листов определяется по <code>workbook.xml</code>, а не по именам
+файлов внутри архива: <code>sheet1.xml</code> запросто оказывается четвёртым
+листом книги, если листы двигали мышью. Если на нужном листе пусто, книга
+обходится целиком и берётся первый лист с шапкой и абонентскими номерами.
+С какого листа взяли — написано в сообщении после загрузки.</p>
+<div class="note">
+  <b>Даты в книге лежат числами</b>
+  46203 — это 30.06.2026. Отличить дату от обычного числа можно только по
+  формату ячейки, поэтому читается <code>styles.xml</code>. Без этого в
+  командировках вместо периода приезжали бы пятизначные числа.
+</div>
+
+<h2 id="edit">8. Хочу изменить — где править</h2>
+<p>Почти всё, что меняется в жизни, меняется в одном файле и одной строкой.</p>
+<div class="scroll">
+    <table class="grid">
+      <thead><tr><th>Хочу изменить</th><th>Где правится</th><th>Как</th></tr></thead>
+      <tbody><tr><td><b>Услуга попала не в ту корзину</b></td><td><code>includes.py → INCLUDES</code></td><td class="why">Добавь правило ВЫШЕ того, которое её сейчас ловит. Побеждает первое подошедшее.</td></tr><tr><td><b>За услугу должен платить не тот, кто платит</b></td><td><code>includes.py → поле pays в нужной строке</code></td><td class="why">Одно слово: COMPANY или EMPLOYEE. Если правило нужно не всем номерам, а некоторым — это уже не сюда, а в Настройки → Правила оплаты.</td></tr><tr><td><b>Оператор придумал новое название услуги</b></td><td><code>includes.py → names у подходящего правила</code></td><td class="why">Достаточно куска названия строчными буквами. Сравнение идёт по «сплющенному» названию, про пробелы думать не надо.</td></tr><tr><td><b>Новая категория потребления или единица измерения</b></td><td><code>includes.py → INTERNET_KW / SMS_KW / VOICE_KW и *_UNITS</code></td><td class="why">Категория отвечает на «чего потратили», корзина — на «кто платит». Это разные оси.</td></tr><tr><td><b>Изменились ставки оператора</b></td><td><code>domain.py → RATE_*</code></td><td class="why">По ним считается, во сколько встал бы месяц на другом тарифе.</td></tr><tr><td><b>Изменился набор тарифов</b></td><td><code>Настройки → Тарифы (в интерфейсе)</code></td><td class="why">Каталог правится без кода. domain.build_catalog() — только значение по умолчанию для чистой установки.</td></tr><tr><td><b>В книге Excel другие листы</b></td><td><code>server.py → XLSX_SHEET</code></td><td class="why">Номер листа считается с единицы: счёт 1, сотрудники 2, командировки 4.</td></tr><tr><td><b>Сколько вариантов тарифа показывать</b></td><td><code>domain.py → TARIFF_CHOICES</code></td><td class="why">Больше пяти в карточку не помещается.</td></tr><tr><td><b>Порог, ниже которого не советуем менять тариф</b></td><td><code>domain.py → MIN_SAVING_RUB, MIN_SAVING_SHARE</code></td><td class="why">Чтобы не советовать смену тарифа ради тридцати рублей.</td></tr><tr><td><b>Что считать неиспользуемым номером</b></td><td><code>domain.py → IDLE_VOICE_MIN, IDLE_SMS_CNT, IDLE_INTERNET_MB</code></td><td class="why">Порог «живой SIM-карты»: служебный трафик набегает сам.</td></tr></tbody>
+    </table></div>
+<div class="note">
+  <b>Что править НЕ надо</b>
+  Логику разнесения в <code>billing.py</code> — там больше нет ни одного
+  <code>if</code> про названия услуг, только чтение таблицы. Если тянет
+  дописать туда условие, значит нужна строка в <code>INCLUDES</code>.
+</div>
+
+<p class="stamp">Собрано 30.07.2026 16:27 · <code>python cheremsha.py</code></p>
+</div></body></html>
