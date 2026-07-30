@@ -3355,6 +3355,44 @@ async function renderRuleSettings(el) {
 }
 
 /* ── Командировки ────────────────────────────────────────────────────────── */
+
+// Сколько строк видно, пока список не раскрыли. Командировок бывает много, а
+// вкладка нужна в первую очередь чтобы убедиться «загрузилось / не загрузилось».
+const TRIPS_PREVIEW = 5;
+
+/**
+ * Одна командировка — В ДВЕ СТРОКИ, а не в одну.
+ *
+ * ПОЧЕМУ. Раньше все шесть полей стояли в один ряд сеткой с фиксированными
+ * колонками: 145 + 175 + 120 + 110 пикселей плюс зазоры — ровно 600, а
+ * настройки шириной 640 минус поля дают те же 600. На долю ФИО и СТРАНЫ
+ * (единственных гибких колонок) оставалось ноль пикселей, и они просто не
+ * показывались. Страна при этом в разметке была — потому и выглядело, будто
+ * её не выводят вовсе.
+ *
+ * Теперь сверху «кто» (номер, ФИО, утверждена ли), снизу «когда и куда»
+ * (период, страна, заказ). Обе строки помещаются с запасом на любой ширине.
+ */
+function tripItem(t) {
+  const facts = [
+    // Класс именно trip-period, а НЕ trip-dates: trip-dates занят контейнером
+    // полей ввода дат, у которого display:none по умолчанию, и период из-за
+    // совпадения имён не показывался.
+    `<span class="trip-period">${esc(t.date_start || '')} — ${esc(t.date_end || '')}</span>`,
+    t.country ? `<span class="trip-country">${esc(t.country)}</span>` : '',
+    t.order_no ? `<span class="trip-order">заказ ${esc(t.order_no)}</span>` : '',
+  ].filter(Boolean).join('');
+
+  return `<div class="trip-item${t.approved ? '' : ' is-unapproved'}">
+    <div class="trip-who">
+      <span class="trip-number">${esc(formatPhone(t.number))}</span>
+      <span class="trip-name" title="${esc(t.username || '')}">${esc(t.username || '')}</span>
+      <span class="trip-approved">${t.approved ? 'утверждена' : 'НЕ утверждена'}</span>
+    </div>
+    <div class="trip-when">${facts}</div>
+  </div>`;
+}
+
 async function renderTripSettings(el) {
   // Командировки приходят вместе с отчётом (build_month_view → trips), поэтому
   // при загруженном счёте вкладка открывается сразу, без «Загрузка…» и похода
@@ -3386,19 +3424,22 @@ async function renderTripSettings(el) {
       <button class="btn btn-primary" id="tripUpload">Загрузить файл командировок</button>
       <button class="btn btn-soft" id="tripClear">Очистить все</button>
     </div>
-    ${trips.length ? `<div class="trip-list">${trips.map((t) => `
-      <div class="trip-item${t.approved ? '' : ' is-unapproved'}">
-        <span class="trip-number">${esc(formatPhone(t.number))}</span>
-        <span class="trip-name">${esc(t.username || '')}</span>
-        <!-- Класс именно trip-period, а НЕ trip-dates: trip-dates занят
-             контейнером полей ввода дат, у которого display:none по умолчанию,
-             и период из-за этого не показывался. -->
-        <span class="trip-period">${esc(t.date_start || '')} — ${esc(t.date_end || '')}</span>
-        <span class="trip-country">${esc(t.country || '')}</span>
-        <span class="trip-order">${t.order_no ? 'заказ ' + esc(t.order_no) : ''}</span>
-        <span class="trip-approved">${t.approved ? 'утверждена' : 'НЕ утверждена'}</span>
-      </div>`).join('')}</div>`
+    ${trips.length ? `<div class="trip-list" id="tripList">${trips.map(tripItem).join('')}</div>
+      ${trips.length > TRIPS_PREVIEW ? `<button class="btn btn-soft trip-toggle" id="tripToggle">
+        Показать все ${trips.length}</button>` : ''}`
       : '<div class="empty">Командировки не загружены.</div>'}`;
+
+  // Раскрытие списка — переключением класса, без перерисовки: какие строки
+  // видны, решает CSS (см. .trip-list:not(.is-open)). Хранить состояние
+  // отдельно не нужно, оно и есть класс на контейнере.
+  const toggle = $('tripToggle');
+  if (toggle) {
+    toggle.onclick = () => {
+      const list = $('tripList');
+      const open = list.classList.toggle('is-open');
+      toggle.textContent = open ? 'Свернуть' : `Показать все ${trips.length}`;
+    };
+  }
 
   $('tripUpload').onclick = () => { closeOverlay('settingsPanel'); $('tripsFile').click(); };
   $('tripClear').onclick = async () => {

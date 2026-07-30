@@ -727,18 +727,41 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 /* Список загруженных командировок. */
 .trip-list {
   display: flex; flex-direction: column; gap: 5px; margin-top: 14px;
-  max-height: 52vh; overflow-y: auto;
 }
+/* СВЁРНУТЫЙ СПИСОК: видно только первые пять.
+   Прятать разметкой не нужно — какие строки показывать, решает одно правило,
+   а кнопка лишь переключает класс на контейнере (см. renderTripSettings). */
+.trip-list:not(.is-open) .trip-item:nth-child(n + 6) { display: none; }
+/* Раскрытый список может быть длинным — тогда он прокручивается внутри себя,
+   а не растягивает окно настроек. */
+.trip-list.is-open { max-height: 52vh; overflow-y: auto; }
+.trip-toggle { width: 100%; margin-top: 8px; }
+
+/* Строка командировки — ДВЕ ЛИНИИ: сверху «кто», снизу «когда и куда».
+   Раньше все шесть полей стояли в одну строку сеткой с фиксированными
+   колонками, суммарно ровно во всю ширину настроек, — и на ФИО со СТРАНОЙ
+   (единственные гибкие колонки) не оставалось ни пикселя. */
 .trip-item {
-  display: grid; gap: 10px; align-items: center; font-size: 12px;
-  grid-template-columns: 145px minmax(0, 1.4fr) 175px minmax(0, 1fr) 120px 110px;
+  display: flex; flex-direction: column; gap: 3px; font-size: 12px;
   padding: 8px 11px; border-radius: var(--radius-sm);
   background: var(--surface-2); border-left: 3px solid var(--good);
 }
 .trip-item.is-unapproved { border-left-color: var(--warning); }
-.trip-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trip-number { font-weight: 600; }
-.trip-name, .trip-country, .trip-order { color: var(--text-muted); }
+
+.trip-who {
+  display: grid; gap: 10px; align-items: baseline;
+  grid-template-columns: 135px minmax(0, 1fr) auto;
+}
+.trip-who > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trip-number { font-weight: 600; font-variant-numeric: tabular-nums; }
+.trip-name { color: var(--text); }
+
+/* Нижняя строка переносится, если не влезла: лучше вторая строчка, чем
+   обрезанная страна. */
+.trip-when {
+  display: flex; flex-wrap: wrap; gap: 3px 10px; align-items: baseline;
+  color: var(--text-muted);
+}
 /* ВНИМАНИЕ. Раньше этот класс назывался .trip-dates и совпадал с классом
    контейнера полей «дата с / дата по» в карточке абонента (см. ниже по файлу).
    Тот контейнер по умолчанию display:none — прятался, пока не включена галочка
@@ -746,7 +769,14 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
    и ПЕРИОД В СПИСКЕ КОМАНДИРОВОК ПРОСТО НЕ ОТОБРАЖАЛСЯ. Разные сущности —
    разные имена классов. */
 .trip-period { font-variant-numeric: tabular-nums; }
-.trip-approved { font-weight: 600; }
+/* Страна — то, ради чего в этот список чаще всего и заглядывают, поэтому она
+   не серый текст в ряду прочих, а заметная плашка. */
+.trip-country {
+  color: var(--text); font-weight: 600;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; padding: 0 8px; line-height: 17px;
+}
+.trip-approved { font-weight: 600; color: var(--good); white-space: nowrap; }
 .trip-item.is-unapproved .trip-approved { color: var(--warning); }
 
 @media (max-width: 900px) {
@@ -754,7 +784,10 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
   .rule-row,
   .rule-table-payment .rule-row,
   .rule-table-roaming .rule-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .trip-item { grid-template-columns: 1fr 1fr; }
+  /* На узком экране номер и ФИО встают друг под друга, а «утверждена»
+     уезжает во вторую строку — иначе от ФИО остаётся пара букв. */
+  .trip-who { grid-template-columns: minmax(0, 1fr) auto; }
+  .trip-who .trip-name { grid-column: 1 / -1; }
 }
 
 /* Подзаголовок внутри блока аналитики. */
