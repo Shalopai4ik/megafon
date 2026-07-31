@@ -202,8 +202,9 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 /* ── Инициализация ───────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
-  const savedTheme = localStorage.getItem('theme');
-  if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+  // Тема и свои цвета — до всего остального: перекрашивать уже нарисованный
+  // экран значит показать человеку вспышку стандартной палитры.
+  applyTheme({ redraw: false });
   loadWidgetPrefs();
 
   bindUpload('billsBtn', 'billsFile', (file) => uploadFile(file, 'bill'));
@@ -3035,6 +3036,7 @@ const SETTINGS_TABS = {
   tariffs: renderTariffSettings,
   roaming: renderRoamingSettings,
   widgets: renderWidgetSettings,
+  theme: renderThemeSettings,
 };
 
 function renderSettings() {
@@ -4005,15 +4007,261 @@ function setView(mode) {
   if (grid) grid.classList.toggle('table-view', mode === 'table');
 }
 
-function toggleTheme() {
+/* ═══════════════════════════════════════════════════════════════════════════
+ * ОФОРМЛЕНИЕ: ТЕМА И СВОИ ЦВЕТА
+ *
+ * Тема — светлая, тёмная или «как в системе». Поверх темы можно перекрасить
+ * пять красок; всё остальное в интерфейсе — оттенки серого, и от выбора они
+ * не зависят.
+ *
+ * КАК ЭТО ДЕРЖИТСЯ. Выбранные цвета выставляются переменными прямо на <html>
+ * через style.setProperty. Инлайновый стиль сильнее любого правила таблицы,
+ * поэтому одна настройка перебивает и светлую тему, и тёмную — а значения
+ * под каждую из них пересчитываются заново, при каждом переключении.
+ *
+ * ПОЧЕМУ ЦВЕТ НЕ КЛАДЁТСЯ НАПРЯМУЮ. Покрасить одной краской и заливку, и
+ * мелкий текст нельзя: яркий зелёный на белом даёт контраст около 2 при
+ * норме 4.5, и подписи под цифрами читаются с усилием — ровно та беда, из-за
+ * которой в палитре изначально сидят --brand и --primary по отдельности.
+ * Поэтому из одной выбранной краски получаются три:
+ *
+ *     --brand    — как выбрали: заливки, полосы, значки;
+ *     --primary  — сдвинутый к чёрному (в тёмной теме — к белому) ровно
+ *                  настолько, чтобы контраст с фоном дотянул до 4.5: буквы,
+ *                  кнопки, ссылки;
+ *     --*-soft   — та же краска прозрачностью .16: подложки плашек.
+ *
+ * ХРАНИТСЯ В localStorage, А НЕ В БАЗЕ. Оформление — дело рабочего места:
+ * на одну базу смотрят с разных машин, и навязывать всем чужой выбор цвета
+ * не нужно. Заодно не нужна миграция схемы.
+ */
+
+const THEME_KEY = 'theme';
+const THEME_COLORS_KEY = 'themeColors';
+
+const THEME_MODES = [['light', 'Светлая'], ['dark', 'Тёмная'], ['auto', 'Как в системе']];
+
+// Пять красок — всё, что в интерфейсе ЗНАЧИТ состояние. Фон, границы и текст
+// не настраиваются намеренно: их подбирали по контрасту, и «свой» фон ломает
+// читаемость быстрее, чем человек успевает понять, что он сделал.
+const THEME_PAINTS = [
+  { key: 'brand', label: 'Фирменный', note: 'кнопки, полосы, заливки' },
+  { key: 'accent', label: 'Акцент', note: 'вторые по важности выделения' },
+  { key: 'good', label: 'В норме', note: 'расход укладывается в лимит' },
+  { key: 'warning', label: 'Внимание', note: 'подошёл к лимиту' },
+  { key: 'danger', label: 'Превышение', note: 'лимит пробит' },
+];
+
+/* ── Цветовая арифметика ──────────────────────────────────────────────────
+   Всё по WCAG: яркость и контраст считаются так же, как их считает любая
+   проверялка доступности, — иначе «поправил до 4.5» ничего не значит. */
+
+/** '#0b5', '#00b956' или 'rgb(0, 185, 86)' → {r, g, b}. */
+function toRgb(value) {
+  const text = String(value || '').trim();
+  const fn = text.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i);
+  if (fn) return { r: +fn[1], g: +fn[2], b: +fn[3] };
+  const hex = text.replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return null;
+  const n = parseInt(full, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function toHex({ r, g, b }) {
+  const p = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${p(r)}${p(g)}${p(b)}`;
+}
+
+/** Относительная яркость по WCAG. */
+function luminance({ r, g, b }) {
+  const ch = (v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+}
+
+function contrastRatio(a, b) {
+  const x = luminance(a);
+  const y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/** Сдвиг к белому (amount > 0) или к чёрному (amount < 0), доля 0…1. */
+function shade(rgb, amount) {
+  const to = amount > 0 ? 255 : 0;
+  const k = Math.abs(amount);
+  return { r: rgb.r + (to - rgb.r) * k, g: rgb.g + (to - rgb.g) * k,
+           b: rgb.b + (to - rgb.b) * k };
+}
+
+/**
+ * Тот же цвет, но читаемый на этом фоне: двигаем к белому или к чёрному,
+ * пока контраст не дотянет до 4.5. Шаг мелкий (5%), чтобы не проскочить
+ * дальше нужного и не потерять сам цвет — фирменный зелёный должен
+ * остаться зелёным, а не стать чёрным.
+ */
+function readableOn(rgb, bg) {
+  if (contrastRatio(rgb, bg) >= 4.5) return rgb;
+  const lighten = luminance(bg) < 0.4;
+  let out = rgb;
+  for (let i = 1; i <= 20; i += 1) {
+    out = shade(rgb, (lighten ? 1 : -1) * i * 0.05);
+    if (contrastRatio(out, bg) >= 4.5) break;
+  }
+  return out;
+}
+
+/** Какими буквами писать ПО этой заливке — белыми или почти чёрными. */
+function inkOn(rgb) {
+  const white = { r: 255, g: 255, b: 255 };
+  const black = { r: 12, g: 18, b: 16 };
+  return contrastRatio(rgb, white) >= contrastRatio(rgb, black) ? white : black;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* ── Чтение и запись выбора ───────────────────────────────────────────────── */
+
+function themeMode() {
+  const saved = localStorage.getItem(THEME_KEY);
+  return saved === 'light' || saved === 'dark' ? saved : 'auto';
+}
+
+function themeColors() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(THEME_COLORS_KEY));
+    return raw && typeof raw === 'object' ? raw : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+/**
+ * Навесить тему и свои цвета на <html>.
+ *
+ * `redraw` выключается, пока человек ведёт пипетку: событие input летит на
+ * каждый пиксель, а перерисовка графика по всему парку номеров на каждом
+ * таком шаге превращает выбор цвета в слайд-шоу.
+ */
+function applyTheme({ redraw = true } = {}) {
   const root = document.documentElement;
-  const current = root.getAttribute('data-theme');
-  const isDark = current ? current === 'dark'
-    : window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const next = isDark ? 'light' : 'dark';
-  root.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
-  if (state.subscribers.length) drawTrendChart();
+  const mode = themeMode();
+  if (mode === 'auto') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', mode);
+
+  // Прошлый выбор снимаем ДО того, как читать фон и стандартные цвета:
+  // иначе getComputedStyle вернёт уже перекрашенное значение, оно уйдёт в
+  // расчёт как «стандартное», и палитра будет уползать с каждым открытием
+  // настроек.
+  ['--primary', '--primary-ink'].forEach((v) => root.style.removeProperty(v));
+  THEME_PAINTS.forEach(({ key }) => {
+    ['', '-soft', '-ink'].forEach((suf) => root.style.removeProperty(`--${key}${suf}`));
+  });
+
+  const surface = toRgb(cssVar('--surface')) || { r: 255, g: 255, b: 255 };
+
+  Object.entries(themeColors()).forEach(([key, hex]) => {
+    const rgb = toRgb(hex);
+    if (!rgb || !THEME_PAINTS.some((p) => p.key === key)) return;
+    const readable = readableOn(rgb, surface);
+    const soft = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, .16)`;
+
+    if (key === 'brand') {
+      // Заливка — как выбрали, буквы и кнопки — притемнённой версией.
+      root.style.setProperty('--brand', toHex(rgb));
+      root.style.setProperty('--primary', toHex(readable));
+      root.style.setProperty('--primary-ink', toHex(inkOn(readable)));
+      return;
+    }
+    root.style.setProperty(`--${key}`, toHex(readable));
+    root.style.setProperty(`--${key}-soft`, soft);
+    if (key === 'accent') root.style.setProperty('--accent-ink', toHex(inkOn(readable)));
+  });
+
+  if (redraw && state.subscribers.length) drawTrendChart();
+}
+
+function setThemeMode(mode) {
+  localStorage.setItem(THEME_KEY, mode);
+  applyTheme();
+}
+
+/** Кнопка в меню — быстрое «светлая ↔ тёмная», без захода в настройки. */
+function toggleTheme() {
+  const mode = themeMode();
+  const isDark = mode === 'dark'
+    || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  setThemeMode(isDark ? 'light' : 'dark');
+}
+
+/** Что показать в пипетке: свой цвет, а если его нет — нынешний из темы. */
+function paintValue(key) {
+  const custom = themeColors()[key];
+  if (custom && toRgb(custom)) return toHex(toRgb(custom));
+  const rgb = toRgb(cssVar(`--${key}`));
+  return rgb ? toHex(rgb) : '#00b956';
+}
+
+/* ── Вкладка «Оформление» ─────────────────────────────────────────────────── */
+function renderThemeSettings(el) {
+  const mode = themeMode();
+  const custom = themeColors();
+
+  el.innerHTML = `
+    <div class="settings-note">Тема и цвета запоминаются в этом браузере, на
+      расчёты они не влияют. Выбранной краской красится заливка, а буквы и
+      кнопки автоматически притемняются до читаемого контраста — иначе
+      подписи под цифрами пришлось бы разглядывать.</div>
+
+    <div class="theme-modes">
+      ${THEME_MODES.map(([id, label]) => `<button type="button"
+        class="btn ${id === mode ? 'btn-primary' : 'btn-soft'}"
+        data-mode="${id}">${label}</button>`).join('')}
+    </div>
+
+    <div class="panel-title theme-paints-title">Цвета</div>
+    <div class="theme-paints">
+      ${THEME_PAINTS.map((p) => `<label class="theme-paint">
+        <input type="color" data-paint="${esc(p.key)}" value="${esc(paintValue(p.key))}"
+               aria-label="${esc(p.label)}">
+        <span class="theme-paint-text">
+          <span class="theme-paint-name">${esc(p.label)}${
+            custom[p.key] ? '<em>изменён</em>' : ''}</span>
+          <span class="theme-paint-note">${esc(p.note)}</span>
+        </span>
+      </label>`).join('')}
+    </div>
+
+    <div class="settings-actions">
+      <button class="btn btn-soft" id="themeReset">Вернуть стандартные цвета</button>
+    </div>`;
+
+  $$('[data-mode]', el).forEach((btn) => {
+    btn.onclick = () => { setThemeMode(btn.dataset.mode); renderSettings(); };
+  });
+
+  // input — пока пипетку водят, change — когда её закрыли. Перерисовка
+  // вкладки только по change: на каждом шаге она вырывала бы фокус из
+  // открытого системного окна выбора цвета.
+  $$('[data-paint]', el).forEach((inp) => {
+    inp.oninput = () => {
+      localStorage.setItem(THEME_COLORS_KEY,
+        JSON.stringify({ ...themeColors(), [inp.dataset.paint]: inp.value }));
+      applyTheme({ redraw: false });
+    };
+    inp.onchange = () => { applyTheme(); renderSettings(); };
+  });
+
+  $('themeReset').onclick = () => {
+    localStorage.removeItem(THEME_COLORS_KEY);
+    applyTheme();
+    renderSettings();
+    flashHint('Цвета вернулись к стандартным.');
+  };
 }
 
 /* ── Индикаторы ──────────────────────────────────────────────────────────── */

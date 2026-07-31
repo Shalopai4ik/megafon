@@ -1127,20 +1127,36 @@ def _dates_in(text: str) -> list[str]:
     return [iso for _, iso in out]
 
 
-def _memo_no(text: str) -> str:
-    """Номер служебной записки — КАК В ФАЙЛЕ, а не «только цифры».
+def _ref_no(text: str) -> str:
+    """Номер заказа или служебной записки — КАК В ФАЙЛЕ, а не «только цифры».
 
-    Раньше здесь стояло re.sub(r"\\D", "", …), и номер терял всё, кроме цифр:
-    «СЗ-12/345» превращалось в «12345» — номер, которого не существует, а
-    «б/н» и вовсе в пустую строку, то есть в «служебной записки не было».
-    Сверить командировку с бумагой по такому номеру нельзя.
+    Раньше здесь стояло re.sub(r"\\D", "", …), и номер терял всё, кроме цифр.
+    На живых выгрузках это ломало оба поля:
 
-    Убираем только служебный префикс «№» и лишние пробелы: в таблицу номер
-    должен попадать в том же виде, в каком его написал человек.
+        № СЗ  «АП-Ч.800-07/0035-2026» → «800070035 2026», номер-призрак;
+                «б/н»                   → пустая строка, будто записки не было;
+        заказ «ЛК»                    → пустая строка, а «ЛК» — нормальный
+                                        номер заказа, просто буквами.
+
+    Сверить командировку с бумагой по такому номеру нельзя. Убираем только
+    служебный префикс «№» и лишние пробелы: в таблицу номер должен попадать
+    в том же виде, в каком его написал человек.
     """
     out = " ".join(str(text).split())
     out = re.sub(r"^(?:№|N|No\.?)\s*", "", out)
     return out.strip(" -–—")
+
+
+def _has_subscriber_number(line: str, delim: str) -> bool:
+    """Есть ли в строке абонентский номер — поле из 10–11 цифр.
+
+    По этому признаку кончается шапка. Без него разбор шапки съедал первую
+    строку данных: у номера служебной записки «СЗ-12/345» в ячейке есть
+    буквы «сз», строка опознавалась как второй ярус заголовка и целиком
+    выбрасывалась вместе с командировкой.
+    """
+    cells = line.split(delim) if delim and delim in line else line.split()
+    return any(10 <= len(re.sub(r"\D", "", raw)) <= 11 for raw in cells)
 
 
 def _is_trip_header(line: str) -> bool:
@@ -1227,12 +1243,20 @@ def parse_trips(text: str) -> dict[str, Any]:
     columns: dict[str, int] = {}
     header_rows = 0
     above: dict[str, int] = {}
-    for line in lines[:20]:
+    above_at = -1
+    # Номера строк, которые оказались шапкой. Нужны, чтобы верхняя строка
+    # («;;;;;Примечание;;;№ СЗ») не попала потом в счётчик skipped: номера в
+    # ней нет, и человек читал «пропущено строк без номера — 1» после каждой
+    # успешной загрузки, гадая, что за строку у него не взяли.
+    header_lines: set[int] = set()
+    for i, line in enumerate(lines[:20]):
         if delim not in line:
             continue
+        if _has_subscriber_number(line, delim):
+            break  # пошли данные — шапка кончилась
         found = _trip_header_map(line, delim)
         if not found:
-            above = {}
+            above, above_at = {}, -1
             continue
         # Строка шапки — либо явная (два ключевых слова), либо строка
         # подзаголовков сразу под ней.
@@ -1241,18 +1265,21 @@ def parse_trips(text: str) -> dict[str, Any]:
             # Порядок важен: сама шапка главнее строки над ней.
             for key, idx in list(found.items()) + list(above.items()):
                 columns.setdefault(key, idx)
-            above = {}
+            header_lines.add(i)
+            if above_at >= 0:
+                header_lines.add(above_at)
+            above, above_at = {}, -1
             if header_rows >= 2:
                 break
         else:
-            above = found
+            above, above_at = found, i
 
     rows: list[dict[str, Any]] = []
     skipped = 0
     no_dates = 0
 
-    for line in lines:
-        if _is_trip_header(line):
+    for i, line in enumerate(lines):
+        if i in header_lines or _is_trip_header(line):
             continue
 
         # РАЗДЕЛИТЕЛЬ У КАЖДОЙ СТРОКИ СВОЙ.
@@ -1290,7 +1317,13 @@ def parse_trips(text: str) -> dict[str, Any]:
                     number = _normalize_number(digits)
                     break
         if not number:
-            skipped += 1
+            # В счётчик идут только строки, которые МОГЛИ быть командировкой.
+            # Строка без единой цифры — это подпись, заголовок или пустая
+            # рамка таблицы («;;;;;Примечание»), а не потерянный абонент.
+            # Иначе после каждой удачной загрузки человек читал «пропущено
+            # строк без номера — 1» и гадал, чего же у него не взяли.
+            if any(ch.isdigit() for ch in line):
+                skipped += 1
             continue
 
         # 2. ПЕРИОД. Дату заявки из блока «Примечание» в период не пускаем:
@@ -1318,8 +1351,8 @@ def parse_trips(text: str) -> dict[str, Any]:
         #      иначе угадываем по содержимому (см. докстроку функции).
         username = cell("username")
         country = cell("country")
-        order_no = re.sub(r"\D", "", cell("order_no"))
-        memo_no = _memo_no(cell("memo_no"))
+        order_no = _ref_no(cell("order_no"))
+        memo_no = _ref_no(cell("memo_no"))
 
         if "approved" in cols:
             approved = cell("approved").lower() in ("да", "yes", "+", "1")
