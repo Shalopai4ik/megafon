@@ -214,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('welcomeRosterBtn', 'click', () => $('rosterFile').click());
   on('welcomeTripsBtn', 'click', () => $('tripsFile').click());
   on('downloadBtn', 'click', downloadReport);
-  on('themeBtn', 'click', toggleTheme);
+  on('themeBtn', 'click', openTheme);
   on('statsBtn', 'click', openStats);
   on('settingsBtn', 'click', openSettings);
   on('monthSelect', 'change', (e) => loadMonth(e.target.value));
@@ -264,11 +264,14 @@ document.addEventListener('DOMContentLoaded', () => {
       const what = closer.dataset.close;
       if (what === 'settings') closeOverlay('settingsPanel');
       else if (what === 'stats') closeOverlay('statsModal');
+      else if (what === 'theme') closeOverlay('themeModal');
       else closeOverlay('subModal');
     }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') ['subModal', 'settingsPanel', 'statsModal'].forEach(closeOverlay);
+    if (e.key === 'Escape') {
+      ['subModal', 'settingsPanel', 'statsModal', 'themeModal'].forEach(closeOverlay);
+    }
   });
 
   // Оба графика строят viewBox по фактической ширине блока, поэтому
@@ -3036,7 +3039,6 @@ const SETTINGS_TABS = {
   tariffs: renderTariffSettings,
   roaming: renderRoamingSettings,
   widgets: renderWidgetSettings,
-  theme: renderThemeSettings,
 };
 
 function renderSettings() {
@@ -4190,14 +4192,6 @@ function setThemeMode(mode) {
   applyTheme();
 }
 
-/** Кнопка в меню — быстрое «светлая ↔ тёмная», без захода в настройки. */
-function toggleTheme() {
-  const mode = themeMode();
-  const isDark = mode === 'dark'
-    || (mode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  setThemeMode(isDark ? 'light' : 'dark');
-}
-
 /** Что показать в пипетке: свой цвет, а если его нет — нынешний из темы. */
 function paintValue(key) {
   const custom = themeColors()[key];
@@ -4206,12 +4200,26 @@ function paintValue(key) {
   return rgb ? toHex(rgb) : '#00b956';
 }
 
-/* ── Вкладка «Оформление» ─────────────────────────────────────────────────── */
-function renderThemeSettings(el) {
+/* ── Окно «Оформление» ────────────────────────────────────────────────────
+   Открывается из главного меню, а не из настроек. В настройках правят то,
+   от чего зависят деньги: правила, тарифы, лимиты. Цвет не влияет ни на
+   один расчёт, и его место — рядом с выбором темы, а не в одном ряду с
+   тем, что может испортить отчёт. */
+function openTheme() {
+  const panel = $('themeModal');
+  if (!panel) return;
+  panel.hidden = false;
+  renderTheme();
+}
+
+function renderTheme() {
+  const el = $('themeContent');
+  if (!el) return;
   const mode = themeMode();
   const custom = themeColors();
 
   el.innerHTML = `
+    <div class="settings-title theme-title">Оформление</div>
     <div class="settings-note">Тема и цвета запоминаются в этом браузере, на
       расчёты они не влияют. Выбранной краской красится заливка, а буквы и
       кнопки автоматически притемняются до читаемого контраста — иначе
@@ -4241,25 +4249,25 @@ function renderThemeSettings(el) {
     </div>`;
 
   $$('[data-mode]', el).forEach((btn) => {
-    btn.onclick = () => { setThemeMode(btn.dataset.mode); renderSettings(); };
+    btn.onclick = () => { setThemeMode(btn.dataset.mode); renderTheme(); };
   });
 
-  // input — пока пипетку водят, change — когда её закрыли. Перерисовка
-  // вкладки только по change: на каждом шаге она вырывала бы фокус из
-  // открытого системного окна выбора цвета.
+  // input — пока пипетку водят, change — когда её закрыли. Перерисовка окна
+  // только по change: на каждом шаге она вырывала бы фокус из открытого
+  // системного окна выбора цвета.
   $$('[data-paint]', el).forEach((inp) => {
     inp.oninput = () => {
       localStorage.setItem(THEME_COLORS_KEY,
         JSON.stringify({ ...themeColors(), [inp.dataset.paint]: inp.value }));
       applyTheme({ redraw: false });
     };
-    inp.onchange = () => { applyTheme(); renderSettings(); };
+    inp.onchange = () => { applyTheme(); renderTheme(); };
   });
 
   $('themeReset').onclick = () => {
     localStorage.removeItem(THEME_COLORS_KEY);
     applyTheme();
-    renderSettings();
+    renderTheme();
     flashHint('Цвета вернулись к стандартным.');
   };
 }

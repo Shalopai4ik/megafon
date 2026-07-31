@@ -741,8 +741,15 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .trip-link:hover { text-decoration: underline; }
 
 /* ── Оформление: тема и свои цвета ─────────────────────────────────────────
+   Своё окно, узкое: внутри пять строк и три кнопки, и растянутое на 940
+   пикселей оно выглядело бы полупустым листом.
+
    Пипетка слева, подпись справа — строка целиком <label>, поэтому попасть
    можно по любому её месту, а не только по маленькому квадратику. */
+.modal-sm { max-width: min(94vw, 520px); }
+/* Крестик закрытия стоит в правом верхнем углу окна — заголовку оставляем
+   под него место, иначе слово «Оформление» уезжает ему под низ. */
+.theme-title { display: block; padding-right: 34px; margin-bottom: 10px; }
 .theme-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 6px; }
 .theme-paints-title { margin-top: 18px; }
 .theme-paints { display: flex; flex-direction: column; gap: 6px; }

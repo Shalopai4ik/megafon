@@ -74,8 +74,8 @@
           <span class="menu-item-note">откуда суммы, кто за что платит, что где править</span>
         </a>
         <button id="themeBtn" class="menu-item" role="menuitem">
-          <span class="menu-item-name">Светлая / тёмная тема</span>
-          <span class="menu-item-note">свои цвета — в настройках, вкладка «Оформление»</span>
+          <span class="menu-item-name">Оформление</span>
+          <span class="menu-item-note">светлая или тёмная тема, свои цвета</span>
         </button>
       </div>
     </div>
@@ -380,9 +380,21 @@
       <button class="settings-tab" data-tab="tariffs">Каталог тарифов</button>
       <button class="settings-tab" data-tab="roaming">Роуминг</button>
       <button class="settings-tab" data-tab="widgets">Виджеты</button>
-      <button class="settings-tab" data-tab="theme">Оформление</button>
     </div>
     <div id="settingsContent" class="settings-content"></div>
+  </div>
+</div>
+
+<!-- ═══ ОФОРМЛЕНИЕ ═══
+     Отдельное окно, а не вкладка настроек: в настройках правят то, от чего
+     зависят деньги, — правила, тарифы, лимиты. Цвет ни на один расчёт не
+     влияет, и держать его в одном ряду с ними значит звать туда человека,
+     которому нужно всего лишь притушить экран. -->
+<div id="themeModal" class="modal" hidden>
+  <div class="modal-backdrop" data-close="theme"></div>
+  <div class="modal-body modal-sm" role="dialog" aria-label="Оформление">
+    <button class="modal-close" data-close="theme" aria-label="Закрыть">✕</button>
+    <div id="themeContent"></div>
   </div>
 </div>
 
