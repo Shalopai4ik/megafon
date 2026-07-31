@@ -702,14 +702,30 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .rule-del.is-locked { cursor: default; opacity: .45; }
 .rule-del.is-locked:hover { color: var(--text-muted); background: none; }
 
-/* Таблица командировок на главной странице. */
-.trip-table { display: flex; flex-direction: column; gap: 3px; }
+/* Таблица командировок на главной странице.
+   ВЫСОТА СТРОКИ ЗАДАНА ЯВНО (--trip-row), потому что от неё считается окно
+   прокрутки на пять строк. С унаследованным line-height высота плавала бы
+   вместе с базовым шрифтом, и в окне оказывалось бы то четыре строки, то
+   шесть с половиной. */
+.trip-table { --trip-row: 31px; display: flex; flex-direction: column; gap: 3px; }
 .trip-row {
-  display: grid; align-items: center; gap: 10px; font-size: 12px;
+  display: grid; align-items: center; gap: 10px; font-size: 12px; line-height: 17px;
   grid-template-columns: 138px minmax(0, 1.3fr) 168px minmax(0, .8fr)
                          minmax(0, .7fr) 64px 48px minmax(0, 1fr);
   padding: 7px 11px; border-radius: var(--radius-sm);
   background: var(--surface-2); border-left: 3px solid var(--good);
+  /* Строка внутри окна с прокруткой НЕ СЖИМАЕТСЯ: колонка-флексбокс с
+     ограниченной высотой по умолчанию давит детей, и вместо прокрутки
+     получилась бы стопка приплюснутых строк. */
+  flex: 0 0 auto;
+}
+/* ОКНО НА ПЯТЬ КОМАНДИРОВОК. Их бывает несколько сотен, и виджет на главной
+   растягивал страницу на экраны вниз. Шапка таблицы остаётся снаружи окна —
+   иначе она уезжает вверх при первом же движении колеса. */
+.trip-scroll {
+  display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+  max-height: calc(var(--trip-row) * 5 + 3px * 4);
+  padding-right: 2px;
 }
 .trip-row.is-unapproved { border-left-color: var(--warning); }
 .trip-row > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -724,18 +740,21 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 }
 .trip-link:hover { text-decoration: underline; }
 
-/* Список загруженных командировок. */
+/* Список загруженных командировок в настройках.
+   ОКНО НА ПЯТЬ, КАК И НА ГЛАВНОЙ. Раньше список сворачивался до пяти строк
+   правилом nth-child, а шестую и дальше открывала кнопка «Показать все» —
+   и раскрытый список всё равно упирался в прокрутку. Кнопка тут лишняя:
+   прокрутка внутри окна делает то же самое одним движением колеса.
+
+   Высота строки задана явно (--trip-item): в ней две линии по 17px плюс
+   отступы, а нижняя может нести чипс страны — он на два пикселя выше
+   текста, поэтому в расчёт берётся именно высота с чипсом. */
 .trip-list {
+  --trip-item: 55px;
   display: flex; flex-direction: column; gap: 5px; margin-top: 14px;
+  max-height: calc(var(--trip-item) * 5 + 5px * 4);
+  overflow-y: auto; padding-right: 2px;
 }
-/* СВЁРНУТЫЙ СПИСОК: видно только первые пять.
-   Прятать разметкой не нужно — какие строки показывать, решает одно правило,
-   а кнопка лишь переключает класс на контейнере (см. renderTripSettings). */
-.trip-list:not(.is-open) .trip-item:nth-child(n + 6) { display: none; }
-/* Раскрытый список может быть длинным — тогда он прокручивается внутри себя,
-   а не растягивает окно настроек. */
-.trip-list.is-open { max-height: 52vh; overflow-y: auto; }
-.trip-toggle { width: 100%; margin-top: 8px; }
 
 /* Строка командировки — ДВЕ ЛИНИИ: сверху «кто», снизу «когда и куда».
    Раньше все шесть полей стояли в одну строку сеткой с фиксированными
@@ -743,8 +762,9 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
    (единственные гибкие колонки) не оставалось ни пикселя. */
 .trip-item {
   display: flex; flex-direction: column; gap: 3px; font-size: 12px;
-  padding: 8px 11px; border-radius: var(--radius-sm);
+  line-height: 17px; padding: 8px 11px; border-radius: var(--radius-sm);
   background: var(--surface-2); border-left: 3px solid var(--good);
+  flex: 0 0 auto;  /* см. .trip-row: в окне с прокруткой сжиматься нельзя */
 }
 .trip-item.is-unapproved { border-left-color: var(--warning); }
 
@@ -1561,8 +1581,10 @@ button.ex-row:hover { background: var(--surface-2); }
   font-size: 12px; text-transform: none; letter-spacing: 0;
   color: var(--text-muted); font-weight: 700; margin-bottom: 8px;
 }
-.rec-list { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
-.rec-list li { margin-bottom: 4px; }
+/* Рекомендация в карточке — одна строка, без маркера списка: пунктов теперь
+   ровно один, а точка перед единственным абзацем выглядела как обрубленный
+   список (см. cardDetailsPanel). Весь список живёт в модалке — .sm-rec-lines. */
+.rec-one { font-size: 12.5px; line-height: 1.55; color: var(--text); }
 
 .svc-list { display: flex; flex-direction: column; }
 .svc-row {

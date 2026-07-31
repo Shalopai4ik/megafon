@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-cheremsha.py — сборка документации «Черемша» (cheremsha.html).
+metodika.py — сборка документации «Методика расчётов и анализа» (metodika.html).
 =============================================================================
 
-    python cheremsha.py            → соберёт cheremsha.html рядом с собой
+    python metodika.py             → соберёт metodika.html рядом с собой
 
 ЗАЧЕМ ГЕНЕРАТОР, А НЕ ПРОСТО HTML-ФАЙЛ. Документация про то, как считаются
 деньги, живёт ровно до первой правки кода. Здесь таблицы — правила разнесения,
@@ -30,7 +30,7 @@ import domain
 import includes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "cheremsha.html")
+OUT = os.path.join(HERE, "metodika.html")
 
 PAYER_RU = {"company": "общество", "employee": "человек", "auto": "как решат правила"}
 BUCKET_RU = billing.BUCKET_LABELS
@@ -504,7 +504,7 @@ def build() -> str:
 
     add(f"""
 <div class="wrap">
-<h1>Черемша</h1>
+<h1>Методика расчётов и анализа</h1>
 <p class="lead">Как в этой программе получаются деньги: откуда берутся суммы,
 почему услуга попала в эту корзину и кто в итоге платит.</p>
 <p class="muted">Для администраторов и разработчиков. Таблицы в документе
@@ -666,7 +666,7 @@ def build() -> str:
   дописать туда условие, значит нужна строка в <code>INCLUDES</code>.
 </div>
 
-<p class="stamp">Собрано {e(stamp)} · <code>python cheremsha.py</code></p>
+<p class="stamp">Собрано {e(stamp)} · <code>python metodika.py</code></p>
 </div>""")
 
     body = "".join(sections)
@@ -674,7 +674,7 @@ def build() -> str:
 <html lang="ru"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Черемша — как считаются деньги</title>
+<title>Методика расчётов и анализа</title>
 <style>{CSS}</style>
 </head><body>{body}</body></html>"""
 
@@ -683,7 +683,7 @@ def main() -> int:
     html_text = build()
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write(html_text)
-    print(f"  Черемша собрана: {OUT}")
+    print(f"  Методика собрана: {OUT}")
     print(f"  {len(html_text) // 1024} КБ")
     return 0
 

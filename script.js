@@ -910,6 +910,10 @@ function renderExTrips() {
         <span>Номер</span><span>ФИО</span><span>Период</span><span>Страна</span>
         <span>Заказ</span><span>№ СЗ</span><span>Утв.</span><span>В месяце счёта</span>
       </div>
+      <!-- Строки — в отдельном окне с прокруткой на пять командировок.
+           Шапка остаётся снаружи, иначе она уезжает вверх при первом же
+           движении колеса (высоту окна считает .trip-scroll). -->
+      <div class="trip-scroll">
       ${rows.map((t) => {
         const sub = inMonth.get(t.number);
         return `<div class="trip-row${t.approved ? '' : ' is-unapproved'}">
@@ -920,15 +924,17 @@ function renderExTrips() {
           <span class="trip-period">${esc(t.date_start || '—')} — ${esc(t.date_end || '—')}</span>
           <span>${esc(t.country || '—')}</span>
           <span>${esc(t.order_no || '—')}</span>
-          <span>${esc(t.memo_no || '—')}</span>
+          <span title="${esc(t.memo_no || '')}">${esc(t.memo_no || '—')}</span>
           <span class="${t.approved ? 'txt-good' : 'txt-warning'}">${t.approved ? 'да' : 'нет'}</span>
           <span>${sub ? 'да · роуминг ' + money(sub.roaming_cost || 0) : 'нет'}</span>
         </div>`;
       }).join('')}
+      </div>
     </div>
     <div class="panel-hint">Командировка, пересекающаяся с расчётным месяцем счёта,
       переводит роуминг номера на компанию — он перестаёт считаться перерасходом
-      сотрудника. Номера, попавшие в текущий период, кликабельны.</div>`;
+      сотрудника. Номера, попавшие в текущий период, кликабельны.
+      ${rows.length > 5 ? `Видно пять из ${rows.length} — список прокручивается.` : ''}</div>`;
   bindGoto(el);
 }
 
@@ -2417,7 +2423,14 @@ function fmtCatAmount(key, value) {
   return `${Math.round(value)} шт`;
 }
 
-/* ── Панель «Подробнее» внутри карточки ──────────────────────────────────── */
+/* ── Панель «Подробнее» внутри карточки ────────────────────────────────────
+   РЕКОМЕНДАЦИЯ ЗДЕСЬ — ОДНОЙ СТРОКОЙ, ТОЙ ЧТО ПРО ТАРИФ.
+   Полный вывод (перерасход по категориям, роуминг, неиспользованные пакеты)
+   занимает пять-шесть абзацев, а на главной таких карточек весь парк — панель
+   превращалась в стену текста. Первая строка отвечает на главный вопрос
+   «менять тариф или нет», остальное ждёт в подробной карточке: клик по
+   карточке открывает модалку, и там те же lines выводятся целиком
+   (см. openModal → sm-rec-lines). */
 function cardDetailsPanel(s) {
   const rec = s.recommendation;
   const top = (s.services || []).filter((x) => x.cost > 0).slice(0, 6);
@@ -2426,7 +2439,11 @@ function cardDetailsPanel(s) {
   return `<div class="panel-grid">
     <div class="panel-section">
       <div class="panel-title">Рекомендация</div>
-      <ul class="rec-list">${rec.lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>
+      <div class="rec-one">${esc(rec.lines[0] || '')}</div>
+      ${rec.lines.length > 1
+        ? '<div class="panel-hint">Разбор целиком — в подробной карточке: '
+          + 'нажмите на карточку.</div>'
+        : ''}
     </div>
 
     <!-- «За что платим» ЗДЕСЬ БОЛЬШЕ НЕТ.
@@ -3356,10 +3373,6 @@ async function renderRuleSettings(el) {
 
 /* ── Командировки ────────────────────────────────────────────────────────── */
 
-// Сколько строк видно, пока список не раскрыли. Командировок бывает много, а
-// вкладка нужна в первую очередь чтобы убедиться «загрузилось / не загрузилось».
-const TRIPS_PREVIEW = 5;
-
 /**
  * Одна командировка — В ДВЕ СТРОКИ, а не в одну.
  *
@@ -3381,6 +3394,9 @@ function tripItem(t) {
     `<span class="trip-period">${esc(t.date_start || '')} — ${esc(t.date_end || '')}</span>`,
     t.country ? `<span class="trip-country">${esc(t.country)}</span>` : '',
     t.order_no ? `<span class="trip-order">заказ ${esc(t.order_no)}</span>` : '',
+    // № служебной записки — то же поле, что и в виджете на главной. Без него
+    // вкладка не давала сверить командировку с бумагой, по которой её завели.
+    t.memo_no ? `<span class="trip-order">№ СЗ ${esc(t.memo_no)}</span>` : '',
   ].filter(Boolean).join('');
 
   return `<div class="trip-item${t.approved ? '' : ' is-unapproved'}">
@@ -3424,22 +3440,15 @@ async function renderTripSettings(el) {
       <button class="btn btn-primary" id="tripUpload">Загрузить файл командировок</button>
       <button class="btn btn-soft" id="tripClear">Очистить все</button>
     </div>
-    ${trips.length ? `<div class="trip-list" id="tripList">${trips.map(tripItem).join('')}</div>
-      ${trips.length > TRIPS_PREVIEW ? `<button class="btn btn-soft trip-toggle" id="tripToggle">
-        Показать все ${trips.length}</button>` : ''}`
+    ${trips.length
+      // ОКНО НА ПЯТЬ СТРОК С ПРОКРУТКОЙ — как в виджете на главной. Кнопки
+      // «Показать все» здесь больше нет: она разворачивала список, который всё
+      // равно упирался в прокрутку, — то есть делала лишний шаг до того же
+      // результата. Высоту окна держит CSS (.trip-list).
+      ? `<div class="trip-list" id="tripList">${trips.map(tripItem).join('')}</div>
+         ${trips.length > 5 ? `<div class="settings-note">Видно пять
+           из ${trips.length} — список прокручивается.</div>` : ''}`
       : '<div class="empty">Командировки не загружены.</div>'}`;
-
-  // Раскрытие списка — переключением класса, без перерисовки: какие строки
-  // видны, решает CSS (см. .trip-list:not(.is-open)). Хранить состояние
-  // отдельно не нужно, оно и есть класс на контейнере.
-  const toggle = $('tripToggle');
-  if (toggle) {
-    toggle.onclick = () => {
-      const list = $('tripList');
-      const open = list.classList.toggle('is-open');
-      toggle.textContent = open ? 'Свернуть' : `Показать все ${trips.length}`;
-    };
-  }
 
   $('tripUpload').onclick = () => { closeOverlay('settingsPanel'); $('tripsFile').click(); };
   $('tripClear').onclick = async () => {

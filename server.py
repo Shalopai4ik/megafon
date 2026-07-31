@@ -1127,6 +1127,22 @@ def _dates_in(text: str) -> list[str]:
     return [iso for _, iso in out]
 
 
+def _memo_no(text: str) -> str:
+    """Номер служебной записки — КАК В ФАЙЛЕ, а не «только цифры».
+
+    Раньше здесь стояло re.sub(r"\\D", "", …), и номер терял всё, кроме цифр:
+    «СЗ-12/345» превращалось в «12345» — номер, которого не существует, а
+    «б/н» и вовсе в пустую строку, то есть в «служебной записки не было».
+    Сверить командировку с бумагой по такому номеру нельзя.
+
+    Убираем только служебный префикс «№» и лишние пробелы: в таблицу номер
+    должен попадать в том же виде, в каком его написал человек.
+    """
+    out = " ".join(str(text).split())
+    out = re.sub(r"^(?:№|N|No\.?)\s*", "", out)
+    return out.strip(" -–—")
+
+
 def _is_trip_header(line: str) -> bool:
     lo = " ".join(str(line).lower().replace("ё", "е").split())
     return sum(1 for kw in _TRIP_HEADER_KW if kw in lo) >= 2
@@ -1200,22 +1216,36 @@ def parse_trips(text: str) -> dict[str, Any]:
     # второй — подписи «Номер заказа | Дата». Поэтому не выбираем одну лучшую
     # строку, а СКЛАДЫВАЕМ находки со всех строк шапки: первая найденная
     # колонка для каждого поля побеждает. Без этого «Номер заказа» терялся.
+    #
+    # ШАПКА БЫВАЕТ И СВЕРХУ. Колонка «№ СЗ» в выгрузке объединена по вертикали
+    # на обе строки шапки, и её подпись физически лежит в ПЕРВОЙ строке — той
+    # самой, где кроме неё только «Примечание». Два ключевых слова в такой
+    # строке не набираются, заголовком она не считалась, и найденная в ней
+    # колонка «№ СЗ» просто выбрасывалась: номер служебной записки приезжал
+    # пустым у всех командировок. Поэтому находки строки НАД шапкой держим в
+    # запасе (`above`) и подставляем те поля, которых в самой шапке не нашлось.
     columns: dict[str, int] = {}
     header_rows = 0
+    above: dict[str, int] = {}
     for line in lines[:20]:
         if delim not in line:
             continue
         found = _trip_header_map(line, delim)
         if not found:
+            above = {}
             continue
         # Строка шапки — либо явная (два ключевых слова), либо строка
         # подзаголовков сразу под ней.
         if _is_trip_header(line) or header_rows:
             header_rows += 1
-            for key, idx in found.items():
+            # Порядок важен: сама шапка главнее строки над ней.
+            for key, idx in list(found.items()) + list(above.items()):
                 columns.setdefault(key, idx)
-        if header_rows >= 2:
-            break
+            above = {}
+            if header_rows >= 2:
+                break
+        else:
+            above = found
 
     rows: list[dict[str, Any]] = []
     skipped = 0
@@ -1289,7 +1319,7 @@ def parse_trips(text: str) -> dict[str, Any]:
         username = cell("username")
         country = cell("country")
         order_no = re.sub(r"\D", "", cell("order_no"))
-        memo_no = re.sub(r"\D", "", cell("memo_no"))
+        memo_no = _memo_no(cell("memo_no"))
 
         if "approved" in cols:
             approved = cell("approved").lower() in ("да", "yes", "+", "1")
