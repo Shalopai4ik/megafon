@@ -62,6 +62,14 @@
           <span class="menu-item-name">Отчёт CSV</span>
           <span class="menu-item-note">скачать таблицу на компьютер</span>
         </button>
+        <!-- ЛАЙТ-РЕЖИМ. Экран сводится к одному списку: кому понизить тариф.
+             Ни показателей, ни графиков, ни фильтров — они в этот момент
+             только мешают. Переключение перезагружает страницу: тяжёлые
+             блоки не должны даже собираться. -->
+        <button id="liteBtn" class="menu-item" role="menuitem" aria-pressed="false">
+          <span class="menu-item-name">Лайт-режим</span>
+          <span class="menu-item-note">только карточки тех, кому понизить тариф</span>
+        </button>
         <button id="settingsBtn" class="menu-item" role="menuitem">
           <span class="menu-item-name">Настройки</span>
           <span class="menu-item-note">правила, тарифы, абоненты, командировки</span>
@@ -311,6 +319,17 @@
     <div class="collapsible-body" id="tariffCompareBody">
       <div id="tariffCompareContent" class="tariff-compare-content"></div>
     </div>
+  </section>
+
+  <!-- ═══ ШАПКА ЛАЙТ-РЕЖИМА ═══
+       Единственное, что остаётся на экране кроме карточек. Нужна, чтобы
+       режим не выглядел поломкой: видно, что показано, сколько и как выйти. -->
+  <section id="liteBar" class="lite-bar" hidden>
+    <div class="lite-bar-main">
+      <span class="lite-bar-title">Кому понизить тариф</span>
+      <span class="lite-bar-sub" id="liteBarSub"></span>
+    </div>
+    <button id="liteExitBtn" class="btn btn-soft" type="button">Обычный вид</button>
   </section>
 
   <!-- ═══ КТО ПЛАТИТ: ДВА СПИСКА ВМЕСТО ОДНОГО ПЕРЕМЕШАННОГО ═══

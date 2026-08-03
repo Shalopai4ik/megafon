@@ -80,6 +80,9 @@ const state = {
   // По умолчанию «платит компания»: отчёт про наши деньги, и открываться он
   // должен на них, а не на перемешанном списке.
   payer: 'company',
+  // Лайт-режим: на экране только карточки тех, кому надо понизить тариф.
+  // Читается из localStorage до первой отрисовки — см. loadLitePref.
+  lite: false,
   filter: 'all', sort: 'waste', sortDir: 'desc', view: 'grid', search: '',
   hasRoster: false,
   openPanels: {},   // number -> 'details' | 'limits' — какие панели раскрыты
@@ -161,6 +164,62 @@ const WIDGET_ESSENTIALS = new Set([
 
 const WIDGET_STORAGE_KEY = 'hiddenWidgets';
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * ЛАЙТ-РЕЖИМ
+ *
+ * Экран сводится к одному списку: карточки абонентов, которым надо понизить
+ * тариф. Ни показателей, ни графиков, ни расширенной аналитики, ни фильтров.
+ *
+ * ПОЧЕМУ ПЕРЕЗАГРУЗКА СТРАНИЦЫ, А НЕ ПРОСТО СКРЫТИЕ БЛОКОВ. Скрытый блок всё
+ * равно собран: сотня строк разметки, четыре графика, полтора десятка
+ * проходов по всему парку номеров. От «лайта», который делает ту же работу и
+ * прячет результат, толку нет. Перезагрузка гарантирует, что тяжёлое просто
+ * не начнёт считаться — за это и держим выбор в localStorage, а не в памяти.
+ *
+ * Настройки виджетов режим НЕ трогает: вышел из лайта — экран ровно такой,
+ * каким его оставили.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+const LITE_STORAGE_KEY = 'liteMode';
+
+function loadLitePref() {
+  try {
+    state.lite = localStorage.getItem(LITE_STORAGE_KEY) === '1';
+  } catch (_) {
+    state.lite = false;      // приватный режим — просто обычный вид
+  }
+}
+
+/** Включить или выключить лайт и перезагрузить страницу. */
+function setLite(on) {
+  try {
+    if (on) localStorage.setItem(LITE_STORAGE_KEY, '1');
+    else localStorage.removeItem(LITE_STORAGE_KEY);
+  } catch (_) {
+    // Записать не вышло — переживём: режим продержится до перезагрузки.
+    state.lite = on;
+  }
+  location.reload();
+}
+
+/**
+ * Кому нужно понизить тариф.
+ *
+ * Строго `lower` — «пакет избыточен, тот же месяц дешевле на меньшем тарифе».
+ * Соседний `switch` («подобрать тариф») сюда НЕ входит: это другой случай —
+ * тариф не опознан или нужен не меньший, а другой. В обычном фильтре
+ * «Понизить тариф» они идут вместе, здесь — нет: список, названный
+ * «кому понизить», должен состоять только из тех, кому понизить.
+ *
+ * Самоплатящие и исключённые отсеиваются вместе со всеми: за них компания не
+ * платит, и понижать им тариф не её забота.
+ */
+function lowerCandidates() {
+  return companySubs()
+    .filter((s) => s.recommendation && s.recommendation.action === 'lower')
+    .sort((a, b) => b.saving - a.saving);
+}
+
 function allWidgets() {
   return WIDGET_GROUPS.flatMap((g) => g.items);
 }
@@ -211,6 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // экран значит показать человеку вспышку стандартной палитры.
   applyTheme({ redraw: false });
   loadWidgetPrefs();
+  loadLitePref();
 
   bindUpload('billsBtn', 'billsFile', (file) => uploadFile(file, 'bill'));
   bindUpload('rosterBtn', 'rosterFile', (file) => uploadFile(file, 'roster'));
@@ -222,6 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
   on('themeBtn', 'click', openTheme);
   on('statsBtn', 'click', openStats);
   on('settingsBtn', 'click', openSettings);
+  on('liteBtn', 'click', () => setLite(!state.lite));
+  on('liteExitBtn', 'click', () => setLite(false));
   on('monthSelect', 'change', (e) => loadMonth(e.target.value));
   bindMainMenu();
 
@@ -591,17 +653,39 @@ function applyViewData(data) {
 /** Вся отрисовка главного экрана. Дорого: сотня карточек и четыре графика. */
 function renderMain() {
   const hasData = state.subscribers.length > 0;
+  const lite = state.lite;
+
+  // Отметка в меню, чтобы было видно, где выключается.
+  const liteBtn = $('liteBtn');
+  if (liteBtn) {
+    liteBtn.classList.toggle('is-on', lite);
+    liteBtn.setAttribute('aria-pressed', String(lite));
+    const note = liteBtn.querySelector('.menu-item-note');
+    if (note) {
+      note.textContent = lite ? 'включён — вернуться к обычному виду'
+        : 'только карточки тех, кому понизить тариф';
+    }
+  }
+
   toggle('welcomeSection', !hasData);
-  applyWidgetVisibility();
-  ['downloadBtn', 'statsBtn'].forEach((id) => { const el = $(id); if (el) el.hidden = !hasData; });
+  if (lite) hideEverythingButCards(); else applyWidgetVisibility();
+  toggle('liteBar', lite && hasData);
+  // Отчёт CSV и общая статистика — про весь парк, в лайте им не место.
+  ['downloadBtn', 'statsBtn'].forEach((id) => {
+    const el = $(id);
+    if (el) el.hidden = !hasData || lite;
+  });
   const picker = $('monthPickerWrap');
   if (picker) picker.hidden = state.months.length < 2;
 
   renderMonthSelect();
+  if (!hasData) { $('usersGrid').innerHTML = ''; return; }
+
+  if (lite) return renderLite();
+
   renderPayerTabs();
   renderRuleFilterOptions();
   resetFilterButtons();
-  if (!hasData) { $('usersGrid').innerHTML = ''; return; }
 
   renderKpis();
   renderRiskDonut();
@@ -612,6 +696,51 @@ function renderMain() {
   renderExtras();
   renderTariffCompare();
   renderUsers();
+}
+
+/**
+ * Лайт: гасим всё, кроме карточек.
+ *
+ * Идём по тому же реестру виджетов, что и applyWidgetVisibility, но ничего в
+ * нём не меняем — только прячем узлы. Настройки виджетов остаются как были:
+ * вышел из лайта, и экран ровно такой, каким его оставили.
+ */
+function hideEverythingButCards() {
+  WIDGET_GROUPS.forEach((group) => {
+    group.items.forEach((w) => {
+      const el = document.querySelector(`[data-widget="${w.id}"]`);
+      if (el) el.hidden = true;
+    });
+    if (group.container) toggle(group.container, false);
+  });
+  // Секции вне реестра виджетов — гасим по именам.
+  ['payerTabs', 'filtersPanel', 'tariffCompareSection'].forEach((id) => toggle(id, false));
+}
+
+/** Единственный экран лайт-режима: список тех, кому понизить тариф. */
+function renderLite() {
+  const grid = $('usersGrid');
+  if (!grid) return;
+
+  const list = lowerCandidates();
+  state.filtered = list;
+
+  const saving = list.reduce((sum, s) => sum + s.saving, 0);
+  setText('liteBarSub', list.length
+    ? `${list.length} ${plural(list.length, 'номер', 'номера', 'номеров')}`
+      + ` · экономия ${money(saving)} в месяц, ${money(saving * 12)} за год`
+    : 'таких номеров нет — понижать некому');
+
+  if (!list.length) {
+    grid.innerHTML = '<div class="empty-state">Ни одному абоненту понижение'
+      + ' тарифа сейчас не выгодно. Значит, пакеты подобраны по потреблению.</div>';
+    grid.dataset.drawn = '0';
+    return;
+  }
+
+  resetCardBatch();
+  drawCardBatch(grid, true, true);
+  bindCardActions(grid);
 }
 
 function toggle(id, visible) {
