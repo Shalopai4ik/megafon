@@ -1563,10 +1563,10 @@ def build_month_view(month: str) -> dict[str, Any]:
     # Справочники для разделения оплаты читаем ОДИН раз на весь отчёт.
     # Если читать их внутри цикла, на сотне абонентов получится сотня
     # лишних запросов к базе за одними и теми же строками.
+    chip_rules = queries.get_chip_rules()
     resolver = billing.PayerResolver(
-        colors=queries.get_chip_colors(),
-        marks=queries.get_chip_marks(),
-        rules=queries.get_payment_rules(only_enabled=True),
+        rules=chip_rules,
+        payment_rules=queries.get_payment_rules(only_enabled=True),
     )
 
     # ВСЁ ОСТАЛЬНОЕ — ТОЖЕ ОДНИМ НАБОРОМ ЗАПРОСОВ. История, потребление по
@@ -1589,30 +1589,41 @@ def build_month_view(month: str) -> dict[str, Any]:
         own_bundles = data["bundles"].get(number, [])
         history = queries.history_rows(own_bundles, data["roster"].get(number, {}))
         avg_total, avg_tariff = _averages(history, own_bundles)
+        profile = queries.dataset_profile(data, number)
+
+        # РАЗДЕЛЕНИЕ ОПЛАТЫ СЧИТАЕТСЯ ПЕРВЫМ, а запись собирается уже с
+        # оглядкой на него. Порядок здесь принципиален: пока было наоборот,
+        # рекомендация по тарифу успевала посчитаться и попасть в «потенциал
+        # экономии» ДО того, как выяснялось, что за номер компания не платит.
+        chip = chips.get(number) or queries.blank_chip(number)
+        trip = queries.pick_trip(data["trips"].get(number, []), bundle["month"])
+        on_trip = bool(profile.get("on_trip"))
+        payment = billing.split_payment(
+            bundle["items"], chip=chip, resolver=resolver,
+            on_trip=on_trip, trip=trip,
+            # Лимит ловит правила с лимитами-признаками: у самоплатящих
+            # номеров в этой колонке стоит не бюджет, а сумма взноса.
+            limit=domain.to_float(profile.get("limit")),
+        )
+
         record = domain.build_record(
             number, bundle["items"],
             month=bundle["month"],
-            profile=queries.dataset_profile(data, number),
+            profile=profile,
             catalog=catalog,
             plan_name=bundle["plan_name"],
             total_charged=bundle["total_charged"],
             avg_total=avg_total,
             avg_tariff_cost=avg_tariff,
+            company_pays=not (payment["excluded"] or payment["self_paid"]),
         )
         record["history"] = history
         record["category_history"] = queries.category_rows(own_bundles)
         record["trend"] = _trend_percent(record["history"], bundle["month"])
-
-        # НОВОЕ: разделение «мы / сотрудник» и расчёт впустую потраченного.
-        chip = chips.get(number) or queries.blank_chip(number)
-        trip = queries.pick_trip(data["trips"].get(number, []), bundle["month"])
         record["chip"] = chip
         record["trip"] = trip
-        record["payment"] = billing.split_payment(
-            bundle["items"], chip=chip, resolver=resolver,
-            on_trip=bool(record.get("on_trip")), trip=trip,
-        )
-        record["waste"] = billing.waste_of(record, record["payment"])
+        record["payment"] = payment
+        record["waste"] = billing.waste_of(record, payment)
         records.append(record)
 
     # Индекс невыгодности считается по всему парку сразу, поэтому только
@@ -1635,12 +1646,10 @@ def build_month_view(month: str) -> dict[str, Any]:
         # шапка отчёта и суммы под ней приезжают из разных счетов.
         "invoice": queries.get_invoice(month),
         "tariffs": catalog,
-        "statuses": queries.get_statuses(),
-        "chip_colors": queries.get_chip_colors(),
-        "chip_marks": queries.get_chip_marks(),
-        # Единый список правил (цвета + пометки) — интерфейс
-        # показывает их одной группой, без искусственного деления.
-        "chip_rules": queries.get_chip_rules(),
+        # Единый список правил (цвета + пометки) — интерфейс показывает их
+        # одной группой, без искусственного деления. Прочитан выше, для
+        # резолвера: второй раз ходить в базу за тем же незачем.
+        "chip_rules": chip_rules,
         # Командировки идут вместе с отчётом, чтобы таблица на главной
         # рисовалась сразу, без отдельного запроса при каждой перерисовке.
         "trips": queries.get_trips(),
@@ -1876,12 +1885,13 @@ class DictEndpoint(NamedTuple):
 
 
 _DICT_ENDPOINTS: dict[str, DictEndpoint] = {
-    "/api/chip-colors": DictEndpoint(
-        "colors", queries.save_chip_color, queries.delete_chip_color,
-        lambda p: str(p.get("code") or ""), "Ожидается объект цвета"),
-    "/api/chip-marks": DictEndpoint(
-        "marks", queries.save_chip_mark, queries.delete_chip_mark,
-        lambda p: str(p.get("code") or ""), "Ожидается объект пометки"),
+    # Правила номера — ОДНА ручка на цвета и пометки. Вид приезжает полем
+    # kind в теле запроса, ровно как он лежит в базе. Прежние /api/chip-colors
+    # и /api/chip-marks писали в ту же таблицу chip_rules и различались только
+    # тем, какую половину списка возвращали.
+    "/api/chip-rules": DictEndpoint(
+        "chip_rules", queries.save_chip_rule, queries.delete_chip_rule,
+        lambda p: str(p.get("code") or ""), "Ожидается объект правила номера"),
     "/api/payment-rules": DictEndpoint(
         "rules", queries.save_payment_rule, queries.delete_payment_rule,
         lambda p: domain.to_int(p.get("id")), "Ожидается объект правила"),
@@ -2021,8 +2031,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"tariffs": queries.get_tariffs()})
         if path == "/api/trend":
             return self._json(200, {"trend": queries.trend()})
-        if path == "/api/statuses":
-            return self._json(200, {"statuses": queries.get_statuses()})
         if path == "/api/invoice":
             # Период берём из адреса: окно «Общая статистика» показывает тот
             # счёт, который выбран на экране. Без этого оно всегда рисовало
@@ -2039,13 +2047,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     "months": queries.months(),
                                     "storage": queries.stats()})
         if path == "/api/users":
-            return self._json(200, {"users": queries.all_users(),
-                                    "statuses": queries.get_statuses()})
+            return self._json(200, {"users": queries.all_users()})
         # ── Справочники правил распределения оплаты ──────────────────────
-        if path == "/api/chip-colors":
-            return self._json(200, {"colors": queries.get_chip_colors()})
-        if path == "/api/chip-marks":
-            return self._json(200, {"marks": queries.get_chip_marks()})
+        if path == "/api/chip-rules":
+            return self._json(200, {"chip_rules": queries.get_chip_rules()})
         if path == "/api/payment-rules":
             return self._json(200, {"rules": queries.get_payment_rules()})
         if path == "/api/roaming":
@@ -2106,19 +2111,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             month = self._current_month()
             return self._json(200, {"ok": True, "user": user,
                                     "view": build_month_view(month) if month else None})
-        if path == "/api/statuses":
-            payload = self._read_json()
-            if not isinstance(payload, dict):
-                raise ValueError("Ожидается объект статуса")
-            statuses = queries.save_status(payload, str(payload.get("previous_id") or ""))
-            return self._json(200, {"statuses": statuses})
-        if path == "/api/statuses/delete":
-            payload = self._read_json()
-            status_id = str((payload or {}).get("id") or "")
-            statuses = queries.delete_status(status_id)
-            month = self._current_month()
-            return self._json(200, {"statuses": statuses,
-                                    "view": build_month_view(month) if month else None})
         # ── ЧИПСЫ: настройки конкретного номера ──────────────────────────
         # Именно они позволяют не ходить каждый раз в «Настройки → Абоненты»:
         # цвет, заметка, пометки и плательщик правятся прямо в карточке.
@@ -2132,10 +2124,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "chip": chip,
                                     "view": build_month_view(month) if month else None})
 
-        # ── Справочник цветов-правил ─────────────────────────────────────
-        # ── Справочники: цвета, пометки, правила оплаты ──────────────────
+        # ── Справочники: правила номеров, правила оплаты, роуминг ────────
         #
-        # Три справочника обслуживались шестью почти дословно совпадающими
+        # Справочники обслуживались почти дословно совпадающими
         # блоками. Разница между ними умещается в четыре значения, поэтому
         # они вынесены в таблицу _DICT_ENDPOINTS (см. рядом с классом), а
         # здесь остался один общий обработчик.

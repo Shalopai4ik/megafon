@@ -297,6 +297,15 @@ CREATE TABLE IF NOT EXISTS chip_rules (
     payer_roaming TEXT DEFAULT 'auto',
     is_excluded   INTEGER NOT NULL DEFAULT 0,
     is_unlimited  INTEGER NOT NULL DEFAULT 0,
+    -- Номер оплачивает сам сотрудник. Отдельный признак, а не «всё на
+    -- сотруднике»: он делит СПИСОК на две группы и убирает номер из денег
+    -- компании. См. billing.PayerResolver и domain.build_summary.
+    is_self_paid  INTEGER NOT NULL DEFAULT 0,
+    -- Лимиты-признаки: «490, 90, 690, 1070». Совпал лимит абонента из списка
+    -- работников — правило навешивается на номер САМО, руками его отмечать не
+    -- надо. Хранится текстом, потому что это список произвольной длины,
+    -- который правят в интерфейсе. Разбор — queries.parse_match_limits.
+    match_limits  TEXT DEFAULT '',
     sort_order    INTEGER DEFAULT 100,
     builtin       INTEGER NOT NULL DEFAULT 0
 );

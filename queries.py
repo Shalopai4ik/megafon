@@ -459,18 +459,12 @@ def users_count() -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Справочник статусов
+#  Код справочной строки из её названия
+#
+#  Код участвует в data-атрибутах и селекторах на фронтенде, поэтому кириллицу
+#  транслитерируем: «Личный тариф» → «lichnyy_tarif».
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_statuses() -> list[dict[str, Any]]:
-    rows = db.query("SELECT id, label, color, builtin FROM app_statuses ORDER BY sort_order, id")
-    if not rows and not reference_materialized():
-        return seeds.default_statuses()      # база ещё пуста — см. seeds.py
-    return [{**r, "builtin": bool(r["builtin"])} for r in rows]
-
-
-# Идентификатор статуса участвует в data-атрибутах и селекторах на фронтенде,
-# поэтому кириллицу транслитерируем: «Декрет» → «dekret».
 _TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
     "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
@@ -485,56 +479,7 @@ def _slug(label: str) -> str:
     slug = "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
     while "__" in slug:
         slug = slug.replace("__", "_")
-    return slug or "status"
-
-
-def save_status(status: dict[str, Any], previous_id: str = "") -> list[dict[str, Any]]:
-    """Создать статус или переименовать/перекрасить существующий."""
-    label = str(status.get("label") or "").strip()
-    color = str(status.get("color") or "#6b7a74")
-    if not label:
-        raise ValueError("Название статуса не может быть пустым")
-    # Встроенные статусы могли показываться из памяти — материализуем их,
-    # иначе в базе останется один новый, а «Норма» и «Уволен» исчезнут.
-    ensure_reference_data()
-
-    with _LOCK:
-        if previous_id:
-            existing = db.query_one("SELECT * FROM app_statuses WHERE id = ?", (previous_id,))
-            if existing:
-                # Идентификатор не меняем даже при переименовании: на него
-                # ссылаются карточки абонентов (users_numbers.status).
-                db.execute("UPDATE app_statuses SET label = ?, color = ? WHERE id = ?",
-                           (label, color, previous_id))
-                return get_statuses()
-
-        base = _slug(label)
-        new_id = base
-        n = 2
-        while db.query_one("SELECT id FROM app_statuses WHERE id = ?", (new_id,)):
-            new_id = f"{base}_{n}"
-            n += 1
-        order = int(db.scalar("SELECT COALESCE(MAX(sort_order), 0) + 10 AS n FROM app_statuses",
-                              default=10) or 10)
-        db.execute(
-            "INSERT INTO app_statuses (id, label, color, builtin, sort_order) VALUES (?, ?, ?, 0, ?)",
-            (new_id, label, color, order),
-        )
-    return get_statuses()
-
-
-def delete_status(status_id: str) -> list[dict[str, Any]]:
-    """Удалить пользовательский статус. Абоненты с ним переходят в «Норма»."""
-    ensure_reference_data()
-    row = db.query_one("SELECT * FROM app_statuses WHERE id = ?", (status_id,))
-    if not row:
-        raise ValueError("Статус не найден")
-    if row["builtin"]:
-        raise ValueError("Встроенный статус удалить нельзя")
-    with db.transaction() as conn:
-        conn.execute("UPDATE users_numbers SET status = 'normal' WHERE status = ?", (status_id,))
-        conn.execute("DELETE FROM app_statuses WHERE id = ?", (status_id,))
-    return get_statuses()
+    return slug or "rule"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1219,12 +1164,15 @@ def get_chip_rules(kind: str = "") -> list[dict[str, Any]]:
     rows = db.query(sql, params)
     if not rows and not reference_materialized():
         return seeds.default_chip_rules(kind)     # база ещё пуста — см. seeds.py
-    return [_bools(r, "is_excluded", "is_unlimited", "builtin") for r in rows]
+    return [_bools(r, "is_excluded", "is_unlimited", "is_self_paid", "builtin")
+            for r in rows]
 
 
-def get_chip_colors() -> list[dict[str, Any]]:
-    """Только цвета. Отдельная функция оставлена ради существующих вызовов."""
-    return get_chip_rules("color")
+# Разбор лимитов-признаков живёт в domain: это чистая арифметика над текстом,
+# базы она не касается, а нужна и здесь (при записи правила), и в billing
+# (при раскладке денег). Смотри шапку раздела в domain.py.
+parse_match_limits = domain.parse_match_limits
+rules_by_limit = domain.rules_by_limit
 
 
 def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]:
@@ -1255,6 +1203,12 @@ def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]
         "payer_roaming": _payer(data.get("payer_roaming")),
         "is_excluded": 1 if data.get("is_excluded") else 0,
         "is_unlimited": 1 if data.get("is_unlimited") else 0,
+        "is_self_paid": 1 if data.get("is_self_paid") else 0,
+        # Список нормализуем при записи, а не при чтении: в базе должно
+        # лежать то, что человек увидит в поле, иначе он поправит «490,,90»
+        # на «490, 90» и не поймёт, почему поле само переписалось.
+        "match_limits": domain.limits_text(
+            parse_match_limits(data.get("match_limits"))),
         "sort_order": domain.to_int(data.get("sort_order"), 100),
     }
     if existing:
@@ -1266,12 +1220,6 @@ def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]
         db.execute(f"INSERT INTO chip_rules ({columns}) VALUES ({holders})",
                    [code, *fields.values()])
     return get_chip_rules()
-
-
-def save_chip_color(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Сохранить цвет-правило. Обёртка над save_chip_rule для старых вызовов."""
-    save_chip_rule(data, "color")
-    return get_chip_colors()
 
 
 def delete_chip_rule(code: str) -> list[dict[str, Any]]:
@@ -1290,29 +1238,6 @@ def delete_chip_rule(code: str) -> list[dict[str, Any]]:
         conn.execute("UPDATE chip_settings SET color_code = 'normal' WHERE color_code = ?", (code,))
         conn.execute("DELETE FROM chip_rules WHERE code = ?", (code,))
     return get_chip_rules()
-
-
-def delete_chip_color(code: str) -> list[dict[str, Any]]:
-    """Обёртка над delete_chip_rule для старых вызовов."""
-    delete_chip_rule(code)
-    return get_chip_colors()
-
-
-def get_chip_marks() -> list[dict[str, Any]]:
-    """Только пометки. Отдельная функция оставлена ради существующих вызовов."""
-    return get_chip_rules("mark")
-
-
-def save_chip_mark(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Сохранить пометку. Обёртка над save_chip_rule для старых вызовов."""
-    save_chip_rule(data, "mark")
-    return get_chip_marks()
-
-
-def delete_chip_mark(code: str) -> list[dict[str, Any]]:
-    """Обёртка над delete_chip_rule для старых вызовов."""
-    delete_chip_rule(code)
-    return get_chip_marks()
 
 
 #  ПРИВЯЗКА ПРАВИЛ К НОМЕРУ.

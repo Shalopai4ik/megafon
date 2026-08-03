@@ -71,10 +71,15 @@ const VERDICT_COLS = [
 /* ── Состояние ───────────────────────────────────────────────────────────── */
 const state = {
   month: '', months: [], subscribers: [], filtered: [],
-  summary: null, tariffStats: [], tariffs: [], statuses: [],
+  summary: null, tariffStats: [], tariffs: [],
   trend: [], invoice: {},
-  // НОВОЕ: разделение оплаты и справочники правил.
-  paymentSummary: null, chipColors: [], chipMarks: [], trips: [],
+  // Разделение оплаты и правила номеров. Правила приезжают ОДНИМ списком,
+  // как они лежат в базе; цвет от пометки отличает поле kind.
+  paymentSummary: null, chipRules: [], trips: [],
+  // payer — какая группа списка открыта: 'company' | 'self' | 'all'.
+  // По умолчанию «платит компания»: отчёт про наши деньги, и открываться он
+  // должен на них, а не на перемешанном списке.
+  payer: 'company',
   filter: 'all', sort: 'waste', sortDir: 'desc', view: 'grid', search: '',
   hasRoster: false,
   openPanels: {},   // number -> 'details' | 'limits' — какие панели раскрыты
@@ -225,20 +230,27 @@ document.addEventListener('DOMContentLoaded', () => {
     renderUsers(true);
   }, 180));
 
-  bindFilters();
-
-  $$('.sort').forEach((btn) => btn.addEventListener('click', () => {
-    if (state.sort === btn.dataset.sort) {
-      state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
-    } else {
-      state.sort = btn.dataset.sort;
-      state.sortDir = 'desc';
-    }
-    $$('.sort').forEach((b) => { b.classList.remove('active'); b.removeAttribute('data-dir'); });
-    btn.classList.add('active');
-    btn.dataset.dir = state.sortDir;
+  // Фильтр и сортировка — выпадающие списки. Обработчик один на список
+  // вместо двадцати на кнопки, и порядок пунктов правится в разметке.
+  on('filterSelect', 'change', (e) => {
+    state.filter = e.target.value;
     renderUsers(true);
-  }));
+  });
+  on('sortSelect', 'change', (e) => {
+    state.sort = e.target.value;
+    // Новый ключ — снова по убыванию: наверху списка должно оказаться
+    // самое крупное, за этим сюда и приходят.
+    state.sortDir = 'desc';
+    updateSortDirButton();
+    renderUsers(true);
+  });
+  on('sortDirBtn', 'click', () => {
+    state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+    updateSortDirButton();
+    renderUsers(true);
+  });
+
+  bindPayerTabs();
 
   on('gridView', 'click', () => setView('grid'));
   on('tableView', 'click', () => setView('table'));
@@ -290,17 +302,68 @@ function on(id, event, handler) {
   if (el) el.addEventListener(event, handler);
 }
 
-function bindFilters() {
-  $$('.filter').forEach((btn) => {
-    if (btn.dataset.bound) return;
-    btn.dataset.bound = '1';
-    btn.addEventListener('click', () => {
-      $$('.filter').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      state.filter = btn.dataset.filter;
-      renderUsers(true);
-    });
-  });
+/** Стрелка у кнопки порядка: ↓ по убыванию, ↑ по возрастанию. */
+function updateSortDirButton() {
+  const btn = $('sortDirBtn');
+  if (!btn) return;
+  const desc = state.sortDir === 'desc';
+  btn.textContent = desc ? '↓' : '↑';
+  btn.title = desc ? 'Сначала большие значения' : 'Сначала малые значения';
+}
+
+/* ── Переключатель «кто платит» ──────────────────────────────────────────────
+ *
+ * Три группы: все номера, номера компании и те, за кого платит сам сотрудник.
+ * Это не фильтр: фильтр сужает список внутри выбранной группы, а группа
+ * решает, чьи деньги мы вообще смотрим. Поэтому переключатель живёт отдельной
+ * строкой над фильтрами и переживает их сброс.
+ * ─────────────────────────────────────────────────────────────────────────── */
+function bindPayerTabs() {
+  $$('.payer-tab').forEach((btn) => btn.addEventListener('click', () => {
+    state.payer = btn.dataset.payer;
+    renderPayerTabs();
+    renderUsers(true);
+  }));
+}
+
+function renderPayerTabs() {
+  const panel = $('payerTabs');
+  if (!panel) return;
+
+  const all = state.subscribers.length;
+  const self = state.subscribers.filter(isSelfPaid).length;
+  setText('payerCountAll', all);
+  setText('payerCountCompany', all - self);
+  setText('payerCountSelf', self);
+
+  $$('.payer-tab', panel).forEach((b) =>
+    b.classList.toggle('active', b.dataset.payer === state.payer));
+
+  // Пока самоплатящих нет, переключатель только мешает: две группы из трёх
+  // пустые. Прячем его целиком и показываем весь список.
+  panel.hidden = self === 0;
+  if (self === 0 && state.payer === 'self') state.payer = 'company';
+
+  // Подпись объясняет расхождение, которое иначе выглядит как ошибка: в
+  // группе «Платит компания» номеров больше, чем в KPI сверху. Исключённые
+  // остаются в списке — иначе снять с них пометку было бы нечем, — но в
+  // сводки не идут.
+  const ps = state.paymentSummary;
+  const note = [];
+  if (self && ps) {
+    note.push(`сотрудники вносят за себя ${money(ps.self_paid_total)}`
+      + ' — в расходы и экономию компании это не входит');
+  }
+  if (ps && ps.excluded_count) {
+    note.push(`${ps.excluded_count} ${plural(ps.excluded_count, 'номер', 'номера', 'номеров')}`
+      + ' помечены «не учитывать»: в списке видны, в сводках — нет');
+  }
+  setText('payerTabsNote', note.join(' · '));
+}
+
+/** Платит ли сотрудник за номер сам. Считает сервер, здесь только читаем. */
+function isSelfPaid(s) {
+  return !!(s.payment || {}).self_paid;
 }
 
 function bindUpload(buttonId, inputId, handler) {
@@ -463,13 +526,13 @@ async function refreshView() {
   }
 }
 
+/** Вернуть выпадающие списки к тому, что лежит в состоянии. */
 function resetFilterButtons() {
-  $$('.filter').forEach((b) => b.classList.toggle('active', b.dataset.filter === state.filter));
-  $$('.sort').forEach((b) => {
-    b.classList.toggle('active', b.dataset.sort === state.sort);
-    if (b.dataset.sort === state.sort) b.dataset.dir = state.sortDir;
-    else b.removeAttribute('data-dir');
-  });
+  const filter = $('filterSelect');
+  const sort = $('sortSelect');
+  if (filter) filter.value = state.filter;
+  if (sort) sort.value = state.sort;
+  updateSortDirButton();
 }
 
 /* ── Применение представления ─────────────────────────────────────────────
@@ -517,12 +580,10 @@ function applyViewData(data) {
   state.summary = data.summary || null;
   state.tariffStats = data.tariff_stats || [];
   state.tariffs = data.tariffs || state.tariffs;
-  state.statuses = data.statuses || state.statuses;
   state.trend = data.trend || [];
   state.invoice = data.invoice || {};
   state.paymentSummary = data.payment_summary || null;
-  state.chipColors = data.chip_colors || state.chipColors;
-  state.chipMarks = data.chip_marks || state.chipMarks;
+  state.chipRules = data.chip_rules || state.chipRules;
   state.trips = data.trips || state.trips;
   state.hasRoster = state.hasRoster || state.subscribers.some((s) => s.limit_set || s.username);
 }
@@ -537,7 +598,9 @@ function renderMain() {
   if (picker) picker.hidden = state.months.length < 2;
 
   renderMonthSelect();
-  renderStatusFilters();
+  renderPayerTabs();
+  renderRuleFilterOptions();
+  resetFilterButtons();
   if (!hasData) { $('usersGrid').innerHTML = ''; return; }
 
   renderKpis();
@@ -565,21 +628,37 @@ function renderMonthSelect() {
     .join('');
 }
 
-/** Пользовательские статусы становятся фильтрами — так их видно в общем списке. */
-function renderStatusFilters() {
-  const group = $('filtersGroup');
-  if (!group) return;
-  $$('.filter[data-status]', group).forEach((b) => b.remove());
-  const used = new Set(state.subscribers.map((s) => s.user_status).filter(Boolean));
-  state.statuses.filter((st) => st.id !== 'normal' && used.has(st.id)).forEach((st) => {
-    const btn = document.createElement('button');
-    btn.className = 'filter filter-status';
-    btn.dataset.filter = `status:${st.id}`;
-    btn.dataset.status = st.id;
-    btn.innerHTML = `<span class="dot" style="background:${esc(st.color)}"></span>${esc(st.label)}`;
-    group.appendChild(btn);
+/**
+ * Действующие правила становятся пунктами фильтра.
+ *
+ * Показываем только те, что реально навешены хоть на один номер: список из
+ * дюжины правил, половина которых никого не находит, — это способ потратить
+ * время на пустые выборки. Считаем по rule_codes, а не по chip.rules, потому
+ * что правило могло навеситься само, по лимиту-признаку.
+ */
+function renderRuleFilterOptions() {
+  const group = $('filterRuleGroup');
+  const select = $('filterSelect');
+  if (!group || !select) return;
+
+  $$('option[data-rule]', group).forEach((o) => o.remove());
+
+  const used = new Set();
+  state.subscribers.forEach((s) =>
+    ((s.payment || {}).rule_codes || []).forEach((c) => used.add(c)));
+
+  state.chipRules.filter((r) => used.has(r.code) && r.code !== 'normal').forEach((r) => {
+    const option = document.createElement('option');
+    option.value = `rule:${r.code}`;
+    option.dataset.rule = r.code;
+    option.textContent = r.label;
+    group.appendChild(option);
   });
-  bindFilters();
+
+  // Выбранное правило могли только что удалить — тогда возвращаемся ко «всем»,
+  // иначе список молча оставался бы пустым.
+  if (!$$('option', select).some((o) => o.value === state.filter)) state.filter = 'all';
+  select.value = state.filter;
 }
 
 /* ── KPI и аналитика ─────────────────────────────────────────────────────── */
@@ -588,7 +667,7 @@ function renderKpis() {
   if (!s) return;
 
   setText('kpiCount', s.subscribers);
-  const trips = state.subscribers.filter((x) => x.on_trip).length;
+  const trips = companySubs().filter((x) => x.on_trip).length;
   setText('kpiCountSub', (state.month ? formatMonth(state.month) : '')
     + (trips ? ` · ${trips} в командировке` : ''));
 
@@ -602,7 +681,7 @@ function renderKpis() {
     : 'тарифы подобраны верно');
 
   setText('kpiOverpay', money(s.total_overpay));
-  const chronic = state.subscribers.filter((x) => x.chronic).length;
+  const chronic = companySubs().filter((x) => x.chronic).length;
   setText('kpiOverpaySub', !state.hasRoster ? 'лимиты не загружены'
     : (s.total_overpay > 0 ? `${chronic} превышают стабильно` : 'все в пределах лимитов'));
 
@@ -630,7 +709,7 @@ function renderKpis() {
     ? `при сохранении текущего потребления`
     : 'менять нечего');
 
-  const roamers = state.subscribers.filter((x) => x.roaming_cost > 0);
+  const roamers = companySubs().filter((x) => x.roaming_cost > 0);
   const roamingSum = roamers.reduce((acc, x) => acc + x.roaming_cost, 0);
   setText('kpiRoaming', money(roamingSum));
   setText('kpiRoamingSub', roamers.length
@@ -655,7 +734,7 @@ function renderKpis() {
  * рисковали разойтись между собой.
  */
 function idleSubscribers() {
-  return state.subscribers.filter((s) => s.usage_level === 'none' || s.usage_level === 'idle');
+  return companySubs().filter((s) => s.usage_level === 'none' || s.usage_level === 'idle');
 }
 
 function setText(id, value) {
@@ -700,7 +779,7 @@ function donutSvg(score, cls) {
 function renderRankList() {
   const el = $('rankList');
   if (!el) return;
-  const top = [...state.subscribers].filter((s) => s.saving > 0)
+  const top = companySubs().filter((s) => s.saving > 0)
     .sort((a, b) => b.saving - a.saving).slice(0, 6);
 
   if (!top.length) {
@@ -752,7 +831,7 @@ function renderUsageTotals() {
   const el = $('usageTotals');
   if (!el) return;
   const acc = { voice: { used: 0, cost: 0, over: 0 }, internet: { used: 0, cost: 0, over: 0 }, sms: { used: 0, cost: 0, over: 0 } };
-  state.subscribers.forEach((s) => s.categories.forEach((c) => {
+  companySubs().forEach((s) => s.categories.forEach((c) => {
     const a = acc[c.key];
     if (!a) return;
     a.used += c.used;
@@ -776,14 +855,38 @@ function renderUsageTotals() {
 /* ═══════════════════════════════════════════════════════════════════════════
  * РАСШИРЕННАЯ АНАЛИТИКА
  *
- * Все блоки ниже считаются из `state.subscribers` — того же массива, что
- * рисует карточки. Сервер для них ничего дополнительно не отдаёт, поэтому
- * цифры здесь и в карточке абонента гарантированно совпадают.
+ * Все блоки ниже считаются из `companySubs()` — номеров, за которые платит
+ * компания. Сервер для них ничего дополнительно не отдаёт, поэтому цифры
+ * здесь и в карточке абонента гарантированно совпадают.
+ *
+ * ПОЧЕМУ НЕ `state.subscribers`. Раньше было именно так, и это делало
+ * бесполезной галку «исключить». Человек помечал номер «не учитывать», сервер
+ * честно выбрасывал его из своих сводок — а полтора десятка блоков на клиенте
+ * считали по всему массиву и продолжали показывать его в топах, в ABC-анализе
+ * и в матрице риска. Со стороны это выглядело ровно как «галка не работает»:
+ * одна цифра менялась, остальные пятнадцать — нет.
  *
  * Блок, которому не хватает данных (нет лимитов, нет второго месяца, нет
  * списка сотрудников), не исчезает молча, а объясняет, что нужно загрузить,
  * — иначе пустое место читается как поломка.
  * ═════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Номера, за которые платит компания: без исключённых и самоплатящих.
+ *
+ * ЕДИНСТВЕННЫЙ источник данных для KPI, графиков и аналитики. Признак считает
+ * сервер (billing.counts_for_company) и кладёт в запись полем company_pays —
+ * на клиенте правила не разбираются, иначе две реализации одного решения
+ * рано или поздно разойдутся.
+ *
+ * Список карточек — намеренное исключение: там показываются ВСЕ номера
+ * выбранной группы, включая исключённые. Иначе номер, который человек только
+ * что пометил, исчезал бы с экрана вместе с шестерёнкой, и снять пометку было
+ * бы нечем.
+ */
+function companySubs() {
+  return state.subscribers.filter((s) => s.company_pays !== false);
+}
 
 /**
  * Блоки расширенной аналитики: id блока → чем рисуется.
@@ -891,7 +994,7 @@ function renderExTrips() {
   // Командировки приходят вместе с абонентами: в записи номера лежит поле
   // trip, если период пересекается с месяцем счёта.
   const inMonth = new Map();
-  state.subscribers.forEach((s) => { if (s.trip) inMonth.set(s.number, s); });
+  companySubs().forEach((s) => { if (s.trip) inMonth.set(s.number, s); });
 
   if (!state.trips || !state.trips.length) {
     el.innerHTML = exEmpty('Командировки не загружены. Кнопка «Командировки» в шапке — '
@@ -950,7 +1053,7 @@ function renderExOversized() {
   const el = $('exOversized');
   if (!el) return;
 
-  const rows = state.subscribers
+  const rows = companySubs()
     .filter((s) => s.waste && s.waste.waste_money > 0 && !(s.payment || {}).excluded)
     .sort((a, b) => b.waste.waste_money - a.waste.waste_money)
     .slice(0, 10);
@@ -966,7 +1069,7 @@ function renderExOversized() {
   el.innerHTML = exStats([
     ['Впустую в месяц', money(ps.waste_money || 0)],
     ['Впустую за год', money((ps.waste_money || 0) * 12)],
-    ['Номеров', String(state.subscribers.filter(
+    ['Номеров', String(companySubs().filter(
       (s) => s.waste && s.waste.waste_money > 0).length)],
   ])
     + `<div class="ex-list">${rows.map((s) => exRow({
@@ -1026,10 +1129,11 @@ function renderExPayers() {
       value: money(byBucket[key] || 0),
       cls: key === 'overage' || key === 'roaming' ? 'danger' : '',
     })).join('')}</div>
-    <div class="panel-hint">Перерасход и роуминг в строке компании означают, что
-      сработало правило: цвет номера, пометка или командировка. По умолчанию их
-      платит сотрудник.${ps.excluded_count
-        ? ` Исключено из подсчёта номеров: ${ps.excluded_count}.` : ''}</div>`;
+    <div class="panel-hint">Считаем только номера компании. Перерасход и роуминг
+      в строке компании означают, что сработало правило: цвет номера, пометка
+      или командировка. По умолчанию их платит сотрудник.${ps.excluded_count
+        ? ` Исключено из подсчёта номеров: ${ps.excluded_count}.` : ''}${ps.self_paid_count
+        ? ` Платят сами за себя: ${ps.self_paid_count} на ${money(ps.self_paid_total)} — сюда не входят.` : ''}</div>`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1076,19 +1180,24 @@ function cardChipPanel(s) {
   //   цвет  — заменяет предыдущий цвет (карточка красится в один тон);
   //   пометка — просто включается и выключается.
   // Объяснять это словами не нужно: нажал — увидел.
-  const allRules = [
-    ...(state.chipColors || []).map((r) => ({ ...r, kind: 'color' })),
-    ...(state.chipMarks || []).map((r) => ({ ...r, kind: 'mark' })),
-  ];
-  const ruleButtons = allRules.map((r) => {
+  // Правила, пойманные по лимиту-признаку, показываем включёнными, но
+  // помечаем отдельно: снять их щелчком нельзя, они держатся на лимите
+  // абонента. Без этой пометки человек будет тыкать в правило и не понимать,
+  // почему оно не гаснет.
+  const manual = new Set([...(chip.rules || [])]);
+  const active = new Set(pay.rule_codes || []);
+  const ruleButtons = (state.chipRules || []).map((r) => {
     const on = r.kind === 'color' ? r.code === colorCode : marks.includes(r.code);
-    return `<button type="button" class="chip-rule${on ? ' is-on' : ''}"
+    const auto = active.has(r.code) && !manual.has(r.code);
+    return `<button type="button" class="chip-rule${on || auto ? ' is-on' : ''}${auto ? ' is-auto' : ''}"
       data-rule="${esc(r.code)}" data-kind="${r.kind}"
       style="--swatch:${esc(r.hex || '#8a9a94')}"
-      aria-pressed="${on ? 'true' : 'false'}"
-      title="${esc(r.description || r.label)}">
+      aria-pressed="${on || auto ? 'true' : 'false'}"
+      title="${auto ? `Навешено автоматически: лимит абонента совпал со списком в правиле (${esc(r.match_limits || '')})`
+        : esc(r.description || r.label)}">
       <span class="chip-rule-dot"></span>
       <span class="chip-rule-label">${esc(r.label)}</span>
+      ${auto ? '<span class="chip-rule-auto">по лимиту</span>' : ''}
     </button>`;
   }).join('');
 
@@ -1230,6 +1339,17 @@ function bindChipPanel(panel) {
   //   пометка — просто включается и выключается.
   $$('.chip-rule', root).forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
+
+    // Правило, пойманное по лимиту-признаку, щелчком не снимается: оно
+    // держится не на этом номере, а на лимите абонента. Без этой проверки
+    // кнопка гасла, уходил запрос, отчёт возвращался — и кнопка загоралась
+    // обратно. Мигание, которое выглядит как поломка.
+    if (btn.classList.contains('is-auto')) {
+      flash('Правило навешено по лимиту абонента — снимите лимит или '
+        + 'поправьте список в настройках правила', true);
+      return;
+    }
+
     const on = btn.classList.contains('is-on');
 
     if (btn.dataset.kind === 'color') {
@@ -1280,7 +1400,7 @@ function bindChipPanel(panel) {
 function renderExStructure() {
   const el = $('exStructure');
   if (!el) return;
-  const subs = state.subscribers;
+  const subs = companySubs();
   const total = subs.reduce((a, s) => a + s.total, 0);
   if (total <= 0) { el.innerHTML = exEmpty('В счёте нет начислений.'); return; }
 
@@ -1317,7 +1437,7 @@ function renderExStructure() {
 function renderExDistribution() {
   const el = $('exDistribution');
   if (!el) return;
-  const values = state.subscribers.map((s) => s.total).sort((a, b) => a - b);
+  const values = companySubs().map((s) => s.total).sort((a, b) => a - b);
   if (!values.length) { el.innerHTML = exEmpty('Нет данных.'); return; }
 
   const max = values[values.length - 1];
@@ -1355,7 +1475,7 @@ function renderExDistribution() {
 function renderExPareto() {
   const el = $('exPareto');
   if (!el) return;
-  const sorted = [...state.subscribers].sort((a, b) => b.total - a.total);
+  const sorted = companySubs().sort((a, b) => b.total - a.total);
   const total = sorted.reduce((a, s) => a + s.total, 0);
   if (total <= 0) { el.innerHTML = exEmpty('В счёте нет начислений.'); return; }
 
@@ -1399,10 +1519,10 @@ function renderExPareto() {
 function renderExTopCost() {
   const el = $('exTopCost');
   if (!el) return;
-  const sorted = [...state.subscribers].sort((a, b) => b.total - a.total).slice(0, 10);
+  const sorted = companySubs().sort((a, b) => b.total - a.total).slice(0, 10);
   if (!sorted.length) { el.innerHTML = exEmpty('Нет данных.'); return; }
 
-  const total = state.subscribers.reduce((a, s) => a + s.total, 0);
+  const total = companySubs().reduce((a, s) => a + s.total, 0);
   const max = sorted[0].total || 1;
 
   el.innerHTML = `<div class="ex-list">${sorted.map((s) => exRow({
@@ -1457,7 +1577,7 @@ function renderExIdle() {
 function renderExLimits() {
   const el = $('exLimits');
   if (!el) return;
-  const withLimit = state.subscribers.filter((s) => s.limit_set && s.limit > 0);
+  const withLimit = companySubs().filter((s) => s.limit_set && s.limit > 0);
 
   if (!withLimit.length) {
     el.innerHTML = exEmpty('Лимиты не заданы. Загрузите список абонентов с колонкой «Лимит» '
@@ -1489,8 +1609,8 @@ function renderExLimits() {
       value: String(r.count),
       cls: r.cls,
     })).join('')}</div>
-    <div class="panel-hint">Лимиты заданы у ${withLimit.length} из ${state.subscribers.length}
-      ${plural(state.subscribers.length, 'номера', 'номеров', 'номеров')}.
+    <div class="panel-hint">Лимиты заданы у ${withLimit.length} из ${companySubs().length}
+      ${plural(companySubs().length, 'номера', 'номеров', 'номеров')}.
       Группа «до 50%» — это лимиты, выданные с запасом: их можно снизить, не мешая работе.</div>`;
 }
 
@@ -1498,7 +1618,7 @@ function renderExLimits() {
 function renderExRoaming() {
   const el = $('exRoaming');
   if (!el) return;
-  const roamers = state.subscribers.filter((s) => s.roaming_cost > 0)
+  const roamers = companySubs().filter((s) => s.roaming_cost > 0)
     .sort((a, b) => b.roaming_cost - a.roaming_cost);
 
   if (!roamers.length) {
@@ -1538,7 +1658,7 @@ function renderExAnomalies() {
   const el = $('exAnomalies');
   if (!el) return;
 
-  const changes = state.subscribers.map((s) => {
+  const changes = companySubs().map((s) => {
     const hist = s.history || [];
     const i = hist.findIndex((h) => h.month === s.month);
     const prev = i > 0 ? hist[i - 1].total : null;
@@ -1592,7 +1712,7 @@ function renderExPositions() {
   if (!el) return;
 
   const byPos = new Map();
-  state.subscribers.forEach((s) => {
+  companySubs().forEach((s) => {
     const key = (s.position || '').trim();
     if (!key) return;
     const row = byPos.get(key) || { name: key, count: 0, total: 0, saving: 0 };
@@ -1632,7 +1752,7 @@ function renderExHeat() {
   const keys = Object.keys(CAT_META);
   const counts = {};
   keys.forEach((k) => { counts[k] = {}; });
-  state.subscribers.forEach((s) => (s.categories || []).forEach((c) => {
+  companySubs().forEach((s) => (s.categories || []).forEach((c) => {
     if (!counts[c.key]) return;
     const t = c.verdict.type;
     counts[c.key][t] = (counts[c.key][t] || 0) + 1;
@@ -1666,7 +1786,7 @@ function renderExHeat() {
 function renderExMatrix() {
   const host = $('exMatrix');
   if (!host) return;
-  const subs = state.subscribers;
+  const subs = companySubs();
   if (!subs.length) { host.innerHTML = exEmpty('Нет данных.'); return; }
 
   // padT с запасом: наверху шкалы сидят самые рискованные номера, и при
@@ -1939,10 +2059,17 @@ function renderUsers(fresh = false) {
         || variants.some((v) => v.length > 0 && String(s.number).includes(v));
       if (!hit) return false;
     }
-    if (state.filter.startsWith('status:')) return s.user_status === state.filter.slice(7);
-    // Фильтр по цвету-правилу: color:unlimited и т.п.
-    if (state.filter.startsWith('color:')) {
-      return ((s.chip || {}).color_code || 'normal') === state.filter.slice(6);
+    // ГРУППА «КТО ПЛАТИТ» — проверяется до фильтра и сильнее его.
+    // Фильтр сужает список внутри группы; сама группа решает, чьи деньги мы
+    // смотрим, и подменять её фильтром нельзя.
+    if (state.payer === 'company' && isSelfPaid(s)) return false;
+    if (state.payer === 'self' && !isSelfPaid(s)) return false;
+
+    // Фильтр по правилу номера: rule:unlimited, rule:personal и т.п.
+    // Список таких пунктов собирается из действующих правил (см.
+    // renderRuleFilterOptions), поэтому здесь достаточно общей проверки.
+    if (state.filter.startsWith('rule:')) {
+      return ((s.payment || {}).rule_codes || []).includes(state.filter.slice(5));
     }
     const pay = s.payment || {};
     const waste = s.waste || {};
@@ -1979,7 +2106,11 @@ function renderUsers(fresh = false) {
   list = list.sort((a, b) => dir * (cmp[state.sort] || cmp.waste)(a, b));
   state.filtered = list;
 
-  setText('resultCount', `${list.length} из ${state.subscribers.length}`);
+  const groupSize = state.payer === 'company'
+    ? state.subscribers.filter((s) => !isSelfPaid(s)).length
+    : (state.payer === 'self' ? state.subscribers.filter(isSelfPaid).length
+      : state.subscribers.length);
+  setText('resultCount', `${list.length} из ${groupSize}`);
 
   if (!list.length) {
     grid.innerHTML = '<div class="empty-state">По выбранному фильтру абонентов нет.</div>';
@@ -2179,7 +2310,6 @@ function panelHtml(which, sub) {
 function renderCard(s) {
   const status = STATUS_META[s.status] || STATUS_META.normal;
   const action = ACTION_META[s.recommendation.action] || ACTION_META.keep;
-  const userStatus = state.statuses.find((x) => x.id === s.user_status);
   // Нет ФИО — заголовком становится сам номер, и он тоже должен быть
   // оформленным. Раньше здесь стояло «Абонент 9921876423» сырыми цифрами.
   const title = s.username || formatPhone(s.number);
@@ -2201,8 +2331,6 @@ function renderCard(s) {
     <header class="card-header">
       <div class="card-ident">
         <div class="user-name">
-          ${userStatus && userStatus.id !== 'normal'
-            ? `<span class="status-dot" style="background:${esc(userStatus.color)}" title="${esc(userStatus.label)}"></span>` : ''}
           <!-- Текст в span, иначе многоточие при обрезке не работает:
                голый текстовый узел нельзя ограничить text-overflow. -->
           <span class="user-name-text">${esc(title)}</span>
@@ -2221,6 +2349,8 @@ function renderCard(s) {
         ${s.on_trip ? '<span class="badge badge-trip" title="В командировке">командировка</span>' : ''}
         ${chipColor ? `<span class="badge badge-chip" style="--chip:${esc(chipColor.hex)}"
           title="${esc(chipColor.label)} — правило применено">${esc(chipColor.label)}</span>` : ''}
+        ${pay.self_paid ? `<span class="badge badge-self"
+          title="Сотрудник платит за номер сам — ${esc(pay.self_paid_reason || 'правило номера')}. В расходы и экономию компании не входит">платит сам</span>` : ''}
         ${pay.excluded ? '<span class="badge badge-muted" title="Не участвует в сводках">исключён</span>' : ''}
       </div>
     </header>
@@ -2696,14 +2826,11 @@ function openModal(number) {
 
   const action = ACTION_META[s.recommendation.action] || ACTION_META.keep;
   const status = STATUS_META[s.status] || STATUS_META.normal;
-  const userStatus = state.statuses.find((x) => x.id === s.user_status);
   const rec = s.recommendation;
 
   let h = `<header class="sm-header">
     <div>
       <div class="sm-name">
-        ${userStatus && userStatus.id !== 'normal'
-          ? `<span class="status-dot" style="background:${esc(userStatus.color)}"></span>` : ''}
         ${esc(s.username || formatPhone(s.number))}
       </div>
       <div class="sm-sub">${esc([formatPhone(s.number), s.position,
@@ -3035,7 +3162,6 @@ const SETTINGS_TABS = {
   chiprules: renderChipRuleSettings,
   rules: renderRuleSettings,
   trips: renderTripSettings,
-  statuses: renderStatusSettings,
   tariffs: renderTariffSettings,
   roaming: renderRoamingSettings,
   widgets: renderWidgetSettings,
@@ -3065,8 +3191,7 @@ function payerSelect(name, value) {
 async function saveDictionary(url, payload, onDone) {
   try {
     const data = await postJSON(url, payload);
-    if (data.colors) state.chipColors = data.colors;
-    if (data.marks) state.chipMarks = data.marks;
+    if (data.chip_rules) state.chipRules = data.chip_rules;
     if (data.view) applyView(data.view);
     if (onDone) onDone(data);
     renderSettings();
@@ -3076,72 +3201,80 @@ async function saveDictionary(url, payload, onDone) {
   }
 }
 
-/* ── Правила чипсов: цвета и пометки в одном месте ───────────────────────────
+/* ── Правила номеров: цвета и пометки в одном месте ──────────────────────────
  *
  * БЫЛО две вкладки-близнеца с одинаковыми таблицами. Разница между ними ровно
  * одна: цвет у номера ОДИН и красит карточку, пометок можно навесить сколько
  * угодно. Всё остальное — те же поля, те же эффекты на деньги.
  *
- * СТАЛО одна вкладка с двумя группами. В базе они тоже уже одна таблица
- * chip_rules с полем kind ('color' | 'mark'), так что интерфейс наконец
- * повторяет то, как данные лежат на самом деле.
+ * СТАЛО одна вкладка с двумя группами. В базе они тоже одна таблица
+ * chip_rules с полем kind ('color' | 'mark'), и одна ручка /api/chip-rules,
+ * так что интерфейс повторяет то, как данные лежат на самом деле.
  *
- * Сохранение по-прежнему идёт на /api/chip-colors и /api/chip-marks — эти
- * ручки пишут в chip_rules, менять их не понадобилось.
+ * ЦВЕТ — ЭТО ПРАВИЛО, а не украшение: он решает, кто платит. Поэтому колонка
+ * с кистью стоит первой, а рядом — колонки эффектов.
  * ────────────────────────────────────────────────────────────────────────── */
 
 // Всё, что отличает цвет от пометки — собрано в одном месте, чтобы обе группы
 // рисовались одним кодом и не разъезжались при правках.
 const CHIP_RULE_KINDS = [
   {
-    kind: 'color', list: () => state.chipColors,
-    title: 'Цвета', api: '/api/chip-colors',
-    hint: 'У номера действует один. Красит карточку на главной.',
+    kind: 'color',
+    title: 'Цвета', hint: 'У номера действует один. Красит карточку на главной.',
     addLabel: '+ Цвет', addName: 'Новый цвет', badge: 'базовый',
     confirm: 'Удалить цвет? Номера с ним станут обычными.',
-    // Сколько номеров носит этот цвет.
-    count: (counts, s) => { const c = (s.chip || {}).color_code || 'normal';
-      counts[c] = (counts[c] || 0) + 1; },
   },
   {
-    kind: 'mark', list: () => state.chipMarks,
-    title: 'Пометки', api: '/api/chip-marks',
+    kind: 'mark',
+    title: 'Пометки',
     hint: 'Навешиваются поверх цвета, их может быть несколько. Приоритет ниже цвета.',
     addLabel: '+ Пометка', addName: 'Новая пометка', badge: 'базовая',
     confirm: 'Удалить пометку? Она снимется со всех номеров.',
-    count: (counts, s) => ((s.chip || {}).marks || [])
-      .forEach((m) => { counts[m] = (counts[m] || 0) + 1; }),
   },
 ];
+
+const CHIP_RULES_API = '/api/chip-rules';
 
 function renderChipRuleSettings(el) {
   el.innerHTML = `
     <div class="settings-note">Правило — это набор эффектов: кто платит за
-      абонплату, опции, перерасход и роуминг, убирать ли номер из сводок и
-      считать ли его пакет безлимитным. Навесили правило на номер — эффекты
-      применились, отчёт пересчитался сразу.</div>
+      абонплату, опции, перерасход и роуминг, платит ли сотрудник за номер сам,
+      убирать ли номер из сводок и считать ли пакет безлимитным. Навесили
+      правило на номер — эффекты применились, отчёт пересчитался сразу.
+      <br>«Лимиты» — суммы из списка работников, по которым правило навешивается
+      САМО: совпал лимит абонента с одним из чисел — правило сработало, отмечать
+      номера руками не нужно. Несколько значений пишите через запятую.</div>
     <div id="chipRuleGroups"></div>`;
 
   const draw = () => {
     // Считаем, сколько номеров носит каждое правило — админу важно видеть,
-    // что он правит: мёртвую строку или правило на половину парка.
+    // что он правит: мёртвую строку или правило на половину парка. Считаем по
+    // ДЕЙСТВУЮЩИМ правилам (payment.rule_codes), поэтому в счётчик попадают и
+    // те номера, которым правило досталось по лимиту-признаку.
     const counts = {};
-    CHIP_RULE_KINDS.forEach((k) => state.subscribers.forEach((s) => k.count(counts, s)));
+    state.subscribers.forEach((s) => ((s.payment || {}).rule_codes || [])
+      .forEach((c) => { counts[c] = (counts[c] || 0) + 1; }));
 
-    $('chipRuleGroups').innerHTML = CHIP_RULE_KINDS.map((k) => `
+    $('chipRuleGroups').innerHTML = CHIP_RULE_KINDS.map((k) => {
+      const list = state.chipRules.filter((r) => (r.kind || 'mark') === k.kind);
+      return `
       <section class="rule-group" data-kind="${k.kind}">
         <div class="rule-group-head">
-          <h4>${k.title} <span class="rule-group-n">${k.list().length}</span></h4>
+          <h4>${k.title} <span class="rule-group-n">${list.length}</span></h4>
           <span class="rule-group-hint">${k.hint}</span>
           <button class="btn btn-soft btn-sm" data-add="${k.kind}">${k.addLabel}</button>
         </div>
         <div class="rule-table">
           <div class="rule-head">
             <span>Цвет</span><span>Название</span><span>Абонплата</span><span>Опции</span>
-            <span>Перерасход</span><span>Роуминг</span><span>Искл.</span><span>Безлим.</span>
+            <span>Перерасход</span><span>Роуминг</span>
+            <span title="Лимиты из списка работников, по которым правило навешивается само">Лимиты</span>
+            <span title="Сотрудник платит за номер сам — в деньги компании номер не входит">Сам</span>
+            <span title="Убрать номера с этим правилом из всех сводок">Искл.</span>
+            <span title="Пакет безлимитный — перерасхода по нему не бывает">Безлим.</span>
             <span>Номеров</span><span></span>
           </div>
-          ${k.list().map((r) => `
+          ${list.map((r) => `
             <div class="rule-row" data-code="${esc(r.code)}" data-kind="${k.kind}">
               <input type="color" data-f="hex" value="${esc(r.hex || '#6b7a74')}">
               <input type="text" data-f="label" value="${esc(r.label)}" maxlength="40">
@@ -3149,6 +3282,11 @@ function renderChipRuleSettings(el) {
               ${payerSelect('payer_options', r.payer_options)}
               ${payerSelect('payer_overage', r.payer_overage)}
               ${payerSelect('payer_roaming', r.payer_roaming)}
+              <input type="text" class="rule-limits" data-f="match_limits"
+                     value="${esc(r.match_limits || '')}" placeholder="490, 90…"
+                     title="Лимиты-признаки через запятую. Совпал лимит абонента — правило навесилось само">
+              <input type="checkbox" data-f="is_self_paid"${r.is_self_paid ? ' checked' : ''}
+                     title="Сотрудник платит за номер сам: номер уходит в свою группу списка и не даёт компании ни расхода, ни экономии">
               <input type="checkbox" data-f="is_excluded"${r.is_excluded ? ' checked' : ''}
                      title="Убрать номера с этим правилом из всех сводок">
               <input type="checkbox" data-f="is_unlimited"${r.is_unlimited ? ' checked' : ''}
@@ -3158,31 +3296,34 @@ function renderChipRuleSettings(el) {
                 : `<button class="rule-del" data-del="${esc(r.code)}" title="Удалить">✕</button>`}
             </div>`).join('')}
         </div>
-      </section>`).join('');
+      </section>`;
+    }).join('');
 
     // Правка любого поля строки сразу летит на сервер: отдельной кнопки
     // «сохранить» нет намеренно — она только плодит несохранённые состояния.
     $$('.rule-row', el).forEach((row) => {
-      const k = CHIP_RULE_KINDS.find((x) => x.kind === row.dataset.kind);
       $$('input, select', row).forEach((input) => input.addEventListener('change', () => {
-        const source = k.list().find((x) => x.code === row.dataset.code) || {};
-        const payload = { ...source, code: row.dataset.code };
+        const source = state.chipRules.find((x) => x.code === row.dataset.code) || {};
+        const payload = { ...source, code: row.dataset.code, kind: row.dataset.kind };
         $$('input, select', row).forEach((f) => {
           payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
         });
-        saveDictionary(k.api, payload);
+        saveDictionary(CHIP_RULES_API, payload);
       }));
     });
 
     $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
-      const k = CHIP_RULE_KINDS.find((x) => x.kind === btn.closest('.rule-row').dataset.kind);
+      const kind = btn.closest('.rule-row').dataset.kind;
+      const k = CHIP_RULE_KINDS.find((x) => x.kind === kind);
       if (!confirm(k.confirm)) return;
-      saveDictionary(`${k.api}/delete`, { code: btn.dataset.del });
+      saveDictionary(`${CHIP_RULES_API}/delete`, { code: btn.dataset.del });
     }));
 
     $$('[data-add]', el).forEach((btn) => btn.addEventListener('click', () => {
       const k = CHIP_RULE_KINDS.find((x) => x.kind === btn.dataset.add);
-      saveDictionary(k.api, { label: k.addName, hex: '#6b7a74', sort_order: 900 });
+      saveDictionary(CHIP_RULES_API, {
+        label: k.addName, kind: k.kind, hex: '#6b7a74', sort_order: 900,
+      });
     }));
   };
   draw();
@@ -3507,30 +3648,24 @@ function drawSubscriberList() {
     return;
   }
 
-  // Список статусов один на всех — собираем его РАЗ, а не на каждую строку.
-  // Отмечать выбранный через selected не нужно: значение проставим свойством
-  // value уже готовому <select>, это и быстрее, и короче.
-  const statusOptions = state.statuses.map((st) =>
-    `<option value="${esc(st.id)}">${esc(st.label)}</option>`).join('');
-
-  // Порциями, как и карточки: в строке выпадающий список и три поля ввода, и
-  // на всём парке номеров это самая тяжёлая разметка в программе. Из-за неё
-  // настройки и открывались с задержкой.
+  // Порциями, как и карточки: в строке три поля ввода, и на всём парке
+  // номеров это самая тяжёлая разметка в программе. Из-за неё настройки и
+  // открывались с задержкой.
   batchList(list, rows, (s) => {
-    const st = state.statuses.find((x) => x.id === s.user_status) || state.statuses[0] || {};
+    // Полоса слева — цвет действующего правила номера. Раньше здесь был цвет
+    // статуса, но статус ни на что не влиял; правило влияет на деньги, и
+    // видеть его в списке абонентов куда полезнее.
+    const stripe = ((s.payment || {}).color || {}).hex || '';
     return `<div class="subscriber-item" data-number="${esc(s.number)}"
-                 style="border-left-color:${esc(st.color || 'var(--border)')}">
+                 style="border-left-color:${esc(stripe || 'var(--border)')}">
       <div class="subscriber-info">
         <div class="subscriber-number">${esc(formatPhone(s.number))}</div>
         <div class="subscriber-name">${esc(s.username || '—')}</div>
         <div class="subscriber-pos">${esc(s.position || '')}</div>
-        <div class="subscriber-cost">начислено ${money(s.total)}</div>
+        <div class="subscriber-cost">начислено ${money(s.total)}${
+          isSelfPaid(s) ? ' · платит сам' : ''}</div>
       </div>
       <div class="subscriber-controls">
-        <label class="control-group">
-          <span class="control-label">Статус</span>
-          <select class="status-select" data-number="${esc(s.number)}">${statusOptions}</select>
-        </label>
         <div class="control-group">
           <label class="trip-toggle">
             <input type="checkbox" class="trip-check" data-number="${esc(s.number)}"
@@ -3553,22 +3688,6 @@ function drawSubscriberList() {
     reset: true,
     more: (left) => `Ещё ${left} ${plural(left, 'номер', 'номера', 'номеров')} —`
       + ' дорисуются при прокрутке. Поиск ищет по всему списку.',
-    // Значение <select> ставим свойством, а не атрибутом selected в разметке:
-    // так шаблон строки одинаков для всех и браузер разбирает его быстрее.
-    // Только по нарисованной порции — остальных строк ещё нет.
-    after: (slice) => {
-      slice.forEach((s) => {
-        const sel = list.querySelector(
-          `.subscriber-item[data-number="${CSS.escape(s.number)}"] .status-select`);
-        if (!sel) return;
-        sel.value = s.user_status || '';
-        // Статус могли удалить из справочника, а у номера он ещё записан. Тогда
-        // value не находит своего option и список показывает пустоту. Раньше в
-        // такой ситуации ни у одного option не было selected и браузер сам
-        // показывал первый — повторяем это поведение.
-        if (sel.selectedIndex < 0) sel.selectedIndex = 0;
-      });
-    },
   });
 
   attachSubscriberListeners(list);
@@ -3609,13 +3728,6 @@ function attachSubscriberListeners(root) {
 
   root.addEventListener('change', (e) => {
     const t = e.target;
-
-    if (t.classList.contains('status-select')) {
-      const item = t.closest('.subscriber-item');
-      const st = state.statuses.find((x) => x.id === t.value);
-      if (item && st) item.style.borderLeftColor = st.color;
-      return saveSubscriber(numberOf(t), { status: t.value });
-    }
 
     if (t.classList.contains('trip-check')) {
       const dates = t.closest('.control-group').querySelector('.trip-dates');
@@ -3681,92 +3793,6 @@ async function saveSubscriber(number, payload, btn) {
   } finally {
     if (btn) btn.disabled = false;
   }
-}
-
-/* Статусы: создание, переименование, цвет, удаление. */
-function renderStatusSettings(el) {
-  el.innerHTML = `
-    <div class="settings-note">Статусы помечают абонентов в списке и становятся фильтрами.
-      Встроенные статусы можно переименовать и перекрасить, но не удалить.</div>
-
-    <div class="status-create">
-      <input type="text" id="newStatusName" placeholder="Название статуса" maxlength="30">
-      <input type="color" id="newStatusColor" value="#1f7a5c" title="Цвет">
-      <button class="btn btn-primary" id="createStatusBtn">Добавить</button>
-    </div>
-
-    <div class="settings-section-title">Существующие статусы</div>
-    <div id="statusList" class="status-list"></div>`;
-
-  const draw = () => {
-    const list = $('statusList');
-    const counts = {};
-    state.subscribers.forEach((s) => { counts[s.user_status] = (counts[s.user_status] || 0) + 1; });
-
-    list.innerHTML = state.statuses.map((st) => `
-      <div class="status-item">
-        <input type="color" class="status-color" value="${esc(st.color)}" data-id="${esc(st.id)}" title="Цвет">
-        <input type="text" class="status-label" value="${esc(st.label)}" data-id="${esc(st.id)}" maxlength="30">
-        <span class="status-count">${counts[st.id] || 0}</span>
-        ${st.builtin
-          ? '<span class="pill pill-muted" title="Встроенный статус">базовый</span>'
-          : `<button class="status-del" data-id="${esc(st.id)}" title="Удалить">✕</button>`}
-      </div>`).join('');
-
-    $$('.status-color, .status-label', list).forEach((input) => {
-      input.addEventListener('change', async () => {
-        const id = input.dataset.id;
-        const current = state.statuses.find((x) => x.id === id);
-        if (!current) return;
-        const label = input.classList.contains('status-label') ? input.value.trim() : current.label;
-        const color = input.classList.contains('status-color') ? input.value : current.color;
-        if (!label) { flashHint('Название статуса не может быть пустым', 'error'); draw(); return; }
-        try {
-          const data = await postJSON('/api/statuses', { previous_id: id, label, color });
-          state.statuses = data.statuses;
-          renderStatusFilters();
-          renderUsers();
-          draw();
-        } catch (err) {
-          flashHint(err.message, 'error');
-          draw();
-        }
-      });
-    });
-
-    $$('.status-del', list).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const st = state.statuses.find((x) => x.id === btn.dataset.id);
-        if (!confirm(`Удалить статус «${st ? st.label : ''}»? Абоненты с ним перейдут в «Норма».`)) return;
-        try {
-          const data = await postJSON('/api/statuses/delete', { id: btn.dataset.id });
-          state.statuses = data.statuses;
-          if (data.view) applyView(data.view);
-          draw();
-          flashHint('Статус удалён.');
-        } catch (err) {
-          flashHint(err.message, 'error');
-        }
-      });
-    });
-  };
-  draw();
-
-  $('createStatusBtn').onclick = async () => {
-    const label = $('newStatusName').value.trim();
-    const color = $('newStatusColor').value;
-    if (!label) { flashHint('Введите название статуса', 'error'); return; }
-    try {
-      const data = await postJSON('/api/statuses', { label, color });
-      state.statuses = data.statuses;
-      $('newStatusName').value = '';
-      renderStatusFilters();
-      draw();
-      flashHint(`Статус «${label}» создан.`);
-    } catch (err) {
-      flashHint(err.message, 'error');
-    }
-  };
 }
 
 /* Каталог тарифов. */
@@ -3957,7 +3983,7 @@ function renderWidgetSettings(el) {
 function downloadReport() {
   if (!state.subscribers.length) return;
 
-  const header = ['Номер', 'ФИО', 'Должность', 'Табельный', 'Статус абонента', 'В командировке',
+  const header = ['Номер', 'ФИО', 'Должность', 'Табельный', 'Кто платит', 'В командировке',
     'Тариф', 'Абонплата ₽', 'Начислено ₽', 'Лимит ₽', 'Превышение лимита ₽', 'Оценка',
     'Минуты', 'Минуты ₽', 'Интернет ГБ', 'Интернет ₽', 'SMS', 'SMS ₽',
     'Вердикт минуты', 'Вердикт интернет', 'Вердикт SMS',
@@ -3967,10 +3993,13 @@ function downloadReport() {
     const [voice, net, sms] = ['voice', 'internet', 'sms']
       .map((k) => s.categories.find((c) => c.key === k) || { used: 0, cost: 0, verdict: {} });
     const action = ACTION_META[s.recommendation.action] || ACTION_META.keep;
-    const userStatus = state.statuses.find((x) => x.id === s.user_status);
+    // Вместо бывшего «статуса абонента» — то, что действительно решает
+    // судьбу строки: чьи это деньги. Статус был подписью без последствий.
+    const payerWord = isSelfPaid(s) ? 'платит сам'
+      : ((s.payment || {}).excluded ? 'не учитывается' : 'компания');
     return [
       s.number, s.username, s.position, s.personnel_no,
-      userStatus ? userStatus.label : '', s.on_trip ? 'да' : '',
+      payerWord, s.on_trip ? 'да' : '',
       s.plan_name, s.plan_fee, s.total, s.limit_set ? s.limit : '', s.overpayment,
       (STATUS_META[s.status] || STATUS_META.normal).label,
       Math.round(voice.used), voice.cost,

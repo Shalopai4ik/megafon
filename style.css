@@ -504,6 +504,18 @@ html, body { max-width: 100%; overflow-x: clip; }
 .chip-rule.is-on .chip-rule-dot { opacity: 1; }
 .chip-rule-label { white-space: nowrap; }
 
+/* ПРАВИЛО, НАВЕШЕННОЕ ПО ЛИМИТУ-ПРИЗНАКУ.
+   Включено, но щелчком не снимается: держится на лимите абонента из списка
+   работников. Пунктир и подпись «по лимиту» — чтобы человек не тыкал в него,
+   не понимая, почему оно не гаснет. */
+.chip-rule.is-auto { border-style: dashed; cursor: default; }
+.chip-rule-auto {
+  font-size: .82em; font-weight: 600; letter-spacing: .01em;
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+  background: color-mix(in srgb, var(--swatch) 26%, transparent);
+  color: var(--text-muted);
+}
+
 /* РУЧНОЕ ПЕРЕОПРЕДЕЛЕНИЕ — свёрнуто.
    Четыре выпадающих списка «кто платит» нужны редко, а занимали больше
    всего места. Свернули: на экране одна строка вместо четырёх. */
@@ -620,6 +632,12 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
   color: var(--text); border: 1px solid var(--chip);
 }
 .badge-muted { background: var(--muted-soft); color: var(--text-muted); }
+/* «Платит сам» — за номер платит сотрудник, в деньги компании он не входит.
+   Не тревожный цвет: это не проблема, это другая колонка бюджета. */
+.badge-self {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
 
 /* Строка «платим впустую» в карточке — сразу видно масштаб потери. */
 .waste-line {
@@ -642,9 +660,13 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
 .rule-table {
   border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto;
 }
+/* Правила номеров: кисть, название, четыре плательщика, лимиты-признаки,
+   три галки-эффекта, счётчик номеров и кнопка удаления. */
 .rule-head, .rule-row {
   display: grid; align-items: center; gap: 8px; padding: 7px 10px;
-  grid-template-columns: 44px minmax(150px, 1.4fr) repeat(4, minmax(min(100%, 96px), 1fr)) 44px 52px 62px 44px;
+  grid-template-columns:
+    44px minmax(140px, 1.3fr) repeat(4, minmax(min(100%, 92px), 1fr))
+    minmax(min(100%, 96px), .9fr) 40px 44px 52px 62px 44px;
 }
 .rule-table-payment .rule-head,
 .rule-table-payment .rule-row {
@@ -677,8 +699,12 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
    цеплялся за живые правила, а не за пустые строки. */
 .rule-count.is-zero { font-weight: 500; color: var(--text-muted); opacity: .55; }
 
-/* ГРУППЫ ПРАВИЛ ЧИПСА.
-   Одна вкладка «Правила чипсов» вместо двух («Цвета-правила» и «Пометки»):
+/* Лимиты-признаки: короткое поле под «490, 90, 690, 1070». Моноширинный
+   шрифт — числа в столбик читаются глазом, а не пересчитываются. */
+.rule-limits { font-variant-numeric: tabular-nums; }
+
+/* ГРУППЫ ПРАВИЛ НОМЕРА.
+   Одна вкладка «Правила номеров» вместо двух («Цвета-правила» и «Пометки»):
    таблицы у них были одинаковые, различие описано подписью группы. */
 .rule-group + .rule-group { margin-top: 22px; }
 .rule-group-head {
@@ -1139,9 +1165,61 @@ button.ex-row:hover { background: var(--surface-2); }
 .filter.active, .sort.active, .view.active {
   background: var(--primary); color: var(--primary-ink); border-color: var(--primary);
 }
-.sort.active[data-dir="desc"]::after { content: ' ↓'; }
-.sort.active[data-dir="asc"]::after { content: ' ↑'; }
 .view { padding: 7px 11px; font-size: 15px; line-height: 1; }
+
+/* ВЫПАДАЮЩИЕ СПИСКИ ФИЛЬТРА И СОРТИРОВКИ.
+   Двадцать кнопок в два ряда заменены двумя списками. Подпись слева, поле
+   справа — так видно, что выбрано, не читая все варианты подряд. */
+.picker { display: inline-flex; align-items: center; gap: 7px; }
+.picker-select {
+  font-family: inherit; font-size: 13px; padding: 7px 11px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); cursor: pointer;
+  /* Иначе длинный пункт («точного совпадения нет…») растягивает панель. */
+  max-width: 230px;
+}
+.picker-select:hover { border-color: var(--border-strong); }
+.picker-select:focus { outline: none; border-color: var(--primary); }
+/* Порядок сортировки — отдельной кнопкой: раньше он переключался повторным
+   нажатием на ту же кнопку сортировки, о чём догадаться было нельзя. */
+.sort-dir {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 11px; font-size: 14px; line-height: 1; cursor: pointer; color: var(--text);
+}
+.sort-dir:hover { border-color: var(--border-strong); }
+
+/* ═══════════════════ КТО ПЛАТИТ: ГРУППЫ СПИСКА ═══════════════════
+   Не фильтр, а выбор, чьи деньги смотрим, — поэтому отдельной строкой над
+   фильтрами и крупнее их. Кнопки во всю ширину: попасть по ним должен
+   человек, который редко работает с мышью. */
+.payer-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 9px 12px; margin-bottom: 12px;
+  box-shadow: var(--shadow);
+}
+.payer-tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 8px 16px; font-size: 13.5px; font-weight: 600; color: var(--text);
+  cursor: pointer; transition: background .12s ease, color .12s ease, border-color .12s ease;
+}
+.payer-tab:hover { border-color: var(--border-strong); }
+.payer-tab.active {
+  background: var(--primary); color: var(--primary-ink); border-color: var(--primary);
+}
+.payer-tab-n {
+  min-width: 20px; padding: 1px 7px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-muted);
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.payer-tab.active .payer-tab-n {
+  background: color-mix(in srgb, var(--primary-ink) 22%, transparent);
+  color: var(--primary-ink);
+}
+.payer-tabs-note {
+  flex: 1; min-width: 200px; font-size: 12.5px; color: var(--text-muted);
+}
 .search-input {
   padding: 8px 13px; border: 1px solid var(--border); border-radius: 8px;
   font-size: 13px; min-width: 230px; background: var(--surface-2); color: var(--text);
@@ -1829,7 +1907,36 @@ button.ex-row:hover { background: var(--surface-2); }
 
 /* ═══ НАСТРОЙКИ: АБОНЕНТЫ ═══ */
 .settings-box { padding: 0; display: flex; flex-direction: column; }
-.settings-box .settings-content { flex: 1; overflow-y: auto; }
+
+/* ОКНО НАСТРОЕК НЕ МЕНЯЕТ ШИРИНУ ПРИ СМЕНЕ ВКЛАДКИ.
+ *
+ * Было так: щёлкнул «Правила номеров» — окно распёрло во весь экран, вернулся
+ * на «Виджеты» — схлопнулось обратно. Прыгало под курсором, и попасть по
+ * вкладке со второго раза было нечем.
+ *
+ * ПРИЧИНА не в ширине, а в том, что .settings-box — элемент флекса (.modal —
+ * flex-контейнер), а у флекс-элемента `min-width` по умолчанию `auto`, то есть
+ * «не уже своего содержимого». Заданная ширина при этом просто игнорируется:
+ * широкая таблица правил на четырнадцать колонок раздвигала окно, а узкая
+ * вкладка отпускала обратно. Менять `width` было бесполезно — спорили не с
+ * ней.
+ *
+ * ЛЕЧЕНИЕ из двух частей, нужны обе:
+ *   min-width: 0   — снимает «не уже содержимого», и ширина наконец слушается;
+ *   overflow-x     — содержимому, которое всё-таки шире, даём прокрутку
+ *                    ВНУТРИ окна, а не право его распирать.
+ */
+.settings-box {
+  width: min(96vw, 1120px); min-width: 0;
+}
+.settings-box .settings-content {
+  flex: 1; overflow-y: auto; overflow-x: auto; min-width: 0;
+}
+/* Вкладок стало меньше, но подписи у них разной длины. Не растягиваем их
+   поровну на всю ширину: иначе «Роуминг» занимает столько же, сколько
+   «Каталог тарифов», и ряд выглядит случайным. */
+.settings-tabs { flex-wrap: wrap; }
+.settings-box .settings-tab { flex: 0 1 auto; padding: 11px 16px; }
 .modal-close-static { position: static; }
 .settings-search { width: 100%; margin-bottom: 12px; }
 .settings-section-title {

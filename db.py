@@ -1297,6 +1297,15 @@ CREATE TABLE IF NOT EXISTS chip_rules (
     payer_roaming TEXT DEFAULT 'auto',
     is_excluded   INTEGER NOT NULL DEFAULT 0,
     is_unlimited  INTEGER NOT NULL DEFAULT 0,
+    -- Номер оплачивает сам сотрудник. Отдельный признак, а не «всё на
+    -- сотруднике»: он делит СПИСОК на две группы и убирает номер из денег
+    -- компании. См. billing.PayerResolver и domain.build_summary.
+    is_self_paid  INTEGER NOT NULL DEFAULT 0,
+    -- Лимиты-признаки: «490, 90, 690, 1070». Совпал лимит абонента из списка
+    -- работников — правило навешивается на номер САМО, руками его отмечать не
+    -- надо. Хранится текстом, потому что это список произвольной длины,
+    -- который правят в интерфейсе. Разбор — domain.parse_match_limits.
+    match_limits  TEXT DEFAULT '',
     sort_order    INTEGER DEFAULT 100,
     builtin       INTEGER NOT NULL DEFAULT 0
 );
@@ -1390,7 +1399,12 @@ def sync_sequences() -> None:
 # pg-4: добавлена синхронизация счётчиков BIGSERIAL. Номер поднят намеренно —
 # базы, уже развёрнутые с отставшими счётчиками, чинятся при первом же старте
 # новой версии, а не ждут, пока человек напорется на ошибку при загрузке.
-SCHEMA_VERSION = "pg-4"
+#
+# pg-5: у правил номера появились is_self_paid и match_limits (лимиты-признаки),
+# а статусы сотрудника переехали в те же правила пометками. Без поднятия номера
+# живая база осталась бы со старым набором колонок: раскатка DDL пропускается,
+# когда версия совпала.
+SCHEMA_VERSION = "pg-5"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1511,6 +1525,68 @@ ON CONFLICT DO NOTHING;
 """
 
 
+# Перелив СТАТУСОВ сотрудника в правила-пометки.
+#
+# ЗАЧЕМ. Статус («Уволен», «Аннулирована», «VIP») был подписью и только
+# подписью: цветная точка на карточке и фильтр. На деньги он не влиял никак,
+# и это сбивало с толку — номер помечали «Аннулирована», а он продолжал
+# считаться в расходах компании наравне с живыми.
+#
+#     users_numbers.status ──►  chip_rules (kind='mark')  +  chip_rule_links
+#
+# Теперь это обычные правила: у «Уволен» и «Аннулирована» стоит галка
+# «исключить», и номер честно уходит из всех сводок. Остальные статусы
+# переезжают пометками без эффектов — как были подписями, так и остались,
+# но живут теперь в одном месте с прочими правилами.
+#
+# Колонка users_numbers.status НЕ чистится: это путь отката, как и старые
+# таблицы chip_colors/chip_marks. Приложение её больше не читает.
+MIGRATE_STATUSES_SQL = """
+INSERT INTO chip_rules (code, kind, label, hex, description,
+                        payer_tariff, payer_options, payer_overage, payer_roaming,
+                        is_excluded, is_unlimited, is_self_paid, sort_order, builtin)
+SELECT 'status_' || s.id, 'mark', s.label, COALESCE(s.color, ''),
+       'Перенесено из статусов сотрудника.',
+       'auto', 'auto', 'auto', 'auto',
+       -- Уволенный и аннулированный номер в сводках компании делать нечего.
+       CASE WHEN s.id IN ('fired', 'cancelled') THEN 1 ELSE 0 END,
+       0, 0, 2000 + COALESCE(s.sort_order, 100), 0
+  FROM app_statuses s
+ WHERE s.id <> 'normal'
+   AND EXISTS (SELECT 1 FROM users_numbers u WHERE u.status = s.id)
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO chip_rule_links (number, rule_code)
+SELECT u.number, 'status_' || u.status
+  FROM users_numbers u
+ WHERE u.status IS NOT NULL AND u.status <> '' AND u.status <> 'normal'
+   AND EXISTS (SELECT 1 FROM chip_rules r WHERE r.code = 'status_' || u.status)
+ON CONFLICT DO NOTHING;
+"""
+
+
+# Включить новые эффекты у ВСТРОЕННОГО правила «Личный тариф — платит сам».
+#
+# ЗАЧЕМ ОТДЕЛЬНЫМ ШАГОМ. Посев (seeds.ensure_seeds) вставляет только те строки
+# справочника, которых в базе ещё нет, и это правильно: иначе он затирал бы
+# правки администратора при каждом обновлении. Но правило `personal` в живой
+# базе уже лежит — со старой схемы, где не было ни признака «платит сам», ни
+# лимитов-признаков. Посев его не тронет, и обновлённое приложение поднялось
+# бы с выключенной функцией: поле есть, а не работает.
+#
+# Условие WHERE делает шаг безопасным: трогаем только встроенную строку и
+# только пока её новые поля пусты, то есть их ещё никто не настраивал. Шаг
+# отрабатывает один раз — ensure_schema запускается лишь при смене версии
+# схемы, — так что снятую администратором галку он обратно не вернёт.
+ENABLE_SELF_PAID_SQL = """
+UPDATE chip_rules
+   SET is_self_paid = 1,
+       match_limits = '490, 90, 690, 1070'
+ WHERE code = 'personal' AND builtin = 1
+   AND is_self_paid = 0 AND COALESCE(match_limits, '') = '';
+"""
+
+
 def ensure_schema() -> None:
     """Создать/донастроить схему. Безопасно вызывать сколько угодно раз."""
     ddl = schema_sql()
@@ -1523,15 +1599,40 @@ def ensure_schema() -> None:
 
     # 2. Колонки и 3. индексы — без ON_ERROR_STOP. Здесь всё через
     # IF NOT EXISTS, и осечка на одной строке не должна отменять остальные.
-    _run(_upgrade_sql(ddl), stop_on_error=False, one_transaction=False)
+    _, up_out, up_err = _run(_upgrade_sql(ddl), stop_on_error=False,
+                             one_transaction=False)
     _run("\n".join(indexes), stop_on_error=False, one_transaction=False)
     _run(DROP_OBSOLETE_SQL, stop_on_error=False, one_transaction=False)
+
+    # ДОБАВЛЕНИЕ КОЛОНОК ОБЯЗАНО ПРОЙТИ ЦЕЛИКОМ.
+    #
+    # Здесь была тихая яма, брад. ON_ERROR_STOP выключен намеренно — осечка на
+    # одной колонке не должна отменять остальные, — но заодно терялся и КОД
+    # ВОЗВРАТА: пачка ALTER-ов могла упасть вся до единой, а ensure_schema
+    # шёл дальше и в конце спокойно записывал новую версию схемы. База
+    # оставалась со старым набором колонок, помеченная как обновлённая, и
+    # больше никогда не чинилась: раскатка DDL пропускается, когда версия
+    # совпала. Разваливалось это не здесь, а позже и в другом месте —
+    # «столбец is_self_paid не существует» посреди отчёта.
+    #
+    # Ловится это ровно там, где прав не хватает: таблицы созданы одним
+    # пользователем, а приложение ходит другим — ALTER требует владельца.
+    if up_err.strip():
+        _fail("добавление колонок", up_err or up_out)
 
     # 4. Перелив старых правил чипса. Идёт последним: опирается на то, что
     # все таблицы уже созданы.
     rc, out, err = _run(MIGRATE_RULES_SQL, one_transaction=True)
     if rc != 0:
         _fail("перенос правил чипса", err or out)
+
+    # 4б. Статусы сотрудника — тоже в правила. Отдельным шагом и БЕЗ
+    # ON_ERROR_STOP: на пустой базе таблицы app_statuses/users_numbers ещё
+    # ничего не содержат, и переносить попросту нечего.
+    _run(MIGRATE_STATUSES_SQL, stop_on_error=False, one_transaction=False)
+
+    # 4в. Встроенное правило «платит сам» — включить на уже живой базе.
+    _run(ENABLE_SELF_PAID_SQL, stop_on_error=False, one_transaction=False)
 
     # 5. Счётчики id. После переливки старой базы они отстают от таблиц, и
     # первая же обычная вставка падает на «ключ (id)=(1) уже существует».

@@ -313,35 +313,80 @@
     </div>
   </section>
 
-  <!-- ═══ ФИЛЬТРЫ ═══ -->
+  <!-- ═══ КТО ПЛАТИТ: ДВА СПИСКА ВМЕСТО ОДНОГО ПЕРЕМЕШАННОГО ═══
+       Номера, за которые платит компания, и номера, за которые человек платит
+       сам, — это две разные работы. В первом списке ищут, где переплатили; во
+       втором просто сверяют, что человек внёс за себя. Пока они лежали
+       вперемешку, любая цифра над списком была ни о чём: она складывала наши
+       деньги с чужими. Переключатель отдельной строкой и всегда на виду —
+       это не фильтр среди дюжины прочих, а выбор, с чем вообще работаем. -->
+  <section id="payerTabs" class="payer-tabs" data-widget="payerTabs" hidden>
+    <button class="payer-tab" data-payer="all" type="button">
+      <span class="payer-tab-name">Все номера</span>
+      <span class="payer-tab-n" id="payerCountAll">0</span>
+    </button>
+    <button class="payer-tab active" data-payer="company" type="button">
+      <span class="payer-tab-name">Платит компания</span>
+      <span class="payer-tab-n" id="payerCountCompany">0</span>
+    </button>
+    <button class="payer-tab" data-payer="self" type="button">
+      <span class="payer-tab-name">Платят сами за себя</span>
+      <span class="payer-tab-n" id="payerCountSelf">0</span>
+    </button>
+    <span class="payer-tabs-note" id="payerTabsNote"></span>
+  </section>
+
+  <!-- ═══ ФИЛЬТРЫ ═══
+       Фильтр и сортировка — выпадающими списками, а не рядами кнопок. Кнопок
+       было двадцать, они занимали две строки на любом экране и требовали
+       прочитать все, чтобы найти нужную. В списке видно текущий выбор одной
+       строкой, а остальное открывается по нажатию. -->
   <section id="filtersPanel" class="filters-panel" data-widget="filtersPanel" hidden>
-    <div class="filters-group" id="filtersGroup">
+    <label class="picker">
       <span class="group-label">Фильтр</span>
-      <button class="filter active" data-filter="all">Все</button>
-      <button class="filter" data-filter="raise">Повысить тариф</button>
-      <button class="filter" data-filter="lower">Понизить тариф</button>
-      <button class="filter" data-filter="over">Перерасход пакета</button>
-      <button class="filter" data-filter="oversized">Пакет избыточен</button>
-      <button class="filter" data-filter="overlimit">Превышен лимит ₽</button>
-      <button class="filter" data-filter="trip">В командировке</button>
-      <button class="filter" data-filter="roaming">Роуминг</button>
-      <button class="filter" data-filter="paid-by-us">Платим мы</button>
-      <button class="filter" data-filter="paid-by-user">Платит сотрудник</button>
-      <button class="filter" data-filter="excluded">Исключённые</button>
-      <button class="filter" data-filter="noted">С заметкой</button>
-    </div>
-    <div class="spacer"></div>
-    <div class="sort-group">
+      <select id="filterSelect" class="picker-select" aria-label="Фильтр списка">
+        <optgroup label="Все">
+          <option value="all">Все номера</option>
+        </optgroup>
+        <optgroup label="Тариф">
+          <option value="raise">Повысить тариф</option>
+          <option value="lower">Понизить тариф</option>
+          <option value="over">Перерасход пакета</option>
+          <option value="oversized">Пакет избыточен</option>
+        </optgroup>
+        <optgroup label="Деньги">
+          <option value="overlimit">Превышен лимит ₽</option>
+          <option value="paid-by-us">Платим мы</option>
+          <option value="paid-by-user">Платит сотрудник</option>
+        </optgroup>
+        <optgroup label="Поездки">
+          <option value="trip">В командировке</option>
+          <option value="roaming">Роуминг</option>
+        </optgroup>
+        <optgroup label="Пометки" id="filterRuleGroup">
+          <option value="excluded">Исключённые</option>
+          <option value="noted">С заметкой</option>
+        </optgroup>
+      </select>
+    </label>
+
+    <label class="picker">
       <span class="group-label">Сортировка</span>
-      <button class="sort active" data-sort="waste">Невыгодность</button>
-      <button class="sort" data-sort="idle">Впустую ₽</button>
-      <button class="sort" data-sort="saving">Экономия</button>
-      <button class="sort" data-sort="company">Платим мы</button>
-      <button class="sort" data-sort="cost">Сумма</button>
-      <button class="sort" data-sort="overpay">Перерасход</button>
-      <button class="sort" data-sort="risk">Риск</button>
-      <button class="sort" data-sort="number">Номер</button>
-    </div>
+      <select id="sortSelect" class="picker-select" aria-label="Сортировка списка">
+        <option value="waste">Невыгодность</option>
+        <option value="idle">Впустую ₽</option>
+        <option value="saving">Экономия</option>
+        <option value="company">Платим мы</option>
+        <option value="cost">Сумма</option>
+        <option value="overpay">Перерасход</option>
+        <option value="risk">Риск</option>
+        <option value="number">Номер</option>
+      </select>
+    </label>
+    <button id="sortDirBtn" class="sort-dir" type="button"
+            title="Порядок сортировки" aria-label="Порядок сортировки">↓</button>
+
+    <div class="spacer"></div>
     <div class="view-group">
       <button id="gridView" class="view active" title="Плитки" aria-label="Плитки">▦</button>
       <button id="tableView" class="view" title="Список" aria-label="Список">☰</button>
@@ -373,10 +418,9 @@
     </div>
     <div class="settings-tabs">
       <button class="settings-tab active" data-tab="subscribers">Абоненты</button>
-      <button class="settings-tab" data-tab="chiprules">Правила чипсов</button>
+      <button class="settings-tab" data-tab="chiprules">Правила номеров</button>
       <button class="settings-tab" data-tab="rules">Правила оплаты</button>
       <button class="settings-tab" data-tab="trips">Командировки</button>
-      <button class="settings-tab" data-tab="statuses">Статусы</button>
       <button class="settings-tab" data-tab="tariffs">Каталог тарифов</button>
       <button class="settings-tab" data-tab="roaming">Роуминг</button>
       <button class="settings-tab" data-tab="widgets">Виджеты</button>

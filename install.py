@@ -214,13 +214,14 @@ def main(argv: list[str]) -> int:
     # только показываем, что именно приложение положит в базу тогда, — и
     # проверяем, что набор не пустой.
     import queries
-    colors = queries.get_chip_colors()
-    marks = queries.get_chip_marks()
+    rules = queries.get_chip_rules()
+    colors = [r for r in rules if r.get("kind") == "color"]
+    marks = [r for r in rules if r.get("kind") != "color"]
     ready = queries.reference_materialized()
     print(f"    цвета-правила  : {len(colors)}")
     print(f"    пометки        : {len(marks)}")
     print(f"    правила оплаты : {len(queries.get_payment_rules())}")
-    print(f"    статусы        : {len(queries.get_statuses())}")
+    print(f"    зоны роуминга  : {len(queries.get_roaming_zones())}")
     print(f"    тарифы         : {len(queries.get_tariffs())}")
     print("    в базе         : " + ("да" if ready else
                                      "ещё нет — лягут при первой загрузке счёта"))

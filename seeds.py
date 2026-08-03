@@ -84,12 +84,21 @@ CHIP_COLORS = [
          is_excluded=1, is_unlimited=1, sort_order=20),
 
     # Сотрудник сам оплачивает свой тариф — тот, что ему выгоднее.
+    #
+    # ЛИМИТЫ-ПРИЗНАКИ. Такие номера видно по лимиту из списка работников:
+    # компания ставит человеку не бюджет на связь, а сумму, которую он вносит
+    # за себя сам. Совпал лимит с одним из чисел ниже — правило навешивается
+    # автоматически, руками отмечать сотню номеров не нужно.
+    #
+    # Числа правятся в интерфейсе (Настройки → Правила номеров), здесь только
+    # значение по умолчанию.
     dict(code="personal", hex="#b07f16", label="Личный тариф — платит сам",
          description="Абонент сидит на своём тарифе и оплачивает его сам. "
                      "Компания за такой номер не платит ничего.",
          payer_tariff="employee", payer_options="employee",
          payer_overage="employee", payer_roaming="employee",
-         is_excluded=0, is_unlimited=0, sort_order=30),
+         is_excluded=0, is_unlimited=0, is_self_paid=1,
+         match_limits="490, 90, 690, 1070", sort_order=30),
 
     # Железо без человека: модем, шлагбаум, сигнализация, терминал.
     dict(code="device", hex="#6b7a74", label="Устройство (M2M)",
@@ -280,23 +289,6 @@ PAYMENT_RULES = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  4. СТАТУСЫ АБОНЕНТОВ
-#  Раньше жили в памяти и терялись при перезапуске — теперь в базе.
-# ═══════════════════════════════════════════════════════════════════════════
-
-# ИСПРАВЛЕНО: сначала я вписал сюда придуманные статусы (Внимание/Критично).
-# Это неверно — «Критично/Внимание/Норма» приложение считает САМО по расходу
-# и лимиту, а здесь лежит РУЧНОЙ справочник, который проставляет
-# администратор. Ниже — фактические четыре статуса приложения.
-APP_STATUSES = [
-    dict(id="normal", label="Норма", color="#2f8f6b", builtin=1, sort_order=10),
-    dict(id="vip", label="VIP", color="#1f7a5c", builtin=1, sort_order=20),
-    dict(id="fired", label="Уволен", color="#c6504f", builtin=1, sort_order=30),
-    dict(id="cancelled", label="Аннулирована", color="#6b7a74", builtin=1, sort_order=40),
-]
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 #  5. РОУМИНГ: СТАВКИ ПО ЗОНАМ
 #
 #  Из тарифных сеток оператора (снимки tarifs2.jpg и tarifs3.jpg). Все страны
@@ -360,6 +352,8 @@ def default_chip_rules(kind: str = "") -> list[dict]:
     rows = [{**r,
              "is_excluded": bool(r["is_excluded"]),
              "is_unlimited": bool(r["is_unlimited"]),
+             "is_self_paid": bool(r.get("is_self_paid")),
+             "match_limits": r.get("match_limits", ""),
              "description": r.get("description", ""),
              "hex": r.get("hex", "")}
             for r in rules if not kind or r["kind"] == kind]
@@ -379,11 +373,6 @@ def default_payment_rules() -> list[dict]:
     """
     return [{**r, "id": -(n + 1), "enabled": True, "builtin": True}
             for n, r in enumerate(PAYMENT_RULES)]
-
-
-def default_statuses() -> list[dict]:
-    return [{"id": s["id"], "label": s["label"], "color": s["color"],
-             "builtin": True} for s in APP_STATUSES]
 
 
 def default_roaming_zones() -> list[dict]:
@@ -418,7 +407,6 @@ def ensure_seeds() -> None:
     # множествами, в базу за проверками не ходим.
     have = {
         "chip_rules": {str(r["code"]) for r in db.query("SELECT code FROM chip_rules")},
-        "app_statuses": {str(r["id"]) for r in db.query("SELECT id FROM app_statuses")},
         "roaming_zones": {str(r["code"]) for r in db.query(
             "SELECT code FROM roaming_zones")},
     }
@@ -455,10 +443,6 @@ def ensure_seeds() -> None:
         for mark in CHIP_MARKS:
             _insert_if_absent(conn, have, "chip_rules", "code",
                               {**mark, "kind": "mark"}, builtin=1)
-
-        # ── Статусы ──
-        for status in APP_STATUSES:
-            _insert_if_absent(conn, have, "app_statuses", "id", status)
 
         # ── Ставки роуминга по зонам ──
         for zone in ROAMING_ZONES:

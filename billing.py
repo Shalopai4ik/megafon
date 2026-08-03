@@ -25,14 +25,19 @@ billing.py — КТО ЗА ЧТО ПЛАТИТ и НАСКОЛЬКО ЭТО ВЫ
 ЦЕПОЧКА «КТО ПЛАТИТ» (сверху вниз, первое НЕ-'auto' выигрывает)
 ---------------------------------------------------------------
     1. Ручное указание в карточке номера   (chip_settings.payer_*)
-    2. ЦВЕТ номера                          (chip_colors — цвет и есть правило)
-    3. Пометки номера                       (chip_marks, по порядку сортировки)
-    4. Командировка                         (только корзина roaming)
-    5. Правило по названию услуги           (payment_rules, только options/overage)
-    6. Умолчание самой услуги               (поле `pays` в includes.INCLUDES)
+    2. Правила номера                       (chip_rules: цвета, затем пометки)
+    3. Командировка                         (только корзина roaming)
+    4. Правило по названию услуги           (payment_rules, только options/overage)
+    5. Умолчание самой услуги               (поле `pays` в includes.INCLUDES)
 
 Настройки НОМЕРА сильнее правил по УСЛУГЕ: если номер помечен «Личный тариф»,
 то опции на сотруднике, что бы ни говорило правило про «Офис в кармане».
+
+ПРАВИЛО МОЖЕТ НАВЕСИТЬСЯ САМО. У каждого правила есть поле match_limits —
+список лимитов-признаков. Совпал лимит абонента из списка работников — правило
+действует так же, как навешенное вручную. Так находятся номера, за которые
+компания не платит вовсе: в лимите у них стоит не бюджет, а сумма взноса.
+Подробности — domain.parse_match_limits.
 
 Каждое решение сопровождается объяснением (`explain`), чтобы в интерфейсе
 было видно не только «компания», но и ПОЧЕМУ.
@@ -113,33 +118,60 @@ def split_by_bucket(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PayerResolver:
-    """Знает справочники (цвета, пометки, правила) и умеет отвечать на вопрос
-    «кто платит за эту корзину у этого номера».
+    """Знает справочники (правила номера, правила по услугам) и умеет отвечать
+    на вопрос «кто платит за эту корзину у этого номера».
 
     Справочники читаются из базы ОДИН раз на построение отчёта и передаются
     сюда — иначе на каждый номер уходили бы отдельные запросы.
+
+    ПРАВИЛА ПРИЕЗЖАЮТ ОДНИМ СПИСКОМ. Раньше сюда шли два: `colors` и `marks`.
+    В базе они давно одна таблица chip_rules с полем kind, и деление на входе
+    заставляло дважды описывать одно и то же. Теперь список один, а цвет от
+    пометки отличает kind — ровно как в базе.
     """
 
-    def __init__(self, colors: list[dict[str, Any]], marks: list[dict[str, Any]],
-                 rules: list[dict[str, Any]]) -> None:
-        self.colors = {c["code"]: c for c in colors}
-        self.marks = {m["code"]: m for m in marks}
-        # Правила отсортированы по приоритету: меньше число — раньше проверка.
+    def __init__(self, rules: list[dict[str, Any]],
+                 payment_rules: list[dict[str, Any]]) -> None:
+        self.rule_by_code = {r["code"]: r for r in rules}
+        # Индекс «лимит → коды правил»: по нему правило навешивается на номер
+        # само, без единого щелчка мышью. См. queries.rules_by_limit.
+        self.by_limit = domain.rules_by_limit(rules)
+        # Правила по услугам отсортированы по приоритету: меньше число —
+        # раньше проверка.
         self.rules = sorted(
-            (r for r in rules if r.get("enabled", True)),
+            (r for r in payment_rules if r.get("enabled", True)),
             key=lambda r: (domain.to_int(r.get("priority"), 100), r.get("id") or 0),
         )
 
+    # ── Какие правила действуют на номер ──────────────────────────────────
+    def rules_for(self, chip: dict[str, Any], limit: float = 0.0) -> list[dict[str, Any]]:
+        """Правила номера: навешенные руками ПЛЮС пойманные по лимиту.
+
+        Порядок применения — цвета раньше пометок, внутри по sort_order:
+        первое сработавшее правило и отвечает за корзину.
+        """
+        codes = list(chip.get("rules") or [])
+        for code in self.by_limit.get(float(limit or 0.0), ()):
+            if code not in codes:
+                codes.append(code)
+
+        found = [self.rule_by_code[c] for c in codes if c in self.rule_by_code]
+        found.sort(key=lambda r: (r.get("kind") != "color",
+                                  domain.to_int(r.get("sort_order"), 100),
+                                  r.get("code", "")))
+        return found
+
     # ── Уровень номера ────────────────────────────────────────────────────
-    def chip_effects(self, chip: dict[str, Any]) -> dict[str, Any]:
-        """Собрать эффекты номера: цвет + пометки + ручные переключатели.
+    def chip_effects(self, chip: dict[str, Any], limit: float = 0.0) -> dict[str, Any]:
+        """Собрать эффекты номера: правила + ручные переключатели.
 
         Возвращает готовый ответ по каждой корзине и список объяснений.
         """
-        color = self.colors.get(chip.get("color_code") or "normal") or {}
-        mark_codes = chip.get("marks") or []
-        marks = [self.marks[c] for c in mark_codes if c in self.marks]
-        marks.sort(key=lambda m: domain.to_int(m.get("sort_order"), 100))
+        rules = self.rules_for(chip, limit)
+        # Карточку красит ПЕРВОЕ цветовое правило. Их и в списке первые,
+        # поэтому достаточно взять начало.
+        color = next((r for r in rules if r.get("kind") == "color"), {})
+        marks = [r for r in rules if r.get("kind") != "color"]
 
         payers: dict[str, str] = {}
         why: dict[str, str] = {}
@@ -154,31 +186,36 @@ class PayerResolver:
                 why[bucket] = "указано вручную в карточке номера"
                 continue
 
-            # 2. Цвет номера. По решению заказчика цвет — это и есть правило.
-            from_color = _norm_payer(color.get(field))
-            if from_color != AUTO:
-                payers[bucket] = from_color
-                why[bucket] = f"цвет «{color.get('label', '—')}»"
-                continue
+            # 2. Правила номера, по порядку: цвет, затем пометки.
+            #    По решению заказчика цвет — это и есть правило.
+            for rule in rules:
+                from_rule = _norm_payer(rule.get(field))
+                if from_rule == AUTO:
+                    continue
+                payers[bucket] = from_rule
+                word = "цвет" if rule.get("kind") == "color" else "пометка"
+                why[bucket] = f"{word} «{rule.get('label', '—')}»"
+                break
 
-            # 3. Пометки. Их может быть несколько; берём первую сработавшую.
-            for mark in marks:
-                from_mark = _norm_payer(mark.get(field))
-                if from_mark != AUTO:
-                    payers[bucket] = from_mark
-                    why[bucket] = f"пометка «{mark.get('label', '—')}»"
-                    break
-
-        excluded = bool(color.get("is_excluded")) or any(m.get("is_excluded") for m in marks)
-        unlimited = bool(color.get("is_unlimited")) or any(m.get("is_unlimited") for m in marks)
+        excluded = any(r.get("is_excluded") for r in rules)
+        unlimited = any(r.get("is_unlimited") for r in rules)
+        # ПЛАТИТ САМ ЗА СЕБЯ. Отдельный признак, а не «все корзины на
+        # сотруднике»: он делит список на экране надвое и убирает номер из
+        # денег компании — из экономии, из «платим впустую», из KPI.
+        self_paid = any(r.get("is_self_paid") for r in rules)
+        self_rule = next((r for r in rules if r.get("is_self_paid")), None)
 
         return {
             "payers": payers,
             "why": why,
             "excluded": excluded,
             "unlimited": unlimited,
+            "self_paid": self_paid,
+            "self_paid_reason": (f"правило «{self_rule.get('label', '—')}»"
+                                 if self_rule else ""),
             "color": color,
             "marks": marks,
+            "rules": rules,
         }
 
     # ── Уровень услуги ────────────────────────────────────────────────────
@@ -207,13 +244,18 @@ def _norm_payer(value: Any) -> str:
 
 def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
                   resolver: PayerResolver, on_trip: bool = False,
-                  trip: dict[str, Any] | None = None) -> dict[str, Any]:
+                  trip: dict[str, Any] | None = None,
+                  limit: float = 0.0) -> dict[str, Any]:
     """Разделить счёт номера между компанией и сотрудником.
+
+    `limit` — лимит абонента из списка работников. Нужен не для сравнения с
+    расходом (это делает domain.build_record), а чтобы поймать правила с
+    лимитами-признаками: у самоплатящих номеров в лимите стоит сумма взноса.
 
     Возвращает: суммы по корзинам, кто за что платит, итоги и объяснения.
     """
     buckets = split_by_bucket(items)
-    effects = resolver.chip_effects(chip)
+    effects = resolver.chip_effects(chip, limit)
 
     result_buckets: list[dict[str, Any]] = []
     company_total = 0.0
@@ -305,6 +347,8 @@ def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
         "employee_pays": round(employee_total, 2),
         "excluded": effects["excluded"],
         "unlimited": effects["unlimited"],
+        "self_paid": effects["self_paid"],
+        "self_paid_reason": effects["self_paid_reason"],
         "color": {
             "code": effects["color"].get("code", "normal"),
             "hex": effects["color"].get("hex", ""),
@@ -312,6 +356,10 @@ def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
         },
         "marks": [{"code": m["code"], "label": m["label"], "hex": m.get("hex", "")}
                   for m in effects["marks"]],
+        # Коды ВСЕХ действующих правил, вместе с пойманными по лимиту.
+        # Интерфейс по ним рисует пометки на карточке и считает, сколько
+        # номеров носит каждое правило.
+        "rule_codes": [r["code"] for r in effects["rules"]],
     }
 
 
@@ -362,8 +410,11 @@ def waste_of(record: dict[str, Any], payment: dict[str, Any]) -> dict[str, Any]:
     total = float(record.get("total") or 0.0)
     reserve = round(max(0.0, limit - total), 2) if record.get("limit_set") else 0.0
 
-    # Безлимитный или исключённый номер впустую не тратит по определению.
-    if payment.get("excluded") or payment.get("unlimited"):
+    # Безлимитный, исключённый или самоплатящий номер впустую не тратит по
+    # определению: в первых двух случаях мы договорились его не считать, в
+    # третьем компания за него вообще ничего не платит — тратить впустую
+    # нечего.
+    if payment.get("excluded") or payment.get("unlimited") or payment.get("self_paid"):
         idle_package, reserve = 0.0, 0.0
 
     return {
@@ -386,8 +437,14 @@ def assign_waste_index(records: list[dict[str, Any]]) -> None:
 
     90-й перцентиль, а не максимум, — чтобы один аномальный номер не
     придавил всю шкалу к нулю.
+
+    ЭТАЛОН СЧИТАЕТСЯ ТОЛЬКО ПО НОМЕРАМ КОМПАНИИ. У исключённых и самоплатящих
+    «впустую» всегда ноль, и если считать перцентиль вместе с ними, парк, где
+    половина номеров самоплатящие, получит вдвое заниженный эталон — и все
+    остальные разом покраснеют.
     """
-    values = sorted(float(r.get("waste", {}).get("waste_money") or 0.0) for r in records)
+    values = sorted(float(r.get("waste", {}).get("waste_money") or 0.0)
+                    for r in company_records(records))
     if not values:
         return
 
@@ -404,14 +461,60 @@ def assign_waste_index(records: list[dict[str, Any]]) -> None:
         waste["reference"] = round(reference, 2)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  КАКИЕ НОМЕРА ВООБЩЕ СЧИТАЮТСЯ ДЕНЬГАМИ КОМПАНИИ
+#
+#  Раньше этот вопрос решался по месту, и решался по-разному: billing.summarize
+#  выбрасывал исключённые, а domain.build_summary — нет. В итоге человек
+#  ставил номеру пометку «не учитывать», и номер честно уходил из одной сводки
+#  и оставался в трёх остальных: в потенциале экономии, в статистике по
+#  тарифам, в списке. Выглядело это как «галка ничего не делает».
+#
+#  Теперь ответ ОДИН и лежит здесь. Из денег компании выпадают:
+#
+#      excluded  — «не учитывать»: безлимит, аннулированные, уволенные;
+#      self_paid — «платит сам за себя»: компания за номер не платит вовсе.
+#
+#  Разница между ними — в том, что видно на экране. Исключённый номер скрыт
+#  из сводок целиком, самоплатящий живёт в своей группе списка со своими
+#  итогами: за него платят, просто не мы.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def is_excluded(record: dict[str, Any]) -> bool:
+    """Номер помечен «не учитывать» — не участвует ни в одной сводке."""
+    return bool(record.get("payment", {}).get("excluded"))
+
+
+def is_self_paid(record: dict[str, Any]) -> bool:
+    """Сотрудник платит за номер сам — из денег компании номер выпадает."""
+    return bool(record.get("payment", {}).get("self_paid"))
+
+
+def counts_for_company(record: dict[str, Any]) -> bool:
+    """Идёт ли номер в деньги компании: в KPI, экономию, «платим впустую».
+
+    ЕДИНСТВЕННОЕ место, где этот вопрос решается. Все сводки — и здесь, и в
+    domain — спрашивают только его.
+    """
+    return not is_excluded(record) and not is_self_paid(record)
+
+
+def company_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Только те номера, за которые платит компания."""
+    return [r for r in records if counts_for_company(r)]
+
+
 def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Сводка по разделению оплаты — для верхних показателей.
 
-    Исключённые номера (синий цвет, пометка «не учитывать») в сводку не
-    входят: заказчик просил их не считать вовсе.
+    Исключённые и самоплатящие номера в сводку не входят — см. шапку раздела
+    выше. По самоплатящим отдельно считается, сколько их и сколько они вносят
+    за себя: список на экране делится на две группы, и у второй должны быть
+    свои цифры, иначе переключатель показывает карточки без итогов.
     """
-    counted = [r for r in records if not r.get("payment", {}).get("excluded")]
-    excluded = len(records) - len(counted)
+    counted = company_records(records)
+    excluded = sum(1 for r in records if is_excluded(r))
+    self_paid = [r for r in records if is_self_paid(r) and not is_excluded(r)]
 
     company = sum(float(r["payment"]["company_pays"]) for r in counted)
     employee = sum(float(r["payment"]["employee_pays"]) for r in counted)
@@ -435,4 +538,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "company_by_bucket": {k: round(v, 2) for k, v in by_bucket.items()},
         "excluded_count": excluded,
         "counted": len(counted),
+        # Группа «платят сами за себя» — для переключателя над списком.
+        "self_paid_count": len(self_paid),
+        "self_paid_total": round(sum(float(r["total"]) for r in self_paid), 2),
     }
