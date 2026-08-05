@@ -783,6 +783,81 @@ def parse_bill(text: str) -> dict[str, Any]:
 BILL_TOLERANCE = 1.0
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  КТО ТУТ КОМУ СТАРЫЙ НОМЕР: ПОДСКАЗКА, А НЕ РЕШЕНИЕ
+#
+#      Черемша с одного корня, а стрелки в разные стороны,
+#      Эта к свету тянется, та под колодой лежит.
+#      Со стороны — два куста, и режут их порознь,
+#      А копнёшь на ладонь — и корень-то общий бежит.
+#
+#      Только корень копать надо, а не гадать по листу:
+#      Схожий лист и у ландыша, а ландыш тот ядовит.
+#      Потому и говорят: похоже — ещё не то же,
+#      Сперва копни, а после уж в кузов клади.
+#
+#  ЧТО ДЕЛАЕМ. Сама программа связи НЕ ЗАВОДИТ — она их предлагает. Совпало
+#  ФИО, старый номер замолчал, новый ровно тогда же заговорил: похоже на смену
+#  номера, но решает человек. Ошибиться тут дорого: склеенные по ошибке номера
+#  дадут одну карточку с чужим расходом, и заметить это будет нечем.
+#
+#  ПОЧЕМУ ФИО, А НЕ ТАБЕЛЬНЫЙ. Табельный в списке работников заполнен не
+#  всегда, а ФИО есть почти везде. Если табельный всё-таки есть у обоих и
+#  различается — кандидата выбрасываем: это разные люди с одинаковыми ФИО.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def suggest_number_changes() -> list[dict[str, Any]]:
+    """Пары номеров, похожие на смену: одно ФИО, история встык, без нахлёста."""
+    linked = queries.successor_map()
+    known = set(linked) | set(linked.values())
+
+    people: dict[str, list[dict[str, Any]]] = {}
+    for user in queries.all_users():
+        name = " ".join(str(user.get("username") or "").lower().split())
+        if not name:
+            continue
+        people.setdefault(name, []).append(user)
+
+    bundles = queries.month_dataset("")["bundles"]
+    out: list[dict[str, Any]] = []
+    for name, users in people.items():
+        if len(users) < 2:
+            continue
+        # Месяцы, в которых номер вообще был в счетах.
+        spans = []
+        for user in users:
+            number = str(user["number"])
+            months = sorted(b["month"] for b in bundles.get(number, []))
+            if months:
+                spans.append((number, months[0], months[-1], user))
+        if len(spans) < 2:
+            continue
+
+        spans.sort(key=lambda s: s[1])
+        for i in range(len(spans) - 1):
+            old_num, _, old_last, old_user = spans[i]
+            new_num, new_first, _, new_user = spans[i + 1]
+            if old_num in known or new_num in known:
+                continue
+            # НАХЛЁСТ ЗАПРЕЩЁН. Два номера, работавшие одновременно, — это два
+            # номера у одного человека (рабочий и модем), а не смена.
+            if old_last >= new_first:
+                continue
+            # Разные табельные при одинаковом ФИО — однофамильцы.
+            old_tab = str(old_user.get("personnel_no") or "").strip()
+            new_tab = str(new_user.get("personnel_no") or "").strip()
+            if old_tab and new_tab and old_tab != new_tab:
+                continue
+            out.append({
+                "old_number": old_num, "new_number": new_num,
+                "username": (old_user.get("username") or new_user.get("username") or ""),
+                "old_last_month": old_last, "new_first_month": new_first,
+                "same_personnel_no": bool(old_tab and old_tab == new_tab),
+            })
+    out.sort(key=lambda s: (s["username"], s["old_last_month"]))
+    return out
+
+
 def _bill_checksum(invoice: dict[str, Any],
                    subscribers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Сверить итог из шапки счёта с суммой итогов по абонентам."""
@@ -812,11 +887,12 @@ def _blank_subscriber() -> dict[str, Any]:
 
 
 def _normalize_number(digits: str) -> str:
-    """Привести номер к 10 цифрам (без 7/8 в начале)."""
-    d = re.sub(r"\D", "", digits)
-    if len(d) == 11 and d[0] in "78":
-        d = d[1:]
-    return d[-10:] if len(d) > 10 else d
+    """Привести номер к 10 цифрам (без 7/8 в начале).
+
+    Само правило живёт в domain: тот же номер вводят руками в настройках
+    смены номера, и разъехаться эти две записи не имеют права.
+    """
+    return domain.normalize_number(digits)
 
 
 def _is_mobile(number: str) -> bool:
@@ -1673,6 +1749,9 @@ def _build_one(number: str, bundle: dict[str, Any], *, data: dict[str, Any],
     record["trip"] = trip
     record["payment"] = payment
     record["waste"] = billing.waste_of(record, payment)
+    # Из каких прежних номеров склеена запись. Молчать об этом нельзя: человек
+    # увидит расход вдвое больше привычного и решит, что программа врёт.
+    record["merged_from"] = list(bundle.get("merged_from") or [])
     return record
 
 
@@ -2151,6 +2230,12 @@ _DICT_ENDPOINTS: dict[str, DictEndpoint] = {
     "/api/roaming": DictEndpoint(
         "zones", queries.save_roaming_zone, queries.delete_roaming_zone,
         lambda p: str(p.get("code") or ""), "Ожидается объект зоны роуминга"),
+    # Смена номера. Меняет состав парка (два абонента становятся одним),
+    # поэтому ответ пересобирает отчёт так же, как правка любого справочника.
+    "/api/number-changes": DictEndpoint(
+        "changes", queries.save_number_change, queries.delete_number_change,
+        lambda p: str(p.get("old_number") or ""),
+        "Ожидается объект смены номера"),
 }
 
 
@@ -2308,6 +2393,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(200, {"rules": queries.get_payment_rules()})
         if path == "/api/roaming":
             return self._json(200, {"zones": queries.get_roaming_zones()})
+        if path == "/api/number-changes":
+            return self._json(200, {"changes": queries.get_number_changes(),
+                                    "suggestions": suggest_number_changes()})
         if path == "/api/trips":
             number = (query.get("number") or [""])[0]
             return self._json(200, {"trips": queries.get_trips(number)})

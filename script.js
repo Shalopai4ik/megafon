@@ -2765,6 +2765,13 @@ function renderCard(s) {
           : `<span class="badge badge-${status.cls}">${status.label}</span>`}
         ${USAGE_BADGE[s.usage_level] || ''}
         ${s.on_trip ? '<span class="badge badge-trip" title="В командировке">командировка</span>' : ''}
+        <!-- Запись склеена из двух лицевых счетов. Без этой плашки человек
+             увидит расход вдвое больше привычного и решит, что программа
+             врёт: карточка-то одна, а денег в ней за два номера. -->
+        ${(s.merged_from || []).length ? `<span class="badge badge-merged"
+          title="Сюда сведены счета прежних номеров: ${
+            s.merged_from.map((n) => esc(formatPhone(n))).join(', ')
+          }. Расход, история и лимит показаны по человеку целиком">номер изменён</span>` : ''}
         ${chipColor ? `<span class="badge badge-chip" style="--chip:${esc(chipColor.hex)}"
           title="${esc(chipColor.label)} — правило применено">${esc(chipColor.label)}</span>` : ''}
         ${pay.self_paid ? `<span class="badge badge-self"
@@ -3580,6 +3587,7 @@ const SETTINGS_TABS = {
   // Одна вкладка вместо бывших «Цвета-правила» и «Пометки» — внутри две группы.
   chiprules: renderChipRuleSettings,
   rules: renderRuleSettings,
+  numbers: renderNumberChangeSettings,
   trips: renderTripSettings,
   tariffs: renderTariffSettings,
   roaming: renderRoamingSettings,
@@ -4027,6 +4035,160 @@ async function renderRuleSettings(el) {
     enabled: true, scope: 'options',
     match_kind: 'service', match_value: '', payer: 'company', note: '',
   }));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * СМЕНА НОМЕРА
+ *
+ *     Черемша по весне одна, а зовут её кто как:
+ *     Тут колба, там медвежий лук, а дальше — дикий чеснок.
+ *     Свесил три мешка порознь, записал в три строки,
+ *     А куст-то был один. И корень у него один.
+ *
+ *     Не считай мешки по названьям — обочтёшься втрое,
+ *     Не дели один куст на три, коли режешь с одного.
+ *     Сперва разберись, где имя, а где взаправду другое,
+ *     А после уже и клади на весы. Вот и всё ремесло.
+ *
+ * ЗАЧЕМ ЭКРАН. Сотруднику меняют номер — оператор заводит новый лицевой счёт,
+ * и в выгрузке появляются ДВА абонента: старый с начислениями до смены, новый
+ * с начислениями после. Человек один, расход один, а в отчёте их двое, и оба
+ * с половинными суммами. Хуже того, в списке работников остаётся только один
+ * из номеров — у второго нет ни ФИО, ни лимита, и в списке он выглядит голыми
+ * цифрами. Это и есть тот самый «абонент, который не подгрузился».
+ *
+ * Здесь эти пары сводят обратно. Программа их ПРЕДЛАГАЕТ (совпало ФИО,
+ * история встык, без нахлёста), но связывает только человек: склеенные по
+ * ошибке номера дадут карточку с чужим расходом, и заметить это будет нечем.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const NUMBER_CHANGES_API = '/api/number-changes';
+let numberChanges = null;      // { changes: [...], suggestions: [...] }
+
+async function renderNumberChangeSettings(el) {
+  if (!numberChanges) {
+    el.innerHTML = '<div class="empty">Загрузка…</div>';
+    try {
+      numberChanges = await getJSON(NUMBER_CHANGES_API);
+    } catch (err) {
+      el.innerHTML = `<div class="empty">Не удалось загрузить: ${esc(err.message)}</div>`;
+      return;
+    }
+  }
+
+  el.innerHTML = `
+    <div class="settings-note">Сотруднику сменили номер — в счёте появляются
+      два абонента: старый с начислениями до смены и новый после. Свяжите их,
+      и программа сложит оба счёта в одну карточку: полный расход, целая
+      история, ФИО и лимит подтянутся с того номера, у которого они есть.
+      <br>Связь действует на все загруженные периоды сразу и в любой момент
+      снимается — счета при этом не меняются, расходятся обратно.</div>
+    <div id="numberChangeBody"></div>`;
+
+  const body = $('numberChangeBody');
+
+  const draw = () => {
+    const rows = numberChanges.changes || [];
+    const hints = numberChanges.suggestions || [];
+    body.innerHTML = `
+      <div class="settings-section-title">Добавить связь</div>
+      <div class="num-form">
+        <input type="text" id="numOld" class="search-input" placeholder="Старый номер"
+               inputmode="numeric" maxlength="20">
+        <span class="num-arrow" aria-hidden="true">→</span>
+        <input type="text" id="numNew" class="search-input" placeholder="Новый номер"
+               inputmode="numeric" maxlength="20">
+        <input type="text" id="numWhen" class="search-input num-when"
+               placeholder="Когда сменили" maxlength="20">
+        <input type="text" id="numNote" class="search-input" placeholder="Комментарий" maxlength="120">
+        <button class="btn btn-primary" id="numAdd">Связать</button>
+      </div>
+
+      ${hints.length ? `
+        <div class="settings-section-title">Похоже на смену номера
+          <span class="rule-group-n">${hints.length}</span></div>
+        <div class="settings-note">Совпало ФИО, старый номер замолчал, новый
+          ровно тогда же заговорил. Программа сама ничего не связывает —
+          проверьте и подтвердите.</div>
+        <div class="num-list">
+          ${hints.map((h) => `
+            <div class="num-hint">
+              <div class="num-hint-who">
+                <b>${esc(h.username || '—')}</b>
+                ${h.same_personnel_no
+                  ? '<span class="pill pill-good" title="У обоих номеров один табельный номер">табельный совпал</span>'
+                  : ''}
+              </div>
+              <div class="num-hint-pair">
+                ${esc(formatPhone(h.old_number))}
+                <span class="num-arrow">→</span>
+                ${esc(formatPhone(h.new_number))}
+              </div>
+              <div class="num-hint-when">последний счёт ${esc(formatMonth(h.old_last_month))},
+                первый ${esc(formatMonth(h.new_first_month))}</div>
+              <button class="btn btn-soft btn-sm" data-accept="${esc(h.old_number)}"
+                      data-new="${esc(h.new_number)}">Связать</button>
+            </div>`).join('')}
+        </div>` : ''}
+
+      <div class="settings-section-title">Связанные номера
+        <span class="rule-group-n">${rows.length}</span></div>
+      ${rows.length ? `
+        <div class="num-list">
+          ${rows.map((r) => `
+            <div class="num-row">
+              <div class="num-row-pair">
+                <span class="num-old">${esc(formatPhone(r.old_number))}</span>
+                <span class="num-arrow">→</span>
+                <span class="num-new">${esc(formatPhone(r.new_number))}</span>
+              </div>
+              <div class="num-row-meta">${esc(r.changed_at || '')}${
+                r.changed_at && r.note ? ' · ' : ''}${esc(r.note || '')}</div>
+              <button class="rule-del" type="button" data-unlink="${esc(r.old_number)}"
+                      title="Снять связь">✕</button>
+            </div>`).join('')}
+        </div>`
+      : '<div class="empty">Связей нет. Если ни у кого номер не менялся — так и должно быть.</div>'}`;
+  };
+
+  const save = async (payload, url = NUMBER_CHANGES_API) => {
+    try {
+      const data = await postJSON(url, payload);
+      numberChanges = {
+        changes: data.changes || [],
+        // Подсказки сервер шлёт только на чтение — после связывания
+        // пересчитываем список сами: связанная пара из него уходит.
+        suggestions: (numberChanges.suggestions || []).filter(
+          (h) => !(data.changes || []).some(
+            (c) => c.old_number === h.old_number || c.new_number === h.new_number
+              || c.old_number === h.new_number || c.new_number === h.old_number)),
+      };
+      if (data.view) applyView(data.view);
+      draw();
+      flashHint('Готово, отчёт пересчитан.');
+    } catch (err) { flashHint(err.message, 'error'); }
+  };
+
+  body.addEventListener('click', (e) => {
+    const accept = e.target.closest('[data-accept]');
+    if (accept) {
+      return save({ old_number: accept.dataset.accept, new_number: accept.dataset.new,
+                    note: 'подтверждено по совпадению ФИО' });
+    }
+    const unlink = e.target.closest('[data-unlink]');
+    if (unlink) {
+      if (!confirm('Снять связь? Счета разойдутся обратно на два номера.')) return;
+      return save({ old_number: unlink.dataset.unlink }, `${NUMBER_CHANGES_API}/delete`);
+    }
+    if (!e.target.closest('#numAdd')) return;
+    const old = $('numOld').value.trim();
+    const fresh = $('numNew').value.trim();
+    if (!old || !fresh) return flashHint('Нужны оба номера: и старый, и новый', 'error');
+    save({ old_number: old, new_number: fresh,
+           changed_at: $('numWhen').value.trim(), note: $('numNote').value.trim() });
+  });
+
+  draw();
 }
 
 /* ── Командировки ────────────────────────────────────────────────────────── */

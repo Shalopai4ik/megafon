@@ -460,6 +460,100 @@ def users_count() -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  СМЕНА НОМЕРА: ДВА ЛИЦЕВЫХ СЧЁТА, А ЧЕЛОВЕК ОДИН
+#
+#      Черемша по весне одна, а зовут её кто как:
+#      Тут колба, там медвежий лук, а дальше — дикий чеснок.
+#      Свесил три мешка порознь, записал в три строки,
+#      А куст-то был один. И корень у него один.
+#
+#  ЧТО ПРОИСХОДИТ БЕЗ ЭТОГО. Сотруднику меняют номер. Оператор заводит новый
+#  лицевой счёт, и в выгрузке появляются ДВА абонента: старый с начислениями
+#  до смены, новый — после. Дальше всё разъезжается:
+#
+#      * расход человека делится пополам между двумя карточками, и ни одна
+#        не показывает правду;
+#      * лимит сравнивается с половиной расхода — превышения не видно;
+#      * в списке работников остался ОДИН из номеров, поэтому у второго нет
+#        ни ФИО, ни должности, ни лимита. Он и есть тот самый «не
+#        подгрузившийся» абонент: голые цифры в списке;
+#      * история обрывается — у нового номера её нет вовсе, у старого она
+#        заканчивается месяцем смены, и рекомендация по тарифу считается по
+#        огрызку;
+#      * парк раздувается: двести человек показываются как двести двадцать.
+#
+#  ЧТО ДЕЛАЕМ. Держим связь «старый номер → новый». Расчёт по ней складывает
+#  счета обоих в одну запись (см. merge_changed_numbers): один человек — одна
+#  карточка, полный расход, целая история.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_number_changes() -> list[dict[str, Any]]:
+    """Все связи «номер сменился», новые сверху."""
+    return db.query("SELECT * FROM number_changes ORDER BY changed_at DESC, old_number")
+
+
+def save_number_change(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Записать смену номера. Оба номера обязательны и должны различаться."""
+    old = domain.normalize_number(data.get("old_number"))
+    new = domain.normalize_number(data.get("new_number"))
+    if not old or not new:
+        raise ValueError("Нужны оба номера: и старый, и новый")
+    if old == new:
+        raise ValueError("Старый и новый номер совпадают")
+
+    # ЦЕПОЧКУ ЗАМКНУТЬ НЕЛЬЗЯ. Если новый номер уже ведёт (пусть и через
+    # несколько шагов) обратно к старому, получится кольцо, и любой обход по
+    # ссылкам зациклится. Ловим это здесь, на записи, а не потом на расчёте.
+    chain, guard = new, 0
+    links = {r["old_number"]: r["new_number"] for r in get_number_changes()}
+    while chain in links and guard < 50:
+        if chain == old:
+            raise ValueError("Так получится кольцо: этот номер уже ведёт к старому")
+        chain = links[chain]
+        guard += 1
+    if chain == old:
+        raise ValueError("Так получится кольцо: этот номер уже ведёт к старому")
+
+    db.execute(
+        "INSERT INTO number_changes (old_number, new_number, changed_at, note) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT (old_number) DO UPDATE SET "
+        "  new_number = excluded.new_number, changed_at = excluded.changed_at, "
+        "  note = excluded.note",
+        (old, new, str(data.get("changed_at") or ""), str(data.get("note") or "")),
+    )
+    return get_number_changes()
+
+
+def delete_number_change(old_number: str) -> list[dict[str, Any]]:
+    db.execute("DELETE FROM number_changes WHERE old_number = ?",
+               (domain.normalize_number(old_number),))
+    return get_number_changes()
+
+
+def successor_map() -> dict[str, str]:
+    """Куда в итоге ведёт каждый старый номер: {старый: КОНЕЧНЫЙ новый}.
+
+    Связи разворачиваются ДО КОНЦА. Номер могли менять дважды: A→B, B→C. В
+    таблице это две строки, а склеивать надо все три счёта в один, поэтому и
+    A, и B обязаны указывать на C.
+
+    Кольца отсекаются при записи (см. save_number_change), но счётчик шагов
+    оставлен и здесь: строку могли завести напрямую через SQL, а зацикливаться
+    посреди отчёта — худшее, что тут может случиться.
+    """
+    links = {str(r["old_number"]): str(r["new_number"]) for r in get_number_changes()}
+    out: dict[str, str] = {}
+    for old in links:
+        seen = {old}
+        node = links[old]
+        while node in links and node not in seen and len(seen) < 50:
+            seen.add(node)
+            node = links[node]
+        out[old] = node
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Код справочной строки из её названия
 #
 #  Код участвует в data-атрибутах и селекторах на фронтенде, поэтому кириллицу
@@ -729,14 +823,153 @@ def month_dataset(month: str) -> dict[str, Any]:
                         " ORDER BY approved DESC, date_start"):
         trips[str(row["number"])].append(row)
 
-    return {
+    data = {
         "month": str(month),
         "bundles": bills["bundles"],
         "roster": bills["roster"],
         "trips": trips,
         "users": {str(u["number"]): u for u in all_users()},
         "chips": all_chips(),
+        "changes": {},
     }
+
+    # СКЛЕЙКА СМЕНЁННЫХ НОМЕРОВ — последним шагом, поверх всего прочитанного.
+    #
+    # Делается ЗДЕСЬ, а не в кэше счетов: связи правят в настройках, а счета
+    # в кэше лежат месяцами. Склей мы их один раз при чтении — правка связи
+    # ничего бы не изменила до перезагрузки файла.
+    links = successor_map()
+    if links:
+        merge_changed_numbers(data, links)
+    return data
+
+
+def merge_changed_numbers(data: dict[str, Any], links: dict[str, str]) -> None:
+    """Свести счета сменённых номеров на новый номер. Правит data на месте.
+
+    Что переносится и почему именно так:
+
+      * СЧЕТА. За месяц смены их два — половина на старом номере, половина на
+        новом. Строки начислений складываются в один счёт, итоги суммируются.
+        За прочие месяцы счёт просто переезжает под новый номер.
+      * ПОМЕСЯЧНЫЕ СУММЫ из списка работников — так же: месяц смены
+        складываем, остальные переносим.
+      * КОМАНДИРОВКИ старого номера остаются командировками человека.
+      * КАРТОЧКА (ФИО, должность, лимит). Здесь и была та самая дыра «один
+        номер не подгружается»: в списке работников остаётся ОДИН из двух
+        номеров, у второго нет ни ФИО, ни лимита. Берём карточку нового
+        номера, а всё, чего в ней нет, добираем из старой.
+      * НАСТРОЙКИ ЧИПСА достаются новому номеру, если своих у него нет: цвет
+        и пометки вешали на человека, а не на симку.
+
+    В data["changes"] остаётся след: {новый номер: [старые]}. По нему
+    интерфейс говорит на карточке, из чего она склеена, — иначе человек
+    увидит у абонента вдвое больший расход и не поймёт, откуда он взялся.
+    """
+    changes: dict[str, list[str]] = defaultdict(list)
+    for old, new in links.items():
+        if old != new:
+            changes[new].append(old)
+    data["changes"] = {}
+    if not changes:
+        return
+
+    # ПРАВИТЬ ПРОЧИТАННОЕ НАПРЯМУЮ НЕЛЬЗЯ: счета и помесячные суммы приезжают
+    # из кэша (_bill_data) и живут между запросами. Склей мы их на месте —
+    # склейка осталась бы в кэше навсегда, а снятая в настройках связь уже
+    # ничего бы не расклеила. Поэтому копируем — но только то, что трогаем:
+    # отображение целиком (оно дешёвое, это ссылки) и списки счетов
+    # затронутых номеров. Остальные списки остаются общими с кэшем.
+    data["bundles"] = dict(data["bundles"])
+    data["roster"] = dict(data["roster"])
+    # users, chips и trips читаются из базы на каждый вызов — их можно править
+    # как есть, копий не надо.
+
+    for new, olds in changes.items():
+        for old in olds:
+            _merge_bundles(data["bundles"], old, new)
+            _merge_roster(data["roster"], old, new)
+            moved_trips = data["trips"].pop(old, [])
+            if moved_trips:
+                data["trips"][new] = list(data["trips"].get(new, [])) + moved_trips
+            _merge_user(data["users"], old, new)
+            was_chip = data["chips"].pop(old, None)
+            if was_chip and new not in data["chips"]:
+                data["chips"][new] = {**was_chip, "number": new}
+
+    data["changes"] = {new: sorted(olds) for new, olds in changes.items()}
+
+
+def _merge_bundles(bundles: dict[str, list[dict[str, Any]]], old: str, new: str) -> None:
+    """Счета старого номера — на новый. За общий месяц счета складываются.
+
+    Копирование по необходимости: и список, и каждый правленый счёт заменяются
+    копией. Сами счета лежат в кэше и принадлежат не нам.
+    """
+    moving = bundles.pop(old, None)
+    if not moving:
+        return
+
+    target = list(bundles.get(new, []))
+    by_month = {b["month"]: i for i, b in enumerate(target)}
+    for bundle in moving:
+        at = by_month.get(bundle["month"])
+        if at is None:
+            # Месяца у нового номера нет — счёт просто переезжает. Номер в нём
+            # переписываем: дальше по нему ищут профиль, чипс и командировки.
+            by_month[bundle["month"]] = len(target)
+            target.append({**bundle, "number": new, "merged_from": [old]})
+            continue
+        # МЕСЯЦ СМЕНЫ. Два неполных счёта — один полный: строки начислений
+        # складываются, итоги суммируются. Название тарифа берём то, что уже
+        # стоит у нового номера: человек на нём и остался.
+        same = target[at]
+        target[at] = {
+            **same,
+            "number": new,
+            "items": list(same["items"]) + list(bundle["items"]),
+            "total_charged": round(float(same.get("total_charged") or 0.0)
+                                   + float(bundle.get("total_charged") or 0.0), 2),
+            "vat": round(float(same.get("vat") or 0.0)
+                         + float(bundle.get("vat") or 0.0), 2),
+            "plan_name": same.get("plan_name") or bundle.get("plan_name", ""),
+            "merged_from": list(same.get("merged_from") or []) + [old],
+        }
+    target.sort(key=lambda b: b["month"])
+    bundles[new] = target
+
+
+def _merge_roster(roster: dict[str, dict[str, float]], old: str, new: str) -> None:
+    """Помесячные суммы из списка работников — туда же, к новому номеру."""
+    moving = roster.pop(old, None)
+    if not moving:
+        return
+    target = dict(roster.get(new, {}))
+    for month, amount in moving.items():
+        target[month] = round(target.get(month, 0.0) + float(amount or 0.0), 2)
+    roster[new] = target
+
+
+def _merge_user(users: dict[str, dict[str, Any]], old: str, new: str) -> None:
+    """Карточка человека: за основу новая, пустые поля добираем из старой.
+
+    Из-за этого «не подгружался» один из двух номеров: список работников
+    ведут по действующему номеру, и у старого не остаётся ни ФИО, ни
+    должности, ни лимита — в отчёте он выглядит голыми цифрами. Бывает и
+    наоборот: список не успели обновить, и пустым оказывается новый.
+    """
+    was = users.pop(old, None)
+    if not was:
+        return
+    now = users.get(new)
+    if not now:
+        users[new] = {**was, "number": new}
+        return
+    for field, value in was.items():
+        if field == "number":
+            continue
+        if now.get(field) in (None, "", 0) and value not in (None, ""):
+            now[field] = value
 
 
 def dataset_profile(data: dict[str, Any], number: str) -> dict[str, Any]:
