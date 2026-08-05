@@ -46,6 +46,7 @@ import os
 import re
 import socketserver
 import sys
+import threading
 import urllib.parse
 from datetime import date, datetime
 from typing import Any, Iterable, NamedTuple
@@ -1557,83 +1558,93 @@ def slim_for_list(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def build_month_view(month: str) -> dict[str, Any]:
-    catalog = domain.normalize_catalog(queries.get_tariffs())
+def _build_one(number: str, bundle: dict[str, Any], *, data: dict[str, Any],
+               catalog: list[dict[str, Any]],
+               resolver: billing.PayerResolver) -> dict[str, Any]:
+    """Собрать запись одного номера из уже прочитанного набора.
 
-    # Справочники для разделения оплаты читаем ОДИН раз на весь отчёт.
-    # Если читать их внутри цикла, на сотне абонентов получится сотня
-    # лишних запросов к базе за одними и теми же строками.
+    Вынесено из тела цикла, чтобы тот же самый код мог пересчитать ОДИН номер
+    после правки его настроек, не трогая остальные две тысячи. Логика обязана
+    быть общей: разъедься она — карточка после правки показывала бы не то же,
+    что показывает полный отчёт, и поймать это было бы нечем.
+    """
+    own_bundles = data["bundles"].get(number, [])
+    history = queries.history_rows(own_bundles, data["roster"].get(number, {}))
+    avg_total, avg_tariff = _averages(history, own_bundles)
+    profile = queries.dataset_profile(data, number)
+
+    # РАЗДЕЛЕНИЕ ОПЛАТЫ СЧИТАЕТСЯ ПЕРВЫМ, а запись собирается уже с
+    # оглядкой на него. Порядок здесь принципиален: пока было наоборот,
+    # рекомендация по тарифу успевала посчитаться и попасть в «потенциал
+    # экономии» ДО того, как выяснялось, что за номер компания не платит.
+    chip = data["chips"].get(number) or queries.blank_chip(number)
+    trip = queries.pick_trip(data["trips"].get(number, []), bundle["month"])
+    payment = billing.split_payment(
+        bundle["items"], chip=chip, resolver=resolver,
+        on_trip=bool(profile.get("on_trip")), trip=trip,
+        # Лимит ловит правила с лимитами-признаками: у самоплатящих
+        # номеров в этой колонке стоит не бюджет, а сумма взноса.
+        limit=domain.to_float(profile.get("limit")),
+    )
+
+    record = domain.build_record(
+        number, bundle["items"],
+        month=bundle["month"],
+        profile=profile,
+        catalog=catalog,
+        plan_name=bundle["plan_name"],
+        total_charged=bundle["total_charged"],
+        avg_total=avg_total,
+        avg_tariff_cost=avg_tariff,
+        company_pays=not (payment["excluded"] or payment["self_paid"]),
+    )
+    record["history"] = history
+    record["category_history"] = queries.category_rows(own_bundles)
+    record["trend"] = _trend_percent(record["history"], bundle["month"])
+    record["chip"] = chip
+    record["trip"] = trip
+    record["payment"] = payment
+    record["waste"] = billing.waste_of(record, payment)
+    return record
+
+
+def _month_context(month: str) -> tuple[dict[str, Any], list[dict[str, Any]],
+                                        billing.PayerResolver, list[dict[str, Any]],
+                                        list[dict[str, Any]]]:
+    """Всё, что нужно сборке записей: набор данных, каталог, резолвер, правила.
+
+    Справочники читаются ОДИН раз на отчёт. Если читать их внутри цикла, на
+    сотне абонентов получится сотня лишних запросов к базе за одними и теми же
+    строками.
+    """
+    catalog = domain.normalize_catalog(queries.get_tariffs())
     chip_rules = queries.get_chip_rules()
     resolver = billing.PayerResolver(
         rules=chip_rules,
         payment_rules=queries.get_payment_rules(only_enabled=True),
     )
-
     # ВСЁ ОСТАЛЬНОЕ — ТОЖЕ ОДНИМ НАБОРОМ ЗАПРОСОВ. История, потребление по
     # категориям, профили, командировки и чипсы читаются на весь парк сразу
     # (queries.month_dataset), а ниже разбираются по номерам уже в памяти.
     # Пока это делалось «по номеру», главный экран на сотне абонентов
     # открывался минутами: полторы тысячи обращений к базе на один отчёт.
     data = queries.month_dataset(month)
-    chips = data["chips"]
-
     # Счета расчётного месяца берём из того же набора: перечитывать их
     # отдельным запросом незачем, они уже прочитаны.
     month_bundles = sorted(
         (b for own in data["bundles"].values() for b in own if b["month"] == data["month"]),
         key=lambda b: b["number"])
+    return data, month_bundles, resolver, chip_rules, catalog
 
-    records = []
-    for bundle in month_bundles:
-        number = bundle["number"]
-        own_bundles = data["bundles"].get(number, [])
-        history = queries.history_rows(own_bundles, data["roster"].get(number, {}))
-        avg_total, avg_tariff = _averages(history, own_bundles)
-        profile = queries.dataset_profile(data, number)
 
-        # РАЗДЕЛЕНИЕ ОПЛАТЫ СЧИТАЕТСЯ ПЕРВЫМ, а запись собирается уже с
-        # оглядкой на него. Порядок здесь принципиален: пока было наоборот,
-        # рекомендация по тарифу успевала посчитаться и попасть в «потенциал
-        # экономии» ДО того, как выяснялось, что за номер компания не платит.
-        chip = chips.get(number) or queries.blank_chip(number)
-        trip = queries.pick_trip(data["trips"].get(number, []), bundle["month"])
-        on_trip = bool(profile.get("on_trip"))
-        payment = billing.split_payment(
-            bundle["items"], chip=chip, resolver=resolver,
-            on_trip=on_trip, trip=trip,
-            # Лимит ловит правила с лимитами-признаками: у самоплатящих
-            # номеров в этой колонке стоит не бюджет, а сумма взноса.
-            limit=domain.to_float(profile.get("limit")),
-        )
-
-        record = domain.build_record(
-            number, bundle["items"],
-            month=bundle["month"],
-            profile=profile,
-            catalog=catalog,
-            plan_name=bundle["plan_name"],
-            total_charged=bundle["total_charged"],
-            avg_total=avg_total,
-            avg_tariff_cost=avg_tariff,
-            company_pays=not (payment["excluded"] or payment["self_paid"]),
-        )
-        record["history"] = history
-        record["category_history"] = queries.category_rows(own_bundles)
-        record["trend"] = _trend_percent(record["history"], bundle["month"])
-        record["chip"] = chip
-        record["trip"] = trip
-        record["payment"] = payment
-        record["waste"] = billing.waste_of(record, payment)
-        records.append(record)
-
-    # Индекс невыгодности считается по всему парку сразу, поэтому только
-    # после того, как собраны все записи.
+def _finish_view(month: str, records: list[dict[str, Any]], *,
+                 chip_rules: list[dict[str, Any]],
+                 catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    """Досчитать по готовым записям всё, что считается «по всему парку сразу»."""
+    # Индекс невыгодности считается по всему парку, поэтому только после того,
+    # как собраны все записи.
     billing.assign_waste_index(records)
-
     records.sort(key=lambda r: (r["saving"], r["total"]), reverse=True)
-    # Чистка ПОСЛЕ всех расчётов: и индекс невыгодности, и сводки считаются по
-    # полным записям, а урезанная запись нужна только для передачи.
-    records = [slim_for_list(r) for r in records]
     return {
         "month": month,
         "months": queries.months(),
@@ -1654,6 +1665,180 @@ def build_month_view(month: str) -> dict[str, Any]:
         # рисовалась сразу, без отдельного запроса при каждой перерисовке.
         "trips": queries.get_trips(),
     }
+
+
+def build_month_view(month: str) -> dict[str, Any]:
+    """Полный отчёт месяца. Дорого: по записи на каждый номер парка."""
+    with _view_lock:
+        data, month_bundles, resolver, chip_rules, catalog = _month_context(month)
+        # Чистка ПОСЛЕ всех расчётов: и индекс невыгодности, и сводки считаются
+        # по полным записям, а урезанная запись нужна только для передачи.
+        records = [slim_for_list(_build_one(b["number"], b, data=data, catalog=catalog,
+                                            resolver=resolver))
+                   for b in month_bundles]
+        view = _finish_view(month, records, chip_rules=chip_rules, catalog=catalog)
+        _cache_view(view)
+        return view
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ПЕРЕСЧЁТ ПО МЕСТУ: НЕ ГОНЯТЬ ВЕСЬ ОТЧЁТ РАДИ ОДНОЙ ГАЛОЧКИ
+#
+#      Черемшу берут с корня, а не поле целиком,
+#      Срезал стрелку — и полянка дальше зеленеет.
+#      Дурень косит всё подряд да тащит впятером,
+#      Умный вышел с ножиком — и к ужину поспеет.
+#
+#  БЫЛО. Любая правка — цвет чипса, галка «в командировке», лимит, правило —
+#  вызывала build_month_view: перечитать всю базу, пересобрать записи на весь
+#  парк, отдать браузеру полный отчёт. На боевой выгрузке это тридцать
+#  мегабайт и двадцать секунд НА КАЖДОЕ НАЖАТИЕ. Человек снимал галочку и шёл
+#  за чаем.
+#
+#  Обиднее всего, что менялось при этом обычно ОДНО ПОЛЕ У ОДНОГО НОМЕРА.
+#
+#  СТАЛО. Последний собранный отчёт лежит в памяти. Правка настроек одного
+#  номера пересобирает ровно этот номер и подменяет его в готовом отчёте;
+#  правка справочника пересобирает записи заново (тут никуда не деться —
+#  правило может задеть кого угодно), но СЧЕТА при этом берутся из кэша
+#  queries._bill_data, а не читаются из базы снова.
+#
+#  Наружу в обоих случаях уходит не отчёт, а РАЗНИЦА: записи, которые
+#  действительно стали другими, плюс пересчитанные сводки. Обычно это один
+#  номер и полкилобайта вместо тридцати мегабайт.
+#
+#  ПОЧЕМУ РАЗНИЦА, А НЕ ПРОСТО ПРАВЛЕНЫЕ НОМЕРА. Индекс невыгодности считается
+#  по всему парку (90-й перцентиль), и правка одного номера способна сдвинуть
+#  шкалу всем остальным. Такое случается редко, но если его не заметить, у
+#  человека на экране останутся честные с виду, но устаревшие полоски.
+#  Поэтому к правленым номерам добавляются те, у кого поехал индекс.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_view_lock = threading.RLock()
+_view_cached: dict[str, Any] | None = None
+
+# Поля индекса невыгодности. Считаются по всему парку и меняются у номера, у
+# которого сам по себе не изменилось ничего, — поэтому при сравнении «стало ли
+# иначе» их выносят за скобки и досылают отдельной строчкой.
+_INDEX_FIELDS = ("index", "reference")
+
+
+def _differs_beyond_index(was: dict[str, Any] | None, now: dict[str, Any]) -> bool:
+    """Изменилось ли в записи что-то, кроме индекса невыгодности."""
+    if was is None:
+        return True
+    strip = lambda w: {k: v for k, v in (w or {}).items() if k not in _INDEX_FIELDS}
+    if strip(was.get("waste")) != strip(now.get("waste")):
+        return True
+    return ({k: v for k, v in was.items() if k != "waste"}
+            != {k: v for k, v in now.items() if k != "waste"})
+
+
+def _cache_view(view: dict[str, Any]) -> None:
+    global _view_cached
+    _view_cached = view
+
+
+def invalidate_view() -> None:
+    """Забыть собранный отчёт: следующий запрос соберёт его заново.
+
+    Звать там, где меняется что-то за пределами записей абонентов, — каталог
+    тарифов, реквизиты, состав месяцев.
+    """
+    global _view_cached
+    with _view_lock:
+        _view_cached = None
+
+
+def patch_month_view(month: str, numbers: set[str] | None = None) -> dict[str, Any]:
+    """Пересчитать отчёт и вернуть РАЗНИЦУ, а не отчёт целиком.
+
+    numbers — какие номера точно затронуты. None означает «затронуты могут
+    быть любые» (правка справочника) и пересобирает все записи.
+
+    Если готового отчёта в памяти нет — собираем полный и его же и отдаём:
+    разницу не с чем считать, да и браузеру, который только что открылся,
+    нужен весь отчёт.
+    """
+    with _view_lock:
+        if _view_cached is None or _view_cached.get("month") != month:
+            return build_month_view(month)
+
+        records: list[dict[str, Any]] = _view_cached["subscribers"]
+
+        # ДВА СЛЕПКА «КАК БЫЛО», и нужны оба — они ловят разное.
+        #
+        # previous держит ССЫЛКИ на прежние записи. Пересобранная запись — это
+        # новый объект, и сравнение с прежним честно покажет, изменилось ли
+        # хоть что-нибудь. Без этого правка справочника всегда объявляла бы
+        # изменённым весь парк: пересобрали-то мы всех, а поменялись единицы.
+        #
+        # before_index держит ЧИСЛА. Записи, которые мы не пересобирали, в
+        # списке те же самые объекты, и _finish_view правит им индекс
+        # невыгодности прямо на месте — сравнивать объект с самим собой
+        # бессмысленно. А индекс у них поехать может: он считается по 90-му
+        # перцентилю всего парка, и один номер способен сдвинуть шкалу всем.
+        previous = {r["number"]: r for r in records}
+        before_index = {r["number"]: (r.get("waste") or {}).get("index")
+                        for r in records}
+
+        data, month_bundles, resolver, chip_rules, catalog = _month_context(month)
+
+        # Состав парка изменился — номер появился или исчез. Разницей тут не
+        # отделаться: в готовом отчёте остались бы лишние записи или не
+        # хватало бы новых. Собираем заново, это честнее и всё равно редко.
+        if len(month_bundles) != len(records):
+            return build_month_view(month)
+
+        wanted = [b for b in month_bundles
+                  if numbers is None or str(b["number"]) in numbers]
+        by_number = {r["number"]: i for i, r in enumerate(records)}
+        for bundle in wanted:
+            number = str(bundle["number"])
+            position = by_number.get(number)
+            if position is None:                  # номера нет в готовом отчёте
+                return build_month_view(month)
+            records[position] = slim_for_list(
+                _build_one(number, bundle, data=data, catalog=catalog, resolver=resolver))
+
+        view = _finish_view(month, records, chip_rules=chip_rules, catalog=catalog)
+        _cache_view(view)
+
+        changed: list[dict[str, Any]] = []
+        shifted: list[dict[str, Any]] = []
+        for record in view["subscribers"]:
+            number = record["number"]
+            was = previous.get(number)
+            waste = record.get("waste") or {}
+            if was is not record and _differs_beyond_index(was, record):
+                changed.append(record)
+            elif waste.get("index") != before_index.get(number):
+                # У номера поехал ТОЛЬКО индекс невыгодности. Гнать ради
+                # одного числа всю запись на семь килобайт — это ровно то
+                # расточительство, от которого мы здесь и уходим.
+                shifted.append({"number": number, "index": waste.get("index"),
+                                "reference": waste.get("reference")})
+
+        return {
+            "month": view["month"],
+            "partial": True,
+            "subscribers": changed,
+            "waste": shifted,
+            # Сводки пересчитываются целиком всегда: они и так крошечные, а
+            # считать «разницу» в KPI — способ рано или поздно разойтись с
+            # тем, что показывает полный отчёт.
+            "summary": view["summary"],
+            "payment_summary": view["payment_summary"],
+            "tariff_stats": view["tariff_stats"],
+            "trips": view["trips"],
+            "months": view["months"],
+            "trend": view["trend"],
+            # chip_rules НАМЕРЕННО НЕТ. Справочник правил — самая жирная часть
+            # этого ответа, а меняет его ровно одна ручка /api/chip-rules,
+            # которая и так возвращает его отдельным полем рядом с view.
+            # Дублировать его в каждом ответе на каждую галочку — значит
+            # возить шесть килобайт туда, где не поменялось ничего.
+        }
 
 
 def _trend_percent(history: list[dict[str, Any]], month: str) -> float:
@@ -2099,18 +2284,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tariffs = payload.get("tariffs") if isinstance(payload, dict) else payload
             if not isinstance(tariffs, list):
                 return self._error(400, "Ожидается список тарифов")
-            return self._json(200, {"tariffs": queries.set_tariffs(tariffs)})
+            # Каталог тарифов пересчитывает рекомендации ВСЕМ — готовый отчёт
+            # после этого не годится ни целиком, ни по кускам.
+            result = queries.set_tariffs(tariffs)
+            invalidate_view()
+            return self._json(200, {"tariffs": result})
         if path == "/api/tariffs/reset":
-            return self._json(200, {"tariffs": queries.reset_tariffs()})
+            result = queries.reset_tariffs()
+            invalidate_view()
+            return self._json(200, {"tariffs": result})
         if path.startswith("/api/users/"):
             number = path.rsplit("/", 1)[-1]
             payload = self._read_json()
             if not isinstance(payload, dict):
                 raise ValueError("Ожидается объект с настройками абонента")
             user = queries.update_user_settings(number, payload)
-            month = self._current_month()
+            # Лимит и командировка — про ОДИН номер, и пересобирать ради них
+            # весь парк незачем (см. patch_month_view).
             return self._json(200, {"ok": True, "user": user,
-                                    "view": build_month_view(month) if month else None})
+                                    "view": self._patched_view({number})})
         # ── ЧИПСЫ: настройки конкретного номера ──────────────────────────
         # Именно они позволяют не ходить каждый раз в «Настройки → Абоненты»:
         # цвет, заметка, пометки и плательщик правятся прямо в карточке.
@@ -2120,9 +2312,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("Ожидается объект с настройками чипса")
             chip = queries.save_chip(number, payload)
-            month = self._current_month()
             return self._json(200, {"ok": True, "chip": chip,
-                                    "view": build_month_view(month) if month else None})
+                                    "view": self._patched_view({number})})
 
         # ── Справочники: правила номеров, правила оплаты, роуминг ────────
         #
@@ -2154,6 +2345,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/reset":
             queries.reset()
+            invalidate_view()
             return self._json(200, {"ok": True})
         return self._error(404, "Неизвестный эндпоинт")
 
@@ -2177,14 +2369,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return queries.latest_month()
 
     def _fresh_view(self) -> dict[str, Any] | None:
-        """Пересобрать отчёт после изменения справочника.
+        """Пересчитать отчёт после изменения СПРАВОЧНИКА.
 
         Любая правка цвета, пометки или правила меняет распределение денег,
-        поэтому фронтенду сразу возвращается пересчитанный отчёт — иначе на
-        экране остались бы старые суммы.
+        поэтому фронтенду сразу возвращаются новые суммы — иначе на экране
+        остались бы старые.
+
+        Записи пересобираются все: правило по услуге или цвет могут задеть
+        любой номер, и угадать заранее какой — нельзя. А вот НАРУЖУ уезжает
+        только разница: обычно правило висит на десятке номеров, остальные
+        полторы тысячи как были, так и остались.
         """
         month = self._current_month()
-        return build_month_view(month) if month else None
+        return patch_month_view(month) if month else None
+
+    def _patched_view(self, numbers: set[str]) -> dict[str, Any] | None:
+        """Пересчитать отчёт после правки настроек КОНКРЕТНЫХ номеров."""
+        month = self._current_month()
+        return patch_month_view(month, numbers) if month else None
 
     # --- вспомогательные -------------------------------------------------
     def _read_body(self) -> bytes:

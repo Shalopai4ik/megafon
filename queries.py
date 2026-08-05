@@ -290,6 +290,7 @@ def reset() -> None:
     — иначе после каждой перезагрузки счёта её пришлось бы делать заново.
     """
     db.wipe_data(keep_settings=True)
+    invalidate_bill_cache()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -559,6 +560,9 @@ def save_report(number: str, month: str, items: list[dict[str, Any]], *,
              for it in items],
         )
 
+    # Счета изменились — прочитанное больше не годится.
+    invalidate_bill_cache()
+
 
 def months() -> list[dict[str, Any]]:
     """Список доступных периодов — для выпадающего списка на фронтенде."""
@@ -658,8 +662,41 @@ def bundles_for_number(number: str) -> list[dict[str, Any]]:
 #  category_rows и pick_trip.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def month_dataset(month: str) -> dict[str, Any]:
-    """Прочитать всё, что нужно расчёту месяца."""
+# ── КЭШ СЧЕТОВ ──────────────────────────────────────────────────────────────
+#
+#     Черемша по весне из-под снега прёт,
+#     Раз сорвал — и год её не тревожь.
+#     Не топчи полянку туда-обратно:
+#     Что нарвал однажды — то и в кузов сложь.
+#
+# ЧТО ЗДЕСЬ ЛЕЖИТ. Счета со всеми строками начислений и помесячные суммы из
+# списка сотрудников. Это САМАЯ ТЯЖЁЛАЯ часть чтения: на боевой выгрузке —
+# десятки мегабайт, которые едут из psql через канал и разбираются из JSON.
+#
+# ЗАЧЕМ КЭШ. Отчёт пересобирался на КАЖДУЮ правку настройки: покрасил чипс —
+# перечитали всю базу, поставил галку — перечитали всю базу. А счета от этих
+# правок не меняются вообще: их пишет только загрузка файла. Двадцать секунд
+# на снятие одной галочки уходили ровно сюда.
+#
+# КОГДА СБРАСЫВАТЬ. Ровно там, где счета и список сотрудников меняются:
+# apply_bill, apply_roster, reset. За это отвечает invalidate_bill_cache(), и
+# зовётся она из самих функций записи — не из вызывающего кода, иначе рано или
+# поздно кто-нибудь забудет.
+_bill_cache: dict[str, Any] | None = None
+
+
+def invalidate_bill_cache() -> None:
+    """Забыть прочитанные счета. Звать после любой записи в reports/pvalues/roster."""
+    global _bill_cache
+    _bill_cache = None
+
+
+def _bill_data() -> dict[str, Any]:
+    """Счета и помесячные суммы — из кэша, а если его нет, то из базы."""
+    global _bill_cache
+    if _bill_cache is not None:
+        return _bill_cache
+
     by_number: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for bundle in _bundles("", ()):
         by_number[str(bundle["number"])].append(bundle)
@@ -668,6 +705,25 @@ def month_dataset(month: str) -> dict[str, Any]:
     for row in db.query("SELECT number, month, total FROM roster_history"):
         roster[str(row["number"])][row["month"]] = float(row["total"] or 0.0)
 
+    _bill_cache = {"bundles": by_number, "roster": roster}
+    return _bill_cache
+
+
+def month_dataset(month: str) -> dict[str, Any]:
+    """Прочитать всё, что нужно расчёту месяца.
+
+    ДЕЛИТСЯ НА ДВЕ ПОЛОВИНЫ, и это главное, что о ней надо знать.
+
+    Тяжёлая — счета и суммы по месяцам — берётся из кэша: её меняет только
+    загрузка файла (см. _bill_data).
+
+    Лёгкая — командировки, карточки абонентов, настройки чипсов — читается
+    каждый раз. Именно её и правят в настройках, поэтому кэшировать её нельзя;
+    зато это три коротких запроса по небольшим таблицам, а не десятки
+    мегабайт строк начислений.
+    """
+    bills = _bill_data()
+
     trips: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in db.query(f"SELECT * FROM business_trips WHERE {_REAL_TRIP} "
                         " ORDER BY approved DESC, date_start"):
@@ -675,8 +731,8 @@ def month_dataset(month: str) -> dict[str, Any]:
 
     return {
         "month": str(month),
-        "bundles": by_number,
-        "roster": roster,
+        "bundles": bills["bundles"],
+        "roster": bills["roster"],
         "trips": trips,
         "users": {str(u["number"]): u for u in all_users()},
         "chips": all_chips(),
@@ -748,6 +804,8 @@ def set_roster_history(number: str, history: dict[str, float]) -> None:
         "ON CONFLICT (number, month) DO UPDATE SET total = excluded.total",
         [(str(number), month, float(amount)) for month, amount in history.items()],
     )
+    # Помесячные суммы лежат в том же кэше, что и счета.
+    invalidate_bill_cache()
 
 
 def get_roster_history(number: str) -> dict[str, float]:

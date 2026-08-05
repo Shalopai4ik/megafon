@@ -662,17 +662,61 @@ function refreshMainIfStale() {
   renderMain();
 }
 
+/**
+ * Разложить ответ сервера по state.
+ *
+ *     Черемшу в кузов класть — не всю телегу перетряхивать,
+ *     Пучок положил на место, а прочее не тронь.
+ *     Кто на каждый пучок весь воз перекладывает —
+ *     Тот к вечеру не в поле, а под возом, как конь.
+ *
+ * ОТВЕТ БЫВАЕТ ДВУХ ВИДОВ, и различает их поле `partial`.
+ *
+ * ПОЛНЫЙ — весь отчёт. Приходит при открытии, смене месяца и загрузке файла.
+ * Заменяет всё подряд.
+ *
+ * ЧАСТИЧНЫЙ — только те номера, которые правка реально изменила, плюс сводки.
+ * Приходит на каждое действие в настройках и в карточке номера. Раньше и там
+ * ехал полный отчёт: тридцать мегабайт на снятую галочку (см. шапку
+ * server.patch_month_view). Здесь такой ответ ВЛИВАЕТСЯ в уже имеющийся
+ * список, а не подменяет его.
+ *
+ * Ключ — номер. Сортировка не важна: списки на экране всё равно
+ * пересортировываются под свой фильтр (см. renderUsers).
+ */
 function applyViewData(data) {
-  // Отчёт сменился — производные списки больше не действительны.
+  // Любой ответ меняет записи — производные списки больше не действительны.
   companySubsCache = null;
-  state.month = data.month || '';
-  state.months = data.months || [];
-  state.subscribers = data.subscribers || [];
+
+  if (data.partial) {
+    const byNumber = new Map(state.subscribers.map((s, i) => [s.number, i]));
+    (data.subscribers || []).forEach((fresh) => {
+      const at = byNumber.get(fresh.number);
+      if (at === undefined) state.subscribers.push(fresh);
+      else state.subscribers[at] = fresh;
+    });
+    // Индекс невыгодности считается по всему парку: правка одного номера
+    // сдвигает шкалу остальным. Ради одного числа целую запись не гоняем —
+    // сервер присылает его отдельной строчкой (см. server.patch_month_view).
+    (data.waste || []).forEach((w) => {
+      const at = byNumber.get(w.number);
+      if (at === undefined) return;
+      const sub = state.subscribers[at];
+      sub.waste = { ...(sub.waste || {}), index: w.index, reference: w.reference };
+    });
+  } else {
+    state.month = data.month || '';
+    state.subscribers = data.subscribers || [];
+    state.invoice = data.invoice || {};
+    state.tariffs = data.tariffs || state.tariffs;
+  }
+
+  // Сводки, справочники и списки приезжают целиком в обоих случаях: они
+  // крошечные, а считать их «разницей» — верный способ разойтись с отчётом.
+  state.months = data.months || state.months;
   state.summary = data.summary || null;
   state.tariffStats = data.tariff_stats || [];
-  state.tariffs = data.tariffs || state.tariffs;
   state.trend = data.trend || [];
-  state.invoice = data.invoice || {};
   state.paymentSummary = data.payment_summary || null;
   state.chipRules = data.chip_rules || state.chipRules;
   state.trips = data.trips || state.trips;
