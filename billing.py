@@ -49,6 +49,7 @@ from typing import Any
 
 import domain
 import includes
+import seeds
 
 COMPANY = includes.COMPANY
 EMPLOYEE = includes.EMPLOYEE
@@ -144,8 +145,14 @@ class PayerResolver:
         )
 
     # ── Какие правила действуют на номер ──────────────────────────────────
-    def rules_for(self, chip: dict[str, Any], limit: float = 0.0) -> list[dict[str, Any]]:
-        """Правила номера: навешенные руками ПЛЮС пойманные по лимиту.
+    def rules_for(self, chip: dict[str, Any], limit: float = 0.0,
+                  on_trip: bool = False) -> list[dict[str, Any]]:
+        """Правила номера: навешенные руками ПЛЮС пойманные автоматически.
+
+        Автоматических источников два, и оба работают без единого щелчка
+        мышью:
+          * лимит-признак — совпал лимит абонента с числом из правила;
+          * командировка — период поездки пересёкся с расчётным месяцем.
 
         Порядок применения — цвета раньше пометок, внутри по sort_order:
         первое сработавшее правило и отвечает за корзину.
@@ -154,6 +161,11 @@ class PayerResolver:
         for code in self.by_limit.get(float(limit or 0.0), ()):
             if code not in codes:
                 codes.append(code)
+        # Пометку «Командировка» администратор мог удалить — тогда автопометки
+        # просто нет, и падать из-за этого незачем.
+        if on_trip and seeds.TRIP_MARK in self.rule_by_code \
+                and seeds.TRIP_MARK not in codes:
+            codes.append(seeds.TRIP_MARK)
 
         found = [self.rule_by_code[c] for c in codes if c in self.rule_by_code]
         found.sort(key=lambda r: (r.get("kind") != "color",
@@ -162,12 +174,13 @@ class PayerResolver:
         return found
 
     # ── Уровень номера ────────────────────────────────────────────────────
-    def chip_effects(self, chip: dict[str, Any], limit: float = 0.0) -> dict[str, Any]:
+    def chip_effects(self, chip: dict[str, Any], limit: float = 0.0,
+                     on_trip: bool = False) -> dict[str, Any]:
         """Собрать эффекты номера: правила + ручные переключатели.
 
         Возвращает готовый ответ по каждой корзине и список объяснений.
         """
-        rules = self.rules_for(chip, limit)
+        rules = self.rules_for(chip, limit, on_trip)
         # Карточку красит ПЕРВОЕ цветовое правило. Их и в списке первые,
         # поэтому достаточно взять начало.
         color = next((r for r in rules if r.get("kind") == "color"), {})
@@ -255,7 +268,7 @@ def split_payment(items: list[dict[str, Any]], *, chip: dict[str, Any],
     Возвращает: суммы по корзинам, кто за что платит, итоги и объяснения.
     """
     buckets = split_by_bucket(items)
-    effects = resolver.chip_effects(chip, limit)
+    effects = resolver.chip_effects(chip, limit, on_trip)
 
     result_buckets: list[dict[str, Any]] = []
     company_total = 0.0

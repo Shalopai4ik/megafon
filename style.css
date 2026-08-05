@@ -724,9 +724,28 @@ button.chip-gear:focus-visible { opacity: 1; outline: 2px solid var(--primary); 
   font-size: 13px; padding: 3px 5px; border-radius: 6px;
 }
 .rule-del:hover { color: var(--danger); background: var(--danger-soft); }
-/* Замок вместо крестика: строку из тарифной сетки править можно, удалять нет. */
+/* Замок вместо крестика: строку править можно, удалять нет. */
 .rule-del.is-locked { cursor: default; opacity: .45; }
 .rule-del.is-locked:hover { color: var(--text-muted); background: none; }
+
+/* СТОЛБЕЦ УДАЛЕНИЯ УЗКИЙ — И ЕГО СОДЕРЖИМОЕ ОБЯЗАНО БЫТЬ УЗКИМ.
+   Раньше у встроенных правил вместо крестика стояла плашка «базовый», и семь
+   букв не влезали в свои 44 пикселя: грид растягивался под них, таблица
+   вылезала за окно настроек, а сама надпись наезжала на соседний столбец.
+   Теперь в столбце всегда кнопка, но на случай будущих правок страхуемся
+   явно — ячейка не имеет права распирать сетку. */
+.rule-head > *, .rule-row > * { min-width: 0; }
+.rule-row > .rule-del { justify-self: center; overflow: hidden; }
+
+/* Правило только что завели: подсветка на полторы секунды, чтобы глаз нашёл
+   новую строку среди трёх десятков заполненных. */
+.rule-row.is-fresh {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.rule-row input:disabled {
+  opacity: .6; cursor: not-allowed; background: var(--surface-2);
+}
 
 /* Таблица командировок на главной странице.
    ВЫСОТА СТРОКИ ЗАДАНА ЯВНО (--trip-row), потому что от неё считается окно
@@ -1104,6 +1123,13 @@ button.ex-row:hover { background: var(--surface-2); }
 .ex-dot-warning { fill: var(--warning); }
 .ex-dot-danger { fill: var(--danger); }
 .ex-dot:hover { stroke: var(--text); stroke-width: 2; }
+/* Матрица «расход × экономия»: экономия — это выигрыш, поэтому цвет акцентный,
+   а не тревожный. Треугольник — номер вышел за жёсткую шкалу в 100 000 ₽. */
+.ex-dot-saving { fill: var(--accent); }
+.ex-dot-off { fill: var(--warning); }
+/* Линия «вернём столько же, сколько платим». Пунктир, чтобы её не путали с
+   линиями сетки: сетка — это отсчёт, а эта линия — смысловая граница. */
+.ex-diagonal { stroke-dasharray: 5 5; opacity: .75; }
 .ex-scatter-note { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 
 /* ═══════════════════════════ РАСКРЫВАЮЩИЕСЯ БЛОКИ ═══════════════════════════ */
@@ -1293,6 +1319,8 @@ button.ex-row:hover { background: var(--surface-2); }
 .badge-normal { background: var(--good-soft); color: var(--good); }
 .badge-warning { background: var(--warning-soft); color: var(--warning); }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
+/* Плашка лайт-режима: сколько даст понижение тарифа. */
+.badge-accent { background: var(--accent-soft); color: var(--accent); }
 
 .cost-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; }
 .cost-main { font-size: 26px; font-weight: 750; letter-spacing: -.5px; line-height: 1.1; }
@@ -1971,7 +1999,16 @@ button.ex-row:hover { background: var(--surface-2); }
   border-left: 4px solid var(--border); border-radius: var(--radius-sm);
 }
 .subscriber-info { min-width: 0; }
-.subscriber-number { font-size: 13px; font-weight: 700; }
+.subscriber-number {
+  font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+/* Плашка в строке абонента мельче карточной: строк здесь сотня, и полноразмерная
+   «командировка» перетягивала бы на себя внимание с самого номера. */
+.subscriber-number .badge { font-size: 10.5px; padding: 2px 7px; font-weight: 700; }
+/* Командировка из загруженного файла: снять её галочкой нельзя — она придёт
+   из данных заново. Поэтому не притворяемся переключателем, а объясняем. */
+.trip-auto { font-size: 11.5px; color: var(--accent); margin-top: 2px; }
 .subscriber-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subscriber-pos, .subscriber-cost { font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

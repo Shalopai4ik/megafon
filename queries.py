@@ -482,6 +482,24 @@ def _slug(label: str) -> str:
     return slug or "rule"
 
 
+def _free_code(table: str, base: str) -> str:
+    """Свободный код на основе base: base, base_2, base_3…
+
+    ЗАЧЕМ. Код правила выводится из названия, а кнопка «+ Цвет» заводит
+    правило с одним и тем же названием «Новый цвет». Слаг от него получался
+    один и тот же, запись находила саму себя и уходила в UPDATE — кнопка
+    добавляла ровно одно правило за всю жизнь базы, а дальше молча
+    перезаписывала его. Со стороны это и есть «кнопка не работает».
+    """
+    taken = {str(r["code"]) for r in db.query(f"SELECT code FROM {table}")}
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}_{n}" in taken:
+        n += 1
+    return f"{base}_{n}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Счета (reports + pvalues)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1181,12 +1199,22 @@ def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]
     Одна функция на оба вида — поля у них совпадают, различает только kind.
     Если kind не передан, а правило уже есть, вид НЕ меняем: администратор
     редактирует существующее правило, а не превращает пометку в цвет.
+
+    ПУСТОЙ code — ЭТО ЗАПРОС НА СОЗДАНИЕ, а не «найди по названию». Правку
+    существующей строки интерфейс всегда шлёт с кодом, так что различить их
+    можно надёжно; выводить код из названия и надеяться, что он не совпадёт
+    с уже занятым, — нельзя (см. _free_code).
     """
     # Правило могли показать из памяти — до правки его надо сделать настоящим,
     # иначе сохранение одного правила оставило бы в базе ровно его одно.
     ensure_reference_data()
-    code = str(data.get("code") or "").strip() or _slug(str(data.get("label") or "rule"))
-    existing = db.query_one("SELECT kind FROM chip_rules WHERE code = ?", (code,))
+    asked = str(data.get("code") or "").strip()
+    if asked:
+        code = asked
+        existing = db.query_one("SELECT kind FROM chip_rules WHERE code = ?", (code,))
+    else:
+        code = _free_code("chip_rules", _slug(str(data.get("label") or "rule")))
+        existing = None
     kind = kind or str(data.get("kind") or "") or (existing["kind"] if existing else "mark")
     if kind not in ("color", "mark"):
         kind = "mark"
@@ -1222,14 +1250,32 @@ def save_chip_rule(data: dict[str, Any], kind: str = "") -> list[dict[str, Any]]
     return get_chip_rules()
 
 
+# Код-заглушка «цвета нет». Не правило, а признак «карточка обычная»: его
+# подставляет chip_settings.color_code и на него же опирается billing, когда
+# цветового правила у номера не нашлось. Удалить его — оставить в базе висячие
+# ссылки, поэтому он и только он защищён от удаления.
+FALLBACK_COLOR = "normal"
+
+
 def delete_chip_rule(code: str) -> list[dict[str, Any]]:
-    """Удалить правило. Встроенные не трогаем — их можно только переименовать."""
+    """Удалить правило.
+
+    УДАЛЯЮТСЯ И ВСТРОЕННЫЕ ТОЖЕ. Раньше запрет стоял на всех строках с
+    builtin=1 — а это весь список, который человек видит: свежая база состоит
+    из встроенных правил целиком. Кнопки удаления у них просто не было, и
+    вкладка выглядела как справочник, прибитый гвоздями.
+
+    Посев одноразовый (см. reference_materialized), так что удалённое
+    встроенное правило обратно не вернётся.
+    """
     ensure_reference_data()
+    if str(code) == FALLBACK_COLOR:
+        raise ValueError(
+            "«Обычный» — не правило, а признак «цвета нет». Его можно "
+            "переименовать и перекрасить, но не удалить")
     row = db.query_one("SELECT kind, builtin FROM chip_rules WHERE code = ?", (code,))
     if not row:
         raise ValueError("Правило не найдено")
-    if row["builtin"]:
-        raise ValueError("Встроенное правило удалить нельзя — его можно переименовать и перенастроить")
     with db.transaction() as conn:
         # Связи с номерами уйдут сами: у chip_rule_links стоит ON DELETE CASCADE.
         # А вот старую колонку chip_settings.color_code каскад не чистит, её

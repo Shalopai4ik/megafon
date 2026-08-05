@@ -307,6 +307,14 @@
       <div class="block-title">Матрица «расход × риск»</div>
       <div id="exMatrix"></div>
     </div>
+
+    <!-- Вторая матрица отвечает на другой вопрос: не «где плохо», а «где
+         деньги». Обе оси в рублях и обе до 100 000 — фиксированный масштаб,
+         чтобы месяцы можно было сравнивать между собой. -->
+    <div class="card span-12" data-widget="exSaving">
+      <div class="block-title">Матрица «расход × экономия»</div>
+      <div id="exSaving"></div>
+    </div>
   </section>
 
   <!-- ═══ СРАВНЕНИЕ ТАРИФОВ ═══ -->
@@ -326,7 +334,9 @@
        режим не выглядел поломкой: видно, что показано, сколько и как выйти. -->
   <section id="liteBar" class="lite-bar" hidden>
     <div class="lite-bar-main">
-      <span class="lite-bar-title">Кому понизить тариф</span>
+      <span class="lite-bar-title" title="Пакет не перебран, лимит не превышен,
+месяц без командировки, экономия заметная. Спорные случаи сюда не попадают —
+они в обычном виде, под фильтром «Понизить тариф»">Понизить можно точно</span>
       <span class="lite-bar-sub" id="liteBarSub"></span>
     </div>
     <button id="liteExitBtn" class="btn btn-soft" type="button">Обычный вид</button>

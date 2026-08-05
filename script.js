@@ -145,6 +145,7 @@ const WIDGET_GROUPS = [
       { id: 'exPositions', label: 'Расходы по должностям', note: 'нужен список абонентов' },
       { id: 'exHeat', label: 'Категории × вердикт', note: 'где именно не сходятся пакеты' },
       { id: 'exMatrix', label: 'Матрица «расход × риск»', note: 'каждый номер точкой' },
+      { id: 'exSaving', label: 'Матрица «расход × экономия»', note: 'сколько платим и сколько вернём' },
     ],
   },
   {
@@ -203,7 +204,7 @@ function setLite(on) {
 }
 
 /**
- * Кому нужно понизить тариф.
+ * Кому понижение тарифа МОЖНО НЕСТИ НА ПОДПИСЬ.
  *
  * Строго `lower` — «пакет избыточен, тот же месяц дешевле на меньшем тарифе».
  * Соседний `switch` («подобрать тариф») сюда НЕ входит: это другой случай —
@@ -213,10 +214,36 @@ function setLite(on) {
  *
  * Самоплатящие и исключённые отсеиваются вместе со всеми: за них компания не
  * платит, и понижать им тариф не её забота.
+ *
+ * ДАЛЬШЕ ИДУТ ОТСЕВЫ, КОТОРЫХ РАНЬШЕ НЕ БЫЛО. Одного `action === 'lower'`
+ * оказалось мало: в списке сидели номера, по которым разговор с руководителем
+ * заканчивался бы вопросом «а вы уверены?». Уверены мы только там, где:
+ *
+ *   1. есть КУДА понижать — назван конкретный тариф каталога, и это не тот же
+ *      самый, на котором номер сидит сейчас;
+ *   2. пакет НЕ ПЕРЕБРАН. Перерасход означает, что человеку уже не хватает;
+ *      предлагать ему пакет поменьше — это предлагать платить больше;
+ *   3. номер В ПРЕДЕЛАХ ЛИМИТА. Вылез за свой потолок — сначала разбираются
+ *      с превышением, а не режут пакет;
+ *   4. месяц ОБЫЧНЫЙ. Командировка ломает картину потребления, и решать по
+ *      ней, каким должен быть пакет, нельзя;
+ *   5. экономия ЗАМЕТНАЯ. Ради полусотни рублей никто не пойдёт переоформлять
+ *      тариф, а список из таких строк обесценивает весь экран.
  */
+const LITE_MIN_SAVING = 100;
+
 function lowerCandidates() {
   return companySubs()
-    .filter((s) => s.recommendation && s.recommendation.action === 'lower')
+    .filter((s) => {
+      const rec = s.recommendation;
+      if (!rec || rec.action !== 'lower') return false;
+      if (!rec.best) return false;
+      if (s.tariff && rec.best.tariff_id === s.tariff.id) return false;
+      if (s.overuse > 0) return false;
+      if (s.limit_set && s.overpayment > 0) return false;
+      if (s.on_trip) return false;
+      return s.saving >= LITE_MIN_SAVING;
+    })
     .sort((a, b) => b.saving - a.saving);
 }
 
@@ -636,6 +663,8 @@ function refreshMainIfStale() {
 }
 
 function applyViewData(data) {
+  // Отчёт сменился — производные списки больше не действительны.
+  companySubsCache = null;
   state.month = data.month || '';
   state.months = data.months || [];
   state.subscribers = data.subscribers || [];
@@ -663,7 +692,7 @@ function renderMain() {
     const note = liteBtn.querySelector('.menu-item-note');
     if (note) {
       note.textContent = lite ? 'включён — вернуться к обычному виду'
-        : 'только карточки тех, кому понизить тариф';
+        : 'только те, кому понижение можно нести на подпись';
     }
   }
 
@@ -732,8 +761,11 @@ function renderLite() {
     : 'таких номеров нет — понижать некому');
 
   if (!list.length) {
-    grid.innerHTML = '<div class="empty-state">Ни одному абоненту понижение'
-      + ' тарифа сейчас не выгодно. Значит, пакеты подобраны по потреблению.</div>';
+    grid.innerHTML = '<div class="empty-state">Бесспорных кандидатов на понижение'
+      + ' нет. Сюда попадает номер, у которого пакет не перебран, лимит не'
+      + ' превышен, месяц без командировки и понижение даёт больше'
+      + ` ${money(LITE_MIN_SAVING)} в месяц. Спорные случаи ищите в обычном виде,`
+      + ' фильтром «Понизить тариф».</div>';
     grid.dataset.drawn = '0';
     return;
   }
@@ -1012,9 +1044,28 @@ function renderUsageTotals() {
  * выбранной группы, включая исключённые. Иначе номер, который человек только
  * что пометил, исчезал бы с экрана вместе с шестерёнкой, и снять пометку было
  * бы нечем.
+ *
+ * СЧИТАЕТСЯ ОДИН РАЗ НА ОТЧЁТ, дальше отдаётся тот же массив.
+ *
+ * Функцию зовут двадцать шесть раз за отрисовку — из KPI, из каждого блока
+ * аналитики, из обеих матриц. Каждый вызов заново просеивал весь парк номеров
+ * и создавал новый массив: на двух тысячах номеров это полсотни тысяч лишних
+ * сравнений и двадцать шесть массивов в мусор, ровно с одинаковым
+ * содержимым. Список меняется только вместе с отчётом — там кэш и сбрасываем
+ * (см. applyViewData).
+ *
+ * ВОЗВРАЩАЕМЫЙ МАССИВ ОБЩИЙ, ПОРТИТЬ ЕГО НЕЛЬЗЯ. Сортировать надо по копии:
+ * `[...companySubs()].sort(...)`. Пока функция каждый раз отдавала свежий
+ * результат filter, сортировка на месте была безобидной — теперь она
+ * переставила бы номера всем остальным блокам.
  */
+let companySubsCache = null;
+
 function companySubs() {
-  return state.subscribers.filter((s) => s.company_pays !== false);
+  if (!companySubsCache) {
+    companySubsCache = state.subscribers.filter((s) => s.company_pays !== false);
+  }
+  return companySubsCache;
 }
 
 /**
@@ -1041,6 +1092,7 @@ const EXTRA_WIDGETS = [
   ['exPositions', renderExPositions],
   ['exHeat', renderExHeat],
   ['exMatrix', renderExMatrix],
+  ['exSaving', renderExSaving],
 ];
 
 function renderExtras() {
@@ -1075,10 +1127,22 @@ function exEmpty(text) {
   return `<div class="empty">${esc(text)}</div>`;
 }
 
-/** Открытие карточки абонента по клику на строке рейтинга. */
+/**
+ * Клик по строке рейтинга или точке матрицы открывает карточку номера.
+ *
+ * ОДИН СЛУШАТЕЛЬ НА БЛОК, а не по одному на каждый элемент. Раньше здесь был
+ * обход всех [data-goto] с подпиской на каждый: в двух матрицах и полудюжине
+ * рейтингов это тысячи подписок на парк из двух тысяч номеров — и все они
+ * создавались заново при каждой перерисовке, то есть после любой правки
+ * фильтра. Флаг на узле не даёт навесить слушателя дважды: блоки
+ * перерисовываются через innerHTML, сам контейнер при этом живёт.
+ */
 function bindGoto(root) {
-  $$('[data-goto]', root).forEach((btn) => {
-    btn.addEventListener('click', () => openModal(btn.dataset.goto));
+  if (!root || root.dataset.goto === '1') return;
+  root.dataset.goto = '1';
+  root.addEventListener('click', (e) => {
+    const hit = e.target.closest('[data-goto]');
+    if (hit && root.contains(hit)) openModal(hit.dataset.goto);
   });
 }
 
@@ -1604,7 +1668,8 @@ function renderExDistribution() {
 function renderExPareto() {
   const el = $('exPareto');
   if (!el) return;
-  const sorted = companySubs().sort((a, b) => b.total - a.total);
+  // По копии: массив companySubs() общий на всю отрисовку (см. его шапку).
+  const sorted = [...companySubs()].sort((a, b) => b.total - a.total);
   const total = sorted.reduce((a, s) => a + s.total, 0);
   if (total <= 0) { el.innerHTML = exEmpty('В счёте нет начислений.'); return; }
 
@@ -1648,7 +1713,7 @@ function renderExPareto() {
 function renderExTopCost() {
   const el = $('exTopCost');
   if (!el) return;
-  const sorted = companySubs().sort((a, b) => b.total - a.total).slice(0, 10);
+  const sorted = [...companySubs()].sort((a, b) => b.total - a.total).slice(0, 10);
   if (!sorted.length) { el.innerHTML = exEmpty('Нет данных.'); return; }
 
   const total = companySubs().reduce((a, s) => a + s.total, 0);
@@ -1957,6 +2022,103 @@ ${esc(s.plan_name || 'тариф не определён')}</title></circle>`).j
   </svg>
   <div class="ex-scatter-note">Каждая точка — номер: по горизонтали начислено за месяц,
     по вертикали индекс риска. Правый верхний угол — дорого и проблемно, туда и смотреть в первую очередь.
+    Нажмите на точку, чтобы открыть карточку.</div>`;
+  bindGoto(host);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * МАТРИЦА «РАСХОД × ЭКОНОМИЯ»
+ *
+ * Соседняя матрица «расход × риск» отвечает на вопрос «где плохо». Эта — на
+ * вопрос «где деньги»: по горизонтали то, что компания за номер уже заплатила,
+ * по вертикали то, что вернётся, если выполнить рекомендацию по тарифу.
+ *
+ * ОБЕ ОСИ В РУБЛЯХ И ОБЕ ДО 100 000 — по требованию заказчика. Это даёт то,
+ * чего не даёт автомасштаб: масштаб не пляшет от месяца к месяцу, и две
+ * выгрузки можно положить рядом и сравнить глазом. Плата за это — номера
+ * дороже потолка, и они не выбрасываются, а прижимаются к краю и рисуются
+ * треугольником: «здесь больше, чем показано».
+ *
+ * ДИАГОНАЛЬ — ЛИНИЯ «ЭКОНОМИЯ РАВНА РАСХОДУ». Выше неё точек не бывает:
+ * вернуть больше, чем заплатили, нельзя. Чем ближе точка к диагонали, тем
+ * большая доля денег по этому номеру уходит впустую.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+// Потолок обеих осей, ₽. Заказчик просил фиксированные 100 тысяч.
+const SAVING_MATRIX_MAX = 100000;
+
+function renderExSaving() {
+  const host = $('exSaving');
+  if (!host) return;
+
+  // Номера без экономии заняли бы всю нижнюю кромку сплошной полосой и
+  // ничего бы не сказали: у них по этой матрице просто нет темы.
+  const subs = companySubs().filter((s) => s.saving > 0);
+  if (!subs.length) {
+    host.innerHTML = exEmpty('Ни по одному номеру смена тарифа не даёт экономии.');
+    return;
+  }
+
+  const W = Math.max(420, Math.round(host.clientWidth || 900));
+  const H = 300, padL = 62, padR = 18, padT = 22, padB = 34;
+  const cw = W - padL - padR;
+  const ch = H - padT - padB;
+
+  const clamp = (v) => Math.max(0, Math.min(SAVING_MATRIX_MAX, v));
+  const x = (v) => padL + (clamp(v) / SAVING_MATRIX_MAX) * cw;
+  const y = (v) => padT + ch - (clamp(v) / SAVING_MATRIX_MAX) * ch;
+
+  // Сетка на четыре клетки по каждой оси: 0 / 25 / 50 / 75 / 100 тысяч.
+  // Подписи те же слева и снизу — шкалы одинаковые, и это должно быть видно.
+  let grid = '';
+  for (let i = 0; i <= 4; i++) {
+    const value = (SAVING_MATRIX_MAX / 4) * i;
+    const gy = padT + ch - (i / 4) * ch;
+    const gx = padL + (i / 4) * cw;
+    grid += `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" class="grid"/>`
+      + `<line x1="${gx.toFixed(1)}" y1="${padT}" x2="${gx.toFixed(1)}" y2="${padT + ch}" class="grid"/>`
+      + `<text x="${padL - 8}" y="${(gy + 4).toFixed(1)}" text-anchor="end" class="axis-label">${compact(value)}</text>`
+      + `<text x="${gx.toFixed(1)}" y="${H - 12}" class="axis-label"
+          text-anchor="${i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}">${compact(value)}</text>`;
+  }
+
+  const diagonal = `<line x1="${padL}" y1="${padT + ch}" x2="${(padL + cw).toFixed(1)}"
+    y2="${padT}" class="grid ex-diagonal"/>`;
+
+  // Крупная экономия рисуется последней, чтобы не утонуть в облаке мелочи.
+  const dots = [...subs].sort((a, b) => a.saving - b.saving).map((s) => {
+    const cx = x(s.total);
+    const cy = y(s.saving);
+    const off = s.total > SAVING_MATRIX_MAX || s.saving > SAVING_MATRIX_MAX;
+    const share = s.total > 0 ? Math.round((s.saving / s.total) * 100) : 0;
+    const tip = `${esc(s.username || formatPhone(s.number))} — начислено ${money(s.total)}, `
+      + `экономия ${money(s.saving)} (${share}% счёта)`
+      + (off ? '\nЗа пределами шкалы: точка прижата к краю' : '');
+    // Треугольник вместо кружка = «на самом деле дальше». Без такой отметки
+    // прижатая к краю точка врала бы, будто номер ровно на ста тысячах.
+    return off
+      ? `<polygon class="ex-dot ex-dot-off" data-goto="${esc(s.number)}"
+          points="${cx.toFixed(1)},${(cy - 5.5).toFixed(1)} ${(cx + 5).toFixed(1)},${(cy + 4).toFixed(1)} ${(cx - 5).toFixed(1)},${(cy + 4).toFixed(1)}">
+          <title>${tip}</title></polygon>`
+      : `<circle class="ex-dot ex-dot-saving" data-goto="${esc(s.number)}"
+          cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="4.5"><title>${tip}</title></circle>`;
+  }).join('');
+
+  const total = subs.reduce((sum, s) => sum + s.saving, 0);
+  const off = subs.filter((s) => s.total > SAVING_MATRIX_MAX || s.saving > SAVING_MATRIX_MAX).length;
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="ex-scatter" preserveAspectRatio="xMidYMid meet">
+    ${grid}${diagonal}${dots}
+    <text x="${padL - 8}" y="12" text-anchor="end" class="axis-label">экономия, ₽</text>
+    <text x="${W - padR}" y="12" text-anchor="end" class="axis-label">начислено, ₽</text>
+  </svg>
+  <div class="ex-scatter-note">Каждая точка — номер: по горизонтали начислено за месяц,
+    по вертикали экономия от смены тарифа. Обе шкалы жёстко до
+    ${money(SAVING_MATRIX_MAX)} — масштаб не меняется от месяца к месяцу, и две
+    выгрузки можно сравнить глазом. Косая линия — «вернём столько же, сколько
+    платим»; чем ближе к ней точка, тем большая часть денег по номеру уходит
+    впустую. Итого по ${subs.length} ${plural(subs.length, 'номеру', 'номерам', 'номерам')}
+    — ${money(total)} в месяц${off ? `, из них ${off} ${plural(off, 'номер вышел', 'номера вышли', 'номеров вышли')} за шкалу (треугольники у края)` : ''}.
     Нажмите на точку, чтобы открыть карточку.</div>`;
   bindGoto(host);
 }
@@ -2473,7 +2635,18 @@ function renderCard(s) {
         <div class="user-sub">${esc(subtitle)}</div>
       </div>
       <div class="card-badges">
-        <span class="badge badge-${status.cls}">${status.label}</span>
+        <!-- В ЛАЙТЕ ПЕРВАЯ ПЛАШКА — ПРО ТАРИФ, А НЕ ПРО ЛИМИТ.
+             Здесь была плашка статуса, и на экране «кому понизить тариф»
+             у каждой второй карточки светилась «Норма». Формально верно —
+             статус считается по лимиту расхода, а не по размеру пакета, —
+             но читалось как «этого трогать не надо», то есть ровно
+             наоборот. Лайт открывают, чтобы узнать одно: сколько дадут
+             понижением. Это и пишем. -->
+        ${state.lite
+          ? `<span class="badge badge-accent" title="Пакет избыточен: ${
+              esc(s.recommendation.best ? s.recommendation.best.tariff_name : '')
+            } закрывает то же потребление дешевле">↓ ${money(s.saving)}/мес</span>`
+          : `<span class="badge badge-${status.cls}">${status.label}</span>`}
         ${USAGE_BADGE[s.usage_level] || ''}
         ${s.on_trip ? '<span class="badge badge-trip" title="В командировке">командировка</span>' : ''}
         ${chipColor ? `<span class="badge badge-chip" style="--chip:${esc(chipColor.hex)}"
@@ -3350,19 +3523,31 @@ const CHIP_RULE_KINDS = [
   {
     kind: 'color',
     title: 'Цвета', hint: 'У номера действует один. Красит карточку на главной.',
-    addLabel: '+ Цвет', addName: 'Новый цвет', badge: 'базовый',
+    addLabel: '+ Цвет', addName: 'Новый цвет',
     confirm: 'Удалить цвет? Номера с ним станут обычными.',
   },
   {
     kind: 'mark',
     title: 'Пометки',
     hint: 'Навешиваются поверх цвета, их может быть несколько. Приоритет ниже цвета.',
-    addLabel: '+ Пометка', addName: 'Новая пометка', badge: 'базовая',
+    addLabel: '+ Пометка', addName: 'Новая пометка',
     confirm: 'Удалить пометку? Она снимется со всех номеров.',
   },
 ];
 
 const CHIP_RULES_API = '/api/chip-rules';
+
+// «Обычный» — не правило, а признак «цвета нет»: на него ссылаются карточки
+// без цвета. Единственная строка, которую удалять нельзя (см.
+// queries.FALLBACK_COLOR).
+const FALLBACK_COLOR = 'normal';
+
+// Правила, которые навешиваются САМИ и снимаются тоже сами. Показываем их
+// иначе: удалять-то можно, а вот снять с конкретного номера мышью — нет,
+// признак придёт из данных заново.
+const AUTO_RULES = {
+  trip: 'Навешивается сама: период командировки пересёкся с расчётным месяцем.',
+};
 
 function renderChipRuleSettings(el) {
   el.innerHTML = `
@@ -3412,8 +3597,11 @@ function renderChipRuleSettings(el) {
               ${payerSelect('payer_overage', r.payer_overage)}
               ${payerSelect('payer_roaming', r.payer_roaming)}
               <input type="text" class="rule-limits" data-f="match_limits"
-                     value="${esc(r.match_limits || '')}" placeholder="490, 90…"
-                     title="Лимиты-признаки через запятую. Совпал лимит абонента — правило навесилось само">
+                     value="${esc(r.match_limits || '')}"
+                     ${AUTO_RULES[r.code]
+                       ? `disabled placeholder="авто" title="${esc(AUTO_RULES[r.code])}"`
+                       : 'placeholder="490, 90…" title="Лимиты-признаки через запятую.'
+                         + ' Совпал лимит абонента — правило навесилось само"'}>
               <input type="checkbox" data-f="is_self_paid"${r.is_self_paid ? ' checked' : ''}
                      title="Сотрудник платит за номер сам: номер уходит в свою группу списка и не даёт компании ни расхода, ни экономии">
               <input type="checkbox" data-f="is_excluded"${r.is_excluded ? ' checked' : ''}
@@ -3421,41 +3609,97 @@ function renderChipRuleSettings(el) {
               <input type="checkbox" data-f="is_unlimited"${r.is_unlimited ? ' checked' : ''}
                      title="Пакет безлимитный — перерасхода по нему не бывает">
               <span class="rule-count${counts[r.code] ? '' : ' is-zero'}">${counts[r.code] || 0}</span>
-              ${r.builtin ? `<span class="pill pill-muted">${k.badge}</span>`
-                : `<button class="rule-del" data-del="${esc(r.code)}" title="Удалить">✕</button>`}
+              ${r.code === FALLBACK_COLOR
+                ? `<button class="rule-del is-locked" type="button" disabled
+                     title="«Обычный» — это признак «цвета нет», а не правило. Переименовать и перекрасить можно, удалить нельзя">🔒</button>`
+                : `<button class="rule-del" type="button" data-del="${esc(r.code)}" title="Удалить">✕</button>`}
             </div>`).join('')}
         </div>
       </section>`;
     }).join('');
-
-    // Правка любого поля строки сразу летит на сервер: отдельной кнопки
-    // «сохранить» нет намеренно — она только плодит несохранённые состояния.
-    $$('.rule-row', el).forEach((row) => {
-      $$('input, select', row).forEach((input) => input.addEventListener('change', () => {
-        const source = state.chipRules.find((x) => x.code === row.dataset.code) || {};
-        const payload = { ...source, code: row.dataset.code, kind: row.dataset.kind };
-        $$('input, select', row).forEach((f) => {
-          payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
-        });
-        saveDictionary(CHIP_RULES_API, payload);
-      }));
-    });
-
-    $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
-      const kind = btn.closest('.rule-row').dataset.kind;
-      const k = CHIP_RULE_KINDS.find((x) => x.kind === kind);
-      if (!confirm(k.confirm)) return;
-      saveDictionary(`${CHIP_RULES_API}/delete`, { code: btn.dataset.del });
-    }));
-
-    $$('[data-add]', el).forEach((btn) => btn.addEventListener('click', () => {
-      const k = CHIP_RULE_KINDS.find((x) => x.kind === btn.dataset.add);
-      saveDictionary(CHIP_RULES_API, {
-        label: k.addName, kind: k.kind, hex: '#6b7a74', sort_order: 900,
-      });
-    }));
   };
+
+  // ОДИН ОБРАБОТЧИК НА КОНТЕЙНЕР, а не по паре на каждую строку.
+  //
+  // Так было: draw() перерисовывал таблицу и заново развешивал слушателей на
+  // каждое поле каждой строки — под три сотни подписок на два десятка правил.
+  // И развешивал он их по `el`, тогда как перерисовывал только внутренность
+  // `#chipRuleGroups`: любая перерисовка не по этому пути (а сохранение
+  // тянет за собой renderSettings) оставляла кнопки без обработчиков —
+  // ровно то самое «кнопка ничего не делает».
+  //
+  // Делегирование снимает оба вопроса разом: слушателя ровно два, и живут
+  // они на узле, который draw() не трогает.
+  const groups = $('chipRuleGroups');
+
+  groups.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-add]');
+    if (add) {
+      const k = CHIP_RULE_KINDS.find((x) => x.kind === add.dataset.add);
+      const before = new Set(state.chipRules.map((r) => r.code));
+      // Код НЕ шлём: пустой код — это «заведи новое правило». Раньше сервер
+      // выводил его из названия, оно у всех новых правил одинаковое, и второе
+      // нажатие молча перезаписывало первое правило вместо создания второго.
+      return saveDictionary(CHIP_RULES_API, {
+        label: k.addName, kind: k.kind, hex: '#6b7a74', sort_order: 900,
+      }, (data) => {
+        const fresh = (data.chip_rules || []).find((r) => !before.has(r.code));
+        newChipRule = fresh ? fresh.code : '';
+      });
+    }
+
+    const del = e.target.closest('[data-del]');
+    if (!del) return;
+    const k = CHIP_RULE_KINDS.find((x) => x.kind === del.closest('.rule-row').dataset.kind);
+    if (!confirm(k.confirm)) return;
+    saveDictionary(`${CHIP_RULES_API}/delete`, { code: del.dataset.del });
+  });
+
+  // Правка любого поля строки сразу летит на сервер: отдельной кнопки
+  // «сохранить» нет намеренно — она только плодит несохранённые состояния.
+  groups.addEventListener('change', (e) => {
+    const row = e.target.closest('.rule-row');
+    if (!row) return;
+    const source = state.chipRules.find((x) => x.code === row.dataset.code) || {};
+    const payload = { ...source, code: row.dataset.code, kind: row.dataset.kind };
+    $$('input, select', row).forEach((f) => {
+      payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
+    });
+    saveDictionary(CHIP_RULES_API, payload);
+  });
+
   draw();
+  // Правило только что завели — довести до него взгляд. Новое правило садится
+  // в конец своей группы, а групп две, и вторая обычно за краем экрана:
+  // человек нажимал «+ Пометка», строка появлялась ниже видимой области, и
+  // выглядело это как «кнопка не сработала».
+  if (newChipRule) {
+    const row = groups.querySelector(`.rule-row[data-code="${cssEsc(newChipRule)}"]`);
+    newChipRule = '';
+    flashRow(row);
+  }
+}
+
+// Код правила, заведённого последним нажатием «+ Цвет» / «+ Пометка».
+// Перерисовка идёт через renderSettings, то есть функция вызывается заново и
+// локальная переменная не переживёт — держим снаружи.
+let newChipRule = '';
+
+/** Экранирование строки для подстановки в селектор querySelector. */
+function cssEsc(value) {
+  return window.CSS && CSS.escape ? CSS.escape(value) : String(value).replace(/["\\]/g, '\\$&');
+}
+
+/** Подсветить только что появившуюся строку и прокрутить к ней. */
+function flashRow(row) {
+  if (!row) return;
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  row.classList.add('is-fresh');
+  // Через полторы секунды подсветка снимается сама: она нужна ровно на то
+  // время, пока глаз ищет, что изменилось.
+  setTimeout(() => row.classList.remove('is-fresh'), 1500);
+  const name = row.querySelector('[data-f="label"], [data-f="match_value"]');
+  if (name) name.focus();
 }
 
 /* ── Правила по услугам ──────────────────────────────────────────────────── */
@@ -3610,39 +3854,62 @@ async function renderRuleSettings(el) {
             <option value="employee"${r.payer === 'employee' ? ' selected' : ''}>сотрудник</option>
           </select>
           <input type="text" data-f="note" value="${esc(r.note || '')}" maxlength="200">
-          <button class="rule-del" data-del="${r.id}" title="Удалить">✕</button>
+          <button class="rule-del" type="button" data-del="${r.id}" title="Удалить">✕</button>
         </div>`).join('')}`;
-
-    $$('.rule-row', el).forEach((row) => {
-      $$('input, select', row).forEach((input) => input.addEventListener('change', () => {
-        const payload = { id: Number(row.dataset.id), match_kind: 'service' };
-        $$('input, select', row).forEach((f) => {
-          payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
-        });
-        saveRule(payload);
-      }));
-    });
-    $$('[data-del]', el).forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm('Удалить правило?')) return;
-      saveRule({ id: Number(btn.dataset.del) }, '/api/payment-rules/delete');
-    }));
   };
 
+  // Делегирование вместо подписки на каждое поле каждой строки — ровно по той
+  // же причине, что и в правилах номера: слушатели вешались на узлы, которые
+  // draw() тут же выбрасывал и создавал заново.
+  const rows = $('ruleRows');
+
+  rows.addEventListener('change', (e) => {
+    const row = e.target.closest('.rule-row');
+    if (!row) return;
+    const payload = { id: Number(row.dataset.id), match_kind: 'service' };
+    $$('input, select', row).forEach((f) => {
+      payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
+    });
+    saveRule(payload);
+  });
+
+  rows.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del]');
+    if (!del) return;
+    if (!confirm('Удалить правило?')) return;
+    saveRule({ id: Number(del.dataset.del) }, '/api/payment-rules/delete');
+  });
+
   const saveRule = async (payload, url = '/api/payment-rules') => {
+    const before = new Set(paymentRules.map((r) => r.id));
     try {
       const data = await postJSON(url, payload);
       paymentRules = data.rules || paymentRules;
       if (data.view) applyView(data.view);
       draw();
+      // Новое правило пустое: ни условия, ни пояснения. Среди трёх десятков
+      // заполненных строк его глазом не найти, поэтому подсвечиваем и ставим
+      // курсор прямо в поле условия — дописывать всё равно придётся.
+      const fresh = paymentRules.find((r) => !before.has(r.id));
+      if (fresh) flashRow(rows.querySelector(`.rule-row[data-id="${fresh.id}"]`));
       flashHint('Правило сохранено, отчёт пересчитан.');
     } catch (err) { flashHint(err.message, 'error'); }
   };
 
   draw();
-  $('ruleAdd').onclick = () => saveRule({
-    priority: 100, enabled: true, scope: 'options',
+  // ПРИОРИТЕТ НОВОГО ПРАВИЛА — ВЫШЕ ВСЕХ. Раньше здесь стояла жёсткая сотня,
+  // а встроенные правила сидят на 10…61 — свежая строка всегда падала в самый
+  // хвост таблицы, за нижний край окна настроек. Человек жал кнопку, на
+  // экране не менялось ничего, и правило считалось незаведённым.
+  //
+  // Наверху ему и место по смыслу: правила проверяются по возрастанию
+  // приоритета, а частное исключение, ради которого правило и заводят, должно
+  // побеждать общее корпоративное.
+  $('ruleAdd').addEventListener('click', () => saveRule({
+    priority: Math.max(1, Math.min(...paymentRules.map((r) => r.priority), 100) - 1),
+    enabled: true, scope: 'options',
     match_kind: 'service', match_value: '', payer: 'company', note: '',
-  });
+  }));
 }
 
 /* ── Командировки ────────────────────────────────────────────────────────── */
@@ -3785,10 +4052,17 @@ function drawSubscriberList() {
     // статуса, но статус ни на что не влиял; правило влияет на деньги, и
     // видеть его в списке абонентов куда полезнее.
     const stripe = ((s.payment || {}).color || {}).hex || '';
+    // Командировка из файла — не галочка, а факт из данных: снять её здесь
+    // нельзя, и притворяться, что можно, тоже. Поэтому она отдельной плашкой
+    // рядом с номером, а галочка остаётся про ручную отметку.
+    const byFile = s.on_trip && !s.is_business_trip;
     return `<div class="subscriber-item" data-number="${esc(s.number)}"
                  style="border-left-color:${esc(stripe || 'var(--border)')}">
       <div class="subscriber-info">
-        <div class="subscriber-number">${esc(formatPhone(s.number))}</div>
+        <div class="subscriber-number">${esc(formatPhone(s.number))}${
+          s.on_trip ? '<span class="badge badge-trip" title="Период командировки'
+            + ' пересекается с расчётным месяцем: роуминг переведён на компанию'
+            + '">командировка</span>' : ''}</div>
         <div class="subscriber-name">${esc(s.username || '—')}</div>
         <div class="subscriber-pos">${esc(s.position || '')}</div>
         <div class="subscriber-cost">начислено ${money(s.total)}${
@@ -3800,6 +4074,8 @@ function drawSubscriberList() {
             <input type="checkbox" class="trip-check" data-number="${esc(s.number)}"
                    ${s.is_business_trip ? 'checked' : ''}> В командировке
           </label>
+          ${byFile ? '<div class="trip-auto">отмечен по файлу командировок —'
+            + ' галочка не нужна</div>' : ''}
           <div class="trip-dates${s.is_business_trip ? ' active' : ''}">${
             s.is_business_trip ? tripDateInputs(s) : ''}</div>
         </div>
