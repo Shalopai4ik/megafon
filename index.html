@@ -96,6 +96,23 @@
 
 <div id="hint" class="hint" role="status" aria-live="polite"></div>
 
+<!-- ═══ СЧЁТ НЕ СХОДИТСЯ САМ С СОБОЙ ═══
+     Плашка сама не гаснет и живёт, пока её не закроют или пока не загрузят
+     сходящийся счёт. Обычная подсказка тут не годится: она исчезает через
+     четыре секунды, а числа на экране остаются неверными весь рабочий день.
+     role="alert" — чтобы её прочла программа экранного доступа. -->
+<div id="billAlert" class="bill-alert" role="alert" hidden>
+  <div class="bill-alert-head">
+    <span class="bill-alert-mark">✕</span>
+    <span class="bill-alert-title">Ошибка счёта</span>
+    <button type="button" id="billAlertClose" class="bill-alert-close"
+            aria-label="Скрыть предупреждение">✕</button>
+  </div>
+  <div class="bill-alert-text">Обратитесь с данной проблемой к технической
+    поддержке.</div>
+  <div class="bill-alert-facts" id="billAlertFacts"></div>
+</div>
+
 <div id="loading" class="loading-overlay" hidden>
   <div class="loading-box">
     <div id="loadingText" class="loading-text">Обработка файла…</div>

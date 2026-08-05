@@ -310,6 +310,10 @@ document.addEventListener('DOMContentLoaded', () => {
   on('statsBtn', 'click', openStats);
   on('settingsBtn', 'click', openSettings);
   on('liteBtn', 'click', () => setLite(!state.lite));
+  on('billAlertClose', 'click', () => {
+    billAlertDismissed = state.month || '-';
+    $('billAlert').hidden = true;
+  });
   on('liteExitBtn', 'click', () => setLite(false));
   on('monthSelect', 'change', (e) => loadMonth(e.target.value));
   bindMainMenu();
@@ -552,11 +556,72 @@ async function uploadFile(file, kind) {
 
     if (data.view) applyView(data.view);
     hideLoading();
+    // Счёт мог не сойтись сам с собой — тогда об этом говорим ОТДЕЛЬНО и
+    // навсегда, а не строчкой в общей сводке загрузки (см. showBillAlert).
+    if (isBill) showBillAlert(data.checksum);
     flashHint(uploadSummary(data, kind, file.name));
   } catch (err) {
     hideLoading();
     flashHint(`Не удалось обработать «${file.name}»: ${err.message}`, 'error', 7000);
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * СЧЁТ, КОТОРЫЙ НЕ СХОДИТСЯ САМ С СОБОЙ
+ *
+ *     Черемшу принимают на складе по весу, по счёту,
+ *     Наверху накладная: «сто сорок кило ровно».
+ *     Развязали мешки, перевесили каждый по одному —
+ *     Сто двадцать. И кладовщик глядит на тебя виновно.
+ *
+ *     Не спорь с кладовщиком, не ищи, кто из вас виноват:
+ *     Может, лист потеряли, а может, воз недовезли до места.
+ *     Твоё дело — не подписать накладную, покуда не сойдётся,
+ *     Потому что подпишешь — и недостача станет твоя.
+ *
+ * ЧТО ПРОВЕРЯЕТСЯ. Сервер складывает итоги всех абонентов и сравнивает с
+ * «Итого начислено» из шапки счёта (см. server._bill_checksum). Сошлось —
+ * файл целый. Не сошлось — на экране НЕ ТОТ счёт, по которому платят.
+ *
+ * ПОЧЕМУ ПЛАШКА, А НЕ ПОДСКАЗКА. Подсказка гаснет через четыре секунды, а
+ * неверные числа остаются на весь день. Здесь как раз тот случай, когда
+ * молчать дороже, чем мозолить глаз: по этим числам идут к руководителю.
+ * ═══════════════════════════════════════════════════════════════════════ */
+// Период, по которому плашку уже закрыли руками. Закрыл — не мозолим глаз до
+// конца сеанса, но при переключении на другой период показываем снова: там
+// свой счёт и своя сверка.
+let billAlertDismissed = '';
+
+function showBillAlert(checksum) {
+  const box = $('billAlert');
+  if (!box) return;
+
+  const c = checksum || {};
+  // Не проверяли (в шапке счёта своего итога не было) или сошлось — прячем.
+  if (!c.checked || c.ok) { box.hidden = true; return; }
+  // Новый разбор — плашка снова в силе, даже если её закрывали.
+  billAlertDismissed = '';
+
+  const facts = $('billAlertFacts');
+  if (facts) {
+    facts.innerHTML = `
+      В счёте указано <b>${money(c.declared)}</b>,
+      по абонентам набирается <b>${money(c.computed)}</b>,
+      расхождение <b>${money(Math.abs(c.diff))}</b>.
+      Абонентов в файле: ${c.subscribers}.`;
+  }
+  box.hidden = false;
+}
+
+/** Показать сверку по тому периоду, который открыт сейчас. */
+function refreshBillAlert() {
+  const box = $('billAlert');
+  if (!box) return;
+  if (billAlertDismissed && billAlertDismissed === state.month) {
+    box.hidden = true;
+    return;
+  }
+  showBillAlert((state.invoice || {}).checksum);
 }
 
 function uploadSummary(data, kind, fileName) {
@@ -741,6 +806,9 @@ function renderMain() {
   }
 
   toggle('welcomeSection', !hasData);
+  // Сверка итогов лежит в реквизитах периода, а значит переживает и
+  // обновление вкладки, и переключение месяца: счёт-то не сошёлся навсегда.
+  refreshBillAlert();
   if (lite) hideEverythingButCards(); else applyWidgetVisibility();
   toggle('liteBar', lite && hasData);
   // Отчёт CSV и общая статистика — про весь парк, в лайте им не место.
@@ -996,7 +1064,11 @@ function renderRankList() {
     <button class="rank-item" data-goto="${esc(s.number)}">
       <span class="rank-pos">${i + 1}</span>
       <span class="rank-name">${esc(s.username || formatPhone(s.number))}</span>
-      <span class="rank-val">−${money(s.saving)}</span>
+      <!-- БЕЗ МИНУСА. Здесь стоял «−1 234 ₽»: имелось в виду «счёт
+           уменьшится», а читалось «экономия минус тысяча» — то есть ровно
+           наоборот, да ещё зелёным цветом рядом со словом «Экономия».
+           Блок и так называется «Наибольшая экономия», знак тут лишний. -->
+      <span class="rank-val" title="Столько вернётся за месяц, если сменить тариф">${money(s.saving)}</span>
     </button>`).join('');
 
   bindGoto(el);
@@ -2745,7 +2817,8 @@ function renderCard(s) {
 
     <div class="rec-strip rec-${action.cls}">
       <span class="rec-badge">${action.icon} ${action.label}</span>
-      ${s.saving > 0 ? `<span class="rec-saving">−${money(s.saving)}/мес</span>` : ''}
+      ${s.saving > 0 ? `<span class="rec-saving"
+        title="Столько вернётся за месяц, если выполнить рекомендацию">${money(s.saving)}/мес</span>` : ''}
     </div>
 
     <div class="card-actions">
@@ -3067,7 +3140,7 @@ function tariffPicker(s, alts, rec) {
     </div>
     <div class="tp-cell tp-cell-${saving > 0 ? 'good' : 'muted'}">
       <span class="tp-cell-label">${saving > 0 ? 'Экономия' : 'Разница'}</span>
-      <span class="tp-cell-value">${saving > 0 ? `−${money(saving)}` : money(0)}</span>
+      <span class="tp-cell-value">${saving > 0 ? money(saving) : money(0)}</span>
       <span class="tp-cell-note">${saving > 0 ? 'в месяц' : 'текущий тариф оптимален'}</span>
     </div>
   </div>
