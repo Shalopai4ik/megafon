@@ -45,7 +45,17 @@ CREATE TABLE IF NOT EXISTS reports (
     -- всегда, а сопоставление с tariff_plans может не найтись) и итоги.
     tariff_name   TEXT DEFAULT '',
     total_charged DOUBLE PRECISION DEFAULT 0,
-    vat           DOUBLE PRECISION DEFAULT 0
+    vat           DOUBLE PRECISION DEFAULT 0,
+    -- ИЗ СКОЛЬКИХ БЛОКОВ СЧЁТА СОБРАНА ЭТА СТРОКА.
+    -- Обычно 1. Больше — значит, в файле один и тот же номер шёл несколькими
+    -- блоками: перенос на другой лицевой счёт, смена тарифа посреди периода.
+    -- Итоги таких блоков сложены (server._merge_segments), и вот это поле —
+    -- единственный след того, что сложение было. Без него на экране просто
+    -- стоит сумма вдвое больше привычной, и объяснить её нечем.
+    parts         INTEGER DEFAULT 1,
+    -- Расшифровка простым языком: «перенос номера: ЛС 190… — 200,00 ₽ +
+    -- ЛС 191… — 300,00 ₽». Пусто, когда блок был один.
+    parts_note    TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_reports_month ON reports (report_month);
 CREATE INDEX IF NOT EXISTS idx_reports_subscriber ON reports (subscriber_id);

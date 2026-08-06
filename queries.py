@@ -601,8 +601,15 @@ def _free_code(table: str, base: str) -> str:
 
 def save_report(number: str, month: str, items: list[dict[str, Any]], *,
                 report_date: str = "", plan_name: str = "",
-                total_charged: float = 0.0, vat: float = 0.0) -> None:
+                total_charged: float = 0.0, vat: float = 0.0,
+                parts: int = 1, parts_note: str = "") -> None:
     """Сохранить счёт абонента за месяц.
+
+    `parts` / `parts_note` — из скольких блоков выгрузки собран этот счёт и
+    почему их было несколько (перенос номера, смена тарифа). Обычно 1 и
+    пустая строка; подробности — в шапке раздела «ОДИН НОМЕР — ДВА БЛОКА В
+    ОДНОМ СЧЁТЕ» в server.py. Хранится вместе со счётом, а не считается на
+    лету: файл через месяц уже никто не найдёт, а объяснить сумму надо.
 
     Повторная загрузка того же месяца полностью заменяет прежние строки — так
     двойной загрузкой файла нельзя задвоить расходы. За это отвечает
@@ -625,15 +632,17 @@ def save_report(number: str, month: str, items: list[dict[str, Any]], *,
 
         conn.execute(
             "INSERT INTO reports (report_month, subscriber_id, report_date, "
-            "                     tariff_name, total_charged, vat) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "                     tariff_name, total_charged, vat, parts, parts_note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (subscriber_id, report_month) DO UPDATE SET "
             "  report_date   = excluded.report_date, "
             "  tariff_name   = excluded.tariff_name, "
             "  total_charged = excluded.total_charged, "
-            "  vat           = excluded.vat",
+            "  vat           = excluded.vat, "
+            "  parts         = excluded.parts, "
+            "  parts_note    = excluded.parts_note",
             (month, number, report_date or month, plan_name,
-             float(total_charged), float(vat)),
+             float(total_charged), float(vat), int(parts or 1), str(parts_note or "")),
         )
 
         # Старые строки убираем ПОСЛЕ вставки шапки: к этому моменту отчёт
@@ -697,7 +706,8 @@ def _bundles(where: str, params: tuple) -> list[dict[str, Any]]:
     """
     reports = db.query(
         f"SELECT id, subscriber_id, report_month, report_date, tariff_name, "
-        f"       total_charged, vat FROM reports {where} ORDER BY report_month, subscriber_id",
+        f"       total_charged, vat, parts, parts_note "
+        f"  FROM reports {where} ORDER BY report_month, subscriber_id",
         params,
     )
     if not reports:
@@ -729,6 +739,9 @@ def _bundles(where: str, params: tuple) -> list[dict[str, Any]]:
             "total_charged": float(total),
             "vat": r["vat"] or 0.0,
             "items": items,
+            # Счёт мог прийти несколькими блоками — это видно в карточке.
+            "parts": int(r["parts"] or 1),
+            "parts_note": r["parts_note"] or "",
         })
     return out
 
@@ -934,6 +947,13 @@ def _merge_bundles(bundles: dict[str, list[dict[str, Any]]], old: str, new: str)
                          + float(bundle.get("vat") or 0.0), 2),
             "plan_name": same.get("plan_name") or bundle.get("plan_name", ""),
             "merged_from": list(same.get("merged_from") or []) + [old],
+            # Каждый из двух счетов сам мог прийти несколькими блоками счёта
+            # (перенос, смена тарифа). Признак переносим, чтобы в карточке не
+            # пропало объяснение суммы; сама склейка номеров тут ни при чём —
+            # про неё говорит merged_from.
+            "parts": int(same.get("parts") or 1) + int(bundle.get("parts") or 1) - 1,
+            "parts_note": " · ".join(
+                n for n in (same.get("parts_note"), bundle.get("parts_note")) if n),
         }
     target.sort(key=lambda b: b["month"])
     bundles[new] = target
@@ -1715,6 +1735,72 @@ def save_chip(number: str, data: dict[str, Any]) -> dict[str, Any]:
                 "  (SELECT code FROM chip_rules WHERE kind = 'mark')", (number,))
             link([str(c) for c in (data["marks"] or []) if kinds.get(str(c)) == "mark"])
     return get_chip(number)
+
+
+def link_rules_bulk(pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """Навесить правила на номера СПИСКОМ. Разбор списка — server.parse_rule_links.
+
+    ЧТО ПРОИСХОДИТ С НОМЕРОМ:
+      * ЦВЕТ у номера один. Пришёл цвет — прежний снимается, встаёт новый.
+        Иначе на карточке оказалось бы два цвета, и какой из них красит —
+        решал бы порядок строк в файле.
+      * ПОМЕТКА добавляется К ИМЕЮЩИМСЯ. Пометок у номера сколько угодно, и
+        загрузка списка «кто платит сам» не должна снимать «командировку».
+
+    ЧЕГО ЗАГРУЗКА НЕ ДЕЛАЕТ: не снимает правила с номеров, которых в списке
+    нет. Список — это «навесь вот это», а не «пусть будет ровно так». Иначе
+    один неполный файл обнулил бы разметку всего парка, и восстановить её было
+    бы неоткуда.
+
+    ВСЁ ОДНОЙ ТРАНЗАКЦИЕЙ. Каждый выход в базу — отдельный запуск psql; на
+    списке в полторы тысячи строк поштучная запись считалась бы минутами.
+    """
+    if not pairs:
+        return {"applied": 0, "numbers": 0, "colors": 0, "marks": 0}
+
+    # Правила должны лежать в базе НАСТОЯЩИМИ строками: chip_rule_links
+    # ссылается на chip_rules внешним ключом, а до первой загрузки справочник
+    # живёт только в памяти (см. seeds.py). Обязательно ДО транзакции.
+    ensure_reference_data()
+    kinds = _rule_kinds()
+
+    # ЦВЕТ У НОМЕРА ОДИН, поэтому пары по цветам схлопываем: если в списке
+    # номер помечен цветом дважды, побеждает ПОСЛЕДНЯЯ строка — так же, как
+    # ведёт себя любая правка «сверху вниз». Без этого схлопывания оба цвета
+    # ложились в chip_rule_links, и какой из них красит карточку, решал уже
+    # порядок sort_order в справочнике, а не файл.
+    last_color: dict[str, str] = {}
+    for number, code in pairs:
+        if kinds.get(code) == "color":
+            last_color[number] = code
+    colors = sorted(last_color.items())
+    marks = [(number, code) for number, code in pairs
+             if kinds.get(code) == "mark"]
+    numbers = sorted({number for number, _ in pairs})
+
+    with db.transaction() as conn:
+        for number in numbers:
+            conn.execute(
+                "INSERT INTO chip_settings (number) VALUES (?) "
+                "ON CONFLICT (number) DO NOTHING", (number,))
+
+        # Цвет: сперва снять прежний, потом поставить новый.
+        for number, _ in colors:
+            conn.execute(
+                "DELETE FROM chip_rule_links WHERE number = ? AND rule_code IN "
+                "  (SELECT code FROM chip_rules WHERE kind = 'color')", (number,))
+        for number, code in colors:
+            # 'normal' — это признак «цвета нет», а не правило: связь по нему
+            # не заводится, номер и так остаётся обычным (см. FALLBACK_COLOR).
+            if code != FALLBACK_COLOR:
+                conn.execute("INSERT INTO chip_rule_links (number, rule_code) "
+                             "VALUES (?, ?) ON CONFLICT DO NOTHING", (number, code))
+        for number, code in marks:
+            conn.execute("INSERT INTO chip_rule_links (number, rule_code) "
+                         "VALUES (?, ?) ON CONFLICT DO NOTHING", (number, code))
+
+    return {"applied": len(colors) + len(marks), "numbers": len(numbers),
+            "colors": len(colors), "marks": len(marks)}
 
 
 def _payer(value: Any) -> str:

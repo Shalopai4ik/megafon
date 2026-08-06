@@ -549,6 +549,175 @@ def _split_records(lines: list[str], delim: str) -> list[str]:
     return out
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  ОДИН НОМЕР — ДВА БЛОКА В ОДНОМ СЧЁТЕ
+#
+#      Черемшу режут дважды: по ранней воде и по поздней,
+#      Первый пучок с косогора, второй уже из-под ели.
+#      Принёс два пучка, а бирку выправил только на поздний —
+#      И вышло, что с косогора будто и не ходили.
+#
+#      Не бирку смотри, а мешок, и клади на весы оба,
+#      Один корень — да срезов два, и каждый срез при своём.
+#      А коли пучок тот же самый лёг на весы дважды,
+#      Так это не два пучка. Это ты обсчитался, милок.
+#
+#  ЧТО СЛУЧИЛОСЬ. В счёте один и тот же абонентский номер встретился ДВУМЯ
+#  блоками: «Абонентский номер 9XXXXXXXXX» → услуги → «Итого начислено», и
+#  следом ещё раз он же. Так оператор показывает перенос номера на другой
+#  лицевой счёт и смену тарифа посреди периода: до события — один блок, после
+#  события — второй, каждый со своим итогом.
+#
+#  ПОЧЕМУ РАСХОДИЛОСЬ КОНЕЧНОЕ ЧИСЛО. Абоненты лежат в словаре по номеру,
+#  второй блок попадал в ту же запись. Строки начислений при этом
+#  НАКАПЛИВАЛИСЬ, а «Итого начислено» и НДС — ПЕРЕЗАПИСЫВАЛИСЬ. У номера
+#  оставался итог только последнего блока, первый пропадал целиком, и сумма
+#  по абонентам не сходилась с «Итого начислено» из шапки счёта ровно на
+#  потерянный кусок.
+#
+#  КАК СТАЛО. Каждый блок разбирается ОТДЕЛЬНО — это «часть счёта» (segment).
+#  У части свои строки, свой итог, свой НДС, свой тарифный план и свой лицевой
+#  счёт. Собираются части в конце разбора (_merge_segments): итоги
+#  складываются, строки сцепляются, тарифом номера считается план последней
+#  части — на нём человек и остался.
+#
+#  ПОВТОР ОДНОГО И ТОГО ЖЕ БЛОКА — НЕ ЧАСТЬ. Файл, склеенный из двух копий
+#  выгрузки, даёт дословно совпадающие блоки. Складывать их нельзя — расход
+#  удвоится. Часть с той же подписью (тариф + итог + НДС + строки) отбрасыва-
+#  ется, и об этом честно пишется в сводке загрузки.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Слова-приметы рядом с номером: чем оператор объясняет второй блок.
+# Ищем в схлопнутом тексте строки «Абонентский номер …», поэтому шаблоны
+# короткие. Первое совпадение выигрывает — порядок от частного к общему.
+_SEGMENT_REASONS: tuple[tuple[str, str], ...] = (
+    ("перенос", "перенос номера"),
+    ("переоформл", "переоформление"),
+    ("смена номера", "смена номера"),
+    ("смена тариф", "смена тарифа"),
+    ("смена", "смена"),
+    ("замена", "замена"),
+    ("расторж", "расторжение"),
+    ("подключ", "подключение"),
+    ("отключ", "отключение"),
+)
+
+
+def _segment_reason(line: str) -> str:
+    """Чем оператор подписал блок абонента: «перенос», «смена тарифа», …
+
+    Пусто — подписи нет. Тогда причину второго блока объясняем не словом из
+    файла, а тем, что видно самим: разошлись лицевые счета или тарифные планы
+    (см. _merge_segments).
+    """
+    lo = domain.squash(line)
+    # Сам номер из строки убираем: в нём попадаются цифры, но не слова, а
+    # длинные подписи оператора идут как раз после номера.
+    lo = re.sub(r"\d{9,15}", " ", lo)
+    for marker, label in _SEGMENT_REASONS:
+        if marker in lo:
+            return label
+    return ""
+
+
+def _blank_segment(account: str = "", reason: str = "") -> dict[str, Any]:
+    """Одна часть счёта: блок «Абонентский номер …» до следующего такого же."""
+    return {"account": account, "reason": reason, "plan_name": "",
+            "total_charged": 0.0, "vat": 0.0, "items": []}
+
+
+def _segment_signature(seg: dict[str, Any]) -> tuple:
+    """Подпись части — чтобы узнать дословный повтор блока.
+
+    В подпись входит всё, что вообще может отличаться у двух блоков одного
+    номера: лицевой счёт, тариф, итог, НДС и полный список строк начислений.
+    Совпало всё до копейки — это не вторая часть счёта, а второй экземпляр
+    первой (файл склеили из двух копий выгрузки).
+    """
+    return (seg["account"], seg["plan_name"],
+            round(seg["total_charged"], 2), round(seg["vat"], 2),
+            tuple((it["service"], it["raw_volume"], round(it["cost"], 2))
+                  for it in seg["items"]))
+
+
+def _merge_segments(sub: dict[str, Any]) -> None:
+    """Свести части счёта одного номера в одну запись. Правит sub на месте.
+
+    Пишет в запись абонента:
+        items / total_charged / vat / plan_fee — сложенные по всем частям;
+        plan_name  — план ПОСЛЕДНЕЙ части: на нём номер и остался;
+        parts      — сколько частей сложено (1 — обычный номер);
+        parts_note — расшифровка человеческим языком, она же уезжает в базу;
+        repeats    — сколько дословных повторов выброшено.
+    """
+    # ПУСТАЯ ЧАСТЬ — НЕ ЧАСТЬ, А ПОВТОР ЗАГОЛОВКА.
+    # Заголовок «Абонентский номер … / Тарифный план …» повторяется на каждой
+    # странице блока, а в выгрузках, собранных из PDF, блок бывает оборван на
+    # середине строки и начат заново. Денег в такой части нет ни копейки.
+    # Считать её второй частью счёта нельзя: номер получил бы приписку
+    # «перенос» на ровном месте (так вышло с 9115801234 в тестовой выгрузке).
+    filled = [seg for seg in sub["segments"]
+              if seg["items"] or seg["total_charged"] or seg["vat"]]
+    # Если содержимого нет ВООБЩЕ, оставляем первый заголовок: у номера может
+    # честно не быть начислений, а тарифный план из заголовка нам ещё нужен.
+    source = filled or sub["segments"][:1]
+
+    kept: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+    repeats = 0
+    for seg in source:
+        signature = _segment_signature(seg)
+        if signature in seen:
+            repeats += 1
+            continue
+        seen.add(signature)
+        kept.append(seg)
+
+    sub["segments"] = kept
+    sub["repeats"] = repeats
+    sub["parts"] = len(kept)
+    sub["items"] = [it for seg in kept for it in seg["items"]]
+    sub["total_charged"] = round(sum(seg["total_charged"] for seg in kept), 2)
+    sub["vat"] = round(sum(seg["vat"] for seg in kept), 2)
+    sub["plan_fee"] = round(sum(it["cost"] for it in sub["items"]
+                                if domain.is_plan_fee(it["service"])), 2)
+    # Тариф номера — из последней части, у которой он вообще указан.
+    sub["plan_name"] = next((seg["plan_name"] for seg in reversed(kept)
+                             if seg["plan_name"]), "")
+    sub["parts_note"] = _parts_note(kept) if len(kept) > 1 else ""
+
+
+def _parts_note(segments: list[dict[str, Any]]) -> str:
+    """Одна строка о том, из чего сложен счёт номера.
+
+    Пример: «перенос номера: ЛС 190000112064 — 200,00 ₽ + ЛС 190000998877 —
+    300,00 ₽». Читается и в карточке абонента, и в базе, поэтому без разметки.
+    """
+    accounts = {seg["account"] for seg in segments if seg["account"]}
+    plans = {seg["plan_name"] for seg in segments if seg["plan_name"]}
+
+    # Причина: сначала слово из самого счёта, иначе — то, что видно по данным.
+    reason = next((seg["reason"] for seg in segments if seg["reason"]), "")
+    if not reason:
+        reason = ("перенос между лицевыми счетами" if len(accounts) > 1
+                  else "смена тарифа" if len(plans) > 1
+                  else "номер идёт в счёте несколькими блоками")
+
+    # Подписываем части тем, чем они РЕАЛЬНО отличаются. Ставить всюду один и
+    # тот же лицевой счёт бессмысленно: читающий видит два одинаковых ЛС и
+    # решает, что программа задвоила блок.
+    def label(seg: dict[str, Any], nth: int) -> str:
+        if len(accounts) > 1 and seg["account"]:
+            return f"ЛС {seg['account']}"
+        if len(plans) > 1 and seg["plan_name"]:
+            return seg["plan_name"]
+        return f"часть {nth}"
+
+    parts = [f"{label(seg, i)} — {seg['total_charged']:.2f} ₽".replace(".", ",")
+             for i, seg in enumerate(segments, 1)]
+    return f"{reason}: " + " + ".join(parts)
+
+
 def parse_bill(text: str) -> dict[str, Any]:
     """Разобрать выгрузку счёта.
 
@@ -576,6 +745,11 @@ def parse_bill(text: str) -> dict[str, Any]:
     bill_month: str | None = None
     in_summary = False          # дошли ли до сводного блока по организации
     skipped, parsed_rows = 0, 0
+    # Лицевой счёт, под которым идут блоки прямо сейчас. В одном файле их
+    # бывает несколько, и именно между ними номер и «переносят»: тот же
+    # абонент второй раз, но уже на другом ЛС. Первый счёт из шапки в
+    # invoice['account_number'] уже лежит, но там он ОДИН — нам нужен текущий.
+    current_account = ""
 
     for raw_line in lines:
         line = raw_line.strip()
@@ -590,19 +764,33 @@ def parse_bill(text: str) -> dict[str, Any]:
         # и ложилась в расходы обычной услугой — расход абонента удваивался.
         lo = domain.squash(line)
 
+        # --- Под каким лицевым счётом идут блоки ----------------------------
+        # Не `continue`: строка «Cчёт №254-1;Лицевой счёт190000112064;за
+        # расчётный период…» несёт ещё и период, его разбирают ниже.
+        account = re.search(r"лицевой\s*сч[её]т\s*:?\s*№?\s*(\d{6,})", line, re.I)
+        if account:
+            current_account = account.group(1)
+
         # --- Начало блока абонента -----------------------------------------
+        # КАЖДЫЙ такой заголовок открывает НОВУЮ часть счёта, даже если номер
+        # уже встречался. Второй заголовок того же номера — это перенос или
+        # смена, и его начисления надо ПРИБАВИТЬ, а не затереть первыми
+        # (см. шапку раздела выше и _merge_segments).
         if "абонентский номер" in lo:
             m = re.search(r"(\d{9,15})", line)
             if m:
                 current = _normalize_number(m.group(1))
                 subscribers.setdefault(current, _blank_subscriber())
+                subscribers[current]["segments"].append(
+                    _blank_segment(account=current_account,
+                                   reason=_segment_reason(line)))
             continue
 
         # --- Тарифный план абонента ----------------------------------------
         if "тарифный план" in lo and current:
             quoted = re.search(r"[«\"](.+?)[»\"]", line)
             if quoted:
-                subscribers[current]["plan_name"] = quoted.group(1).strip()
+                subscribers[current]["segments"][-1]["plan_name"] = quoted.group(1).strip()
             month = month_from_date(line)
             if month:
                 subscribers[current]["month"] = month
@@ -660,19 +848,26 @@ def parse_bill(text: str) -> dict[str, Any]:
             continue
 
         sub = subscribers[current]
+        # Всё, что идёт после заголовка «Абонентский номер …», принадлежит
+        # ТЕКУЩЕЙ части счёта, а не абоненту целиком. Складывать части будет
+        # _merge_segments после разбора всего файла.
+        seg = sub["segments"][-1]
 
         # --- Итоговые строки -----------------------------------------------
+        # Присваивание, а не «+=»: «Итого начислено» повторяется на каждой
+        # странице блока, и сложение задвоило бы итог многостраничного номера.
+        # Итоги РАЗНЫХ частей складывает _merge_segments.
         if "итого начислено" in lo:
             row = _split_service_row(parts)
             if row:
-                sub["total_charged"] = row["cost"] or row["no_discount"]
+                seg["total_charged"] = row["cost"] or row["no_discount"]
             continue
         if "итого по услугам" in lo:
             continue
         if "ндс" in lo and "в т" in lo.replace("том числе", "т"):
             row = _split_service_row(parts)
             if row:
-                sub["vat"] = row["cost"] or row["no_discount"]
+                seg["vat"] = row["cost"] or row["no_discount"]
             continue
         if domain.is_meta(first):
             continue
@@ -682,10 +877,21 @@ def parse_bill(text: str) -> dict[str, Any]:
             skipped += 1
             continue
 
-        sub["items"].append(row)
+        seg["items"].append(row)
         parsed_rows += 1
-        if domain.is_plan_fee(row["service"]):
-            sub["plan_fee"] += row["cost"]
+
+    # ЧАСТИ СЧЁТА СКЛАДЫВАЮТСЯ ЗДЕСЬ, а не по ходу разбора: пока файл не
+    # дочитан, неизвестно, будет ли у номера второй блок и не окажется ли он
+    # дословным повтором первого. Отсюда же берутся items, plan_fee и итоги —
+    # до этой строки они у абонента пустые.
+    merged, repeated = [], 0
+    for number, sub in subscribers.items():
+        _merge_segments(sub)
+        repeated += sub["repeats"]
+        if sub["parts"] > 1:
+            merged.append({"number": number, "parts": sub["parts"],
+                           "note": sub["parts_note"],
+                           "total": sub["total_charged"]})
 
     # Месяц: из счёта, иначе — текущий.
     fallback_month = bill_month or invoice.get("month") or date.today().strftime("%Y-%m")
@@ -743,7 +949,13 @@ def parse_bill(text: str) -> dict[str, Any]:
         "subscribers": subscribers,
         "checksum": _bill_checksum(invoice, subscribers),
         "stats": {"rows": parsed_rows, "skipped": skipped,
-                  "subscribers": len(subscribers), "delimiter": delim},
+                  "subscribers": len(subscribers), "delimiter": delim,
+                  # Номера, пришедшие несколькими блоками (перенос, смена), и
+                  # выброшенные дословные повторы блоков. И то и другое надо
+                  # сказать вслух: иначе человек видит у номера двойной расход
+                  # (или недосчитывается его) и не понимает, откуда это.
+                  "blocks": sum(len(s["segments"]) for s in subscribers.values()),
+                  "merged": merged, "repeats": repeated},
     }
 
 
@@ -882,8 +1094,16 @@ def _bill_checksum(invoice: dict[str, Any],
 
 
 def _blank_subscriber() -> dict[str, Any]:
+    """Пустая запись абонента.
+
+    `segments` наполняет разбор, всё остальное — _merge_segments в самом
+    конце. До неё items и итоги намеренно пусты: раскладывать деньги по
+    абоненту, пока не дочитаны все его блоки, значит опять потерять один из
+    них (см. шапку раздела «ОДИН НОМЕР — ДВА БЛОКА В ОДНОМ СЧЁТЕ»).
+    """
     return {"items": [], "plan_fee": 0.0, "plan_name": "",
-            "total_charged": 0.0, "vat": 0.0, "month": ""}
+            "total_charged": 0.0, "vat": 0.0, "month": "",
+            "segments": [], "parts": 1, "parts_note": "", "repeats": 0}
 
 
 def _normalize_number(digits: str) -> str:
@@ -1546,6 +1766,120 @@ def parse_trips(text: str) -> dict[str, Any]:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  ПРАВИЛА НОМЕРОВ СПИСКОМ: «номер : название правила»
+#
+#      Пришёл на делянку — а она вся размечена колышками,
+#      Тут режь, тут не тронь, а вон там черемша не наша.
+#      Ходить с бумажкой от куста к кусту — до вечера не управишься,
+#      А делянка что вчера, что нынче: колышки те же самые.
+#
+#      Так перепиши разметку разом, одной тетрадкой,
+#      И не тычь пальцем в каждый куст по второму кругу.
+#      Только имена в тетрадке сверь со своими, а не со стороны:
+#      Чужое имя на колышке — и вырубишь ты не то.
+#
+#  ЗАЧЕМ. Правило номера («Личный тариф», «Платит сам», «Руководство») до сих
+#  пор вешалось мышью — по номеру за раз. А приходит оно списком: выгрузка из
+#  кадров, письмо от бухгалтерии, старая таблица. На парке в полторы тысячи
+#  номеров расставить их руками нельзя физически.
+#
+#  ФОРМАТ. Одна строка — одна пара «номер : название правила»:
+#
+#      9001234567: Личный тариф
+#      +7 900 123-45-67; Платит сам
+#      89001234567 | Руководство
+#      9001234567    Личный тариф
+#
+#  Разделителем считается первый из «:;|», табуляция или два пробела подряд.
+#  Одиночный пробел разделителем НЕ считается: названия правил из двух слов
+#  («Личный тариф») иначе разрубались бы пополам.
+#
+#  ПРАВИЛО ИЩЕТСЯ ПО НАЗВАНИЮ, а не по коду: в тетрадке у человека написано
+#  «Личный тариф», а не «personal». Названия сверяются схлопнуто — регистр,
+#  двойные пробелы и «ё» не мешают. Код тоже принимается: если в файле уже
+#  выгрузка из самой программы, она пишет коды.
+#
+#  ЧЕГО НЕ ДЕЛАЕМ. Не заводим правила, которых нет в справочнике. Новое
+#  правило само по себе не значит ничего — пока у него не проставлены
+#  плательщики, оно не двигает ни рубля, и молча созданная пустышка выглядела
+#  бы как «загрузилось, а денег не изменило». Незнакомые названия возвращаем
+#  списком: пусть человек заведёт их сам и загрузит список повторно.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Разделитель пары: «:», «;», «|», «,», табуляция или два пробела подряд.
+_RULE_PAIR_SPLIT = re.compile(r"\s*[:;|]\s*|\t+|\s{2,}|\s*,\s*")
+
+
+def parse_rule_links(text: str, rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """Разобрать список «номер : правило».
+
+    Возвращает {'pairs': [(номер, код правила)], 'unknown': [...],
+                'bad': [...], 'stats': {...}}.
+
+        unknown — названия правил, которых нет в справочнике;
+        bad     — строки, в которых не нашлось номера или названия.
+
+    И то и другое возвращается НАРУЖУ, а не глотается: «загружено 40 из 300»
+    без объяснения, где потерялись остальные, хуже, чем отказ целиком.
+    """
+    # Указатель «как это назвали» → код правила. Кладём и название, и код:
+    # список приходит и от человека (названия), и из самой программы (коды).
+    by_name: dict[str, str] = {}
+    for rule in rules:
+        by_name.setdefault(domain.squash(rule.get("label")), rule["code"])
+        by_name.setdefault(domain.squash(rule.get("code")), rule["code"])
+
+    pairs: list[tuple[str, str]] = []
+    unknown: dict[str, int] = {}
+    bad: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.strip().strip('"').strip()
+        if not line or line.startswith("#"):
+            continue
+
+        chunks = [c.strip().strip('"').strip() for c in _RULE_PAIR_SPLIT.split(line)]
+        chunks = [c for c in chunks if c]
+        if len(chunks) < 2:
+            bad.append(line)
+            continue
+
+        # Номер — первый кусок, в котором ровно 10–11 цифр. Правило — всё
+        # остальное, склеенное обратно: в названии может быть и запятая
+        # («Платит сам, взнос 490»), а она у нас разделитель.
+        number, rest = "", []
+        for chunk in chunks:
+            digits = re.sub(r"\D", "", chunk)
+            if not number and 10 <= len(digits) <= 11 and _is_mobile(
+                    _normalize_number(digits)):
+                number = _normalize_number(digits)
+                continue
+            rest.append(chunk)
+        name = ", ".join(rest).strip()
+        if not number or not name:
+            bad.append(line)
+            continue
+
+        code = by_name.get(domain.squash(name))
+        if not code:
+            unknown[name] = unknown.get(name, 0) + 1
+            continue
+        if (number, code) not in seen:
+            seen.add((number, code))
+            pairs.append((number, code))
+
+    return {
+        "pairs": pairs,
+        "unknown": [{"name": n, "count": c} for n, c in
+                    sorted(unknown.items(), key=lambda kv: -kv[1])],
+        "bad": bad[:20],          # длинный список битых строк никто не читает
+        "stats": {"pairs": len(pairs), "numbers": len({n for n, _ in pairs}),
+                  "unknown": sum(unknown.values()), "bad": len(bad)},
+    }
+
+
 def apply_roster(parsed: dict[str, Any]) -> dict[str, Any]:
     """Записать разобранный список в хранилище.
 
@@ -1608,6 +1942,11 @@ def apply_bill(parsed: dict[str, Any]) -> dict[str, Any]:
                 plan_name=sub["plan_name"],
                 total_charged=sub["total_charged"],
                 vat=sub["vat"],
+                # Сколько блоков счёта сложено в эту строку и почему их было
+                # несколько. Признак живёт вместе со счётом: файл через месяц
+                # никто не найдёт, а объяснять сумму придётся.
+                parts=sub.get("parts", 1),
+                parts_note=sub.get("parts_note", ""),
             )
             saved += 1
 
@@ -1752,6 +2091,11 @@ def _build_one(number: str, bundle: dict[str, Any], *, data: dict[str, Any],
     # Из каких прежних номеров склеена запись. Молчать об этом нельзя: человек
     # увидит расход вдвое больше привычного и решит, что программа врёт.
     record["merged_from"] = list(bundle.get("merged_from") or [])
+    # Из скольких блоков ОДНОГО И ТОГО ЖЕ номера сложен счёт (перенос, смена
+    # тарифа посреди периода). Это не то же, что merged_from: там сведены
+    # РАЗНЫЕ номера одного человека, здесь — один номер, разбитый счётом надвое.
+    record["bill_parts"] = int(bundle.get("parts") or 1)
+    record["bill_parts_note"] = bundle.get("parts_note") or ""
     return record
 
 
@@ -2021,6 +2365,11 @@ def build_subscriber_view(number: str, month: str | None = None) -> dict[str, An
     record["category_history"] = queries.category_rows(bundles)
     record["trend"] = _trend_percent(record["history"], bundle["month"])
     record["months"] = [b["month"] for b in bundles]
+    # Тот же признак, что и в списочном отчёте (_build_one): счёт номера мог
+    # быть сложен из нескольких блоков выгрузки. Поля обязаны совпадать —
+    # разъедься они, карточка и список объясняли бы одну сумму по-разному.
+    record["bill_parts"] = int(bundle.get("parts") or 1)
+    record["bill_parts_note"] = bundle.get("parts_note") or ""
     return record
 
 
@@ -2481,6 +2830,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Ответ у всех одинаковый по смыслу: обновлённый справочник плюс
         # пересчитанный отчёт — правка справочника меняет деньги, и клиенту
         # нужны сразу обе половины.
+        # ── Правила номеров СПИСКОМ: «номер : название правила» ──────────
+        # Отдельной ручкой, а не через _DICT_ENDPOINTS: там правят САМ
+        # справочник (завести цвет, переименовать пометку), а здесь —
+        # привязку правил к номерам. Разные таблицы и разный ответ.
+        if path == "/api/chip-rules/bulk":
+            payload = self._read_json()
+            if not isinstance(payload, dict):
+                raise ValueError("Ожидается объект со списком правил")
+            text = str(payload.get("text") or "")
+            if not text.strip():
+                return self._error(400, "Список пуст — нечего загружать")
+            parsed = parse_rule_links(text, queries.get_chip_rules())
+            result = queries.link_rules_bulk(parsed["pairs"])
+            return self._json(200, {
+                **result,
+                "unknown": parsed["unknown"],
+                "bad": parsed["bad"],
+                "stats": parsed["stats"],
+                # Правила могли навеситься на номера — деньги перераспределились.
+                "view": self._fresh_view() if result["applied"] else None,
+            })
+
         spec = _DICT_ENDPOINTS.get(path.removesuffix("/delete"))
         if spec is not None:
             payload = self._read_json() or {}

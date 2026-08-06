@@ -626,8 +626,22 @@ function uploadSummary(data, kind, fileName) {
 function uploadSummaryText(data, kind, fileName) {
   if (kind === 'bill') {
     const s = data.stats || {};
+    // Номера, пришедшие в счёте несколькими блоками (перенос номера, смена
+    // тарифа посреди периода), и выброшенные дословные повторы блоков.
+    // Про оба случая говорим вслух: в первом сумма номера СЛОЖЕНА из двух, во
+    // втором — наоборот, лишний блок не посчитан. Промолчи — и человек будет
+    // сверять экран со счётом построчно, не понимая, кто из них врёт.
+    const merged = (s.merged || []).length;
+    const parts = merged
+      ? `, склеено по номеру из нескольких блоков — ${merged} `
+        + `${plural(merged, 'номер', 'номера', 'номеров')} (перенос или смена)`
+      : '';
+    const repeats = s.repeats
+      ? `, отброшено повторов блоков — ${s.repeats}`
+      : '';
     return `Счёт «${fileName}» загружен: ${data.saved} абонентов, `
-      + `${s.rows || 0} строк начислений, период ${formatMonth(data.month)}.`;
+      + `${s.rows || 0} строк начислений${parts}${repeats}, `
+      + `период ${formatMonth(data.month)}.`;
   }
   if (kind === 'trips') {
     const s = data.stats || {};
@@ -2783,6 +2797,12 @@ function renderCard(s) {
           title="Сюда сведены счета прежних номеров: ${
             s.merged_from.map((n) => esc(formatPhone(n))).join(', ')
           }. Расход, история и лимит показаны по человеку целиком">номер изменён</span>` : ''}
+        <!-- Тот же номер пришёл в счёте несколькими блоками (перенос на другой
+             лицевой счёт, смена тарифа посреди периода). Итоги блоков сложены,
+             и об этом надо сказать ровно там же, где показана сумма. -->
+        ${(s.bill_parts || 1) > 1 ? `<span class="badge badge-merged"
+          title="${esc(s.bill_parts_note || '')}. Итоги всех частей сложены в один счёт">счёт из ${
+            s.bill_parts} ${plural(s.bill_parts, 'части', 'частей', 'частей')}</span>` : ''}
         ${chipColor ? `<span class="badge badge-chip" style="--chip:${esc(chipColor.hex)}"
           title="${esc(chipColor.label)} — правило применено">${esc(chipColor.label)}</span>` : ''}
         ${pay.self_paid ? `<span class="badge badge-self"
@@ -2960,6 +2980,10 @@ function billBreakdown(s, opts = {}) {
     ${Math.abs(s.total - sum) > 1 ? `<div class="panel-hint warn">Сумма показанных строк
       ${money(sum)} расходится с «Итого начислено» из счёта на
       ${money(Math.abs(s.total - sum))} — на экране сумма из счёта.</div>` : ''}
+    ${(s.bill_parts || 1) > 1 ? `<div class="panel-hint">В счёте этот номер разбит
+      на <b>${s.bill_parts} ${plural(s.bill_parts, 'часть', 'части', 'частей')}</b> —
+      их итоги сложены, иначе на экране была бы только последняя.
+      ${esc(s.bill_parts_note || '')}</div>` : ''}
     ${opts.hint === false ? '' : `<div class="panel-hint">Полоса — доля строки в счёте номера.
       «Покрыто пакетом» значит, что объём израсходован, но денег за него не списано.</div>`}
   </div>`;
@@ -3694,7 +3718,8 @@ function renderChipRuleSettings(el) {
       <br>«Лимиты» — суммы из списка работников, по которым правило навешивается
       САМО: совпал лимит абонента с одним из чисел — правило сработало, отмечать
       номера руками не нужно. Несколько значений пишите через запятую.</div>
-    <div id="chipRuleGroups"></div>`;
+    <div id="chipRuleGroups"></div>
+    ${bulkRuleForm()}`;
 
   const draw = () => {
     // Считаем, сколько номеров носит каждое правило — админу важно видеть,
@@ -3814,6 +3839,131 @@ function renderChipRuleSettings(el) {
     newChipRule = '';
     flashRow(row);
   }
+
+  bindBulkRuleForm();
+}
+
+/* ── ПРАВИЛА НОМЕРОВ СПИСКОМ ────────────────────────────────────────────────
+ *
+ *     Пришёл на делянку — а она вся размечена колышками,
+ *     Тут режь, тут не тронь, а вон там черемша не наша.
+ *     Ходить с бумажкой от куста к кусту — до вечера не управишься,
+ *     А делянка что вчера, что нынче: колышки те же самые.
+ *
+ *     Так перепиши разметку разом, одной тетрадкой,
+ *     И не тычь пальцем в каждый куст по второму кругу.
+ *     Только имена в тетрадке сверь со своими, а не со стороны:
+ *     Чужое имя на колышке — и вырубишь ты не то.
+ *
+ * ЗАЧЕМ. Правило вешалось мышью — по номеру за раз. А приходит оно списком:
+ * выгрузка из кадров, письмо от бухгалтерии, старая таблица. На парке в
+ * полторы тысячи номеров расставить их руками нельзя физически.
+ *
+ * ДВА СПОСОБА ПРИНЕСТИ СПИСОК — вставить в поле и выбрать файл. Файл читается
+ * ЗДЕСЬ, в браузере, и просто ложится в то же поле: так человек видит, что
+ * именно он сейчас отправит, и может поправить перед отправкой. Отдельной
+ * ручки загрузки файла для этого не нужно.
+ *
+ * Разбор — server.parse_rule_links, запись — queries.link_rules_bulk. Там же
+ * объяснено, почему незнакомые названия не заводятся сами.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+// Итог последней загрузки списка. Держим СНАРУЖИ функции: после загрузки
+// вкладка перерисовывается целиком (счётчик «Номеров» у каждого правила
+// считается по отчёту, а отчёт только что приехал заново), и всё, что лежало
+// в разметке, пропадает. А отчёт о загрузке — единственное место, где сказано,
+// какие строки не легли и почему; терять его нельзя.
+let bulkRulesLast = null;
+
+function bulkRuleForm() {
+  return `
+    <div class="settings-section-title">Загрузить правила списком</div>
+    <div class="settings-note">Строка — пара «номер и название правила»:
+      <code>9001234567: Личный тариф</code>. Разделителем годятся «:», «;»,
+      «|», запятая, табуляция или два пробела. Номер в любом виде —
+      <code>+7&nbsp;900…</code>, <code>8&nbsp;900…</code>, просто десять цифр.
+      <br>Цвет у номера заменяется, пометка добавляется к тем, что уже стоят.
+      Правила, которых нет в списке, ни с кого не снимаются — сначала заведите
+      правило в таблице выше, потом грузите список.</div>
+    <div class="bulk-rules">
+      <textarea id="bulkRulesText" class="bulk-rules-text" rows="6" spellcheck="false"
+        placeholder="9001234567: Личный тариф&#10;9007654321; Платит сам&#10;+7 900 111-22-33 | Руководство"></textarea>
+      <div class="bulk-rules-actions">
+        <input type="file" id="bulkRulesFile" accept=".txt,.csv,.tsv,text/plain" hidden>
+        <button class="btn btn-soft btn-sm" id="bulkRulesPick">Выбрать файл</button>
+        <button class="btn btn-primary" id="bulkRulesApply">Загрузить список</button>
+      </div>
+      <div id="bulkRulesResult" class="bulk-rules-result"${bulkRulesLast ? '' : ' hidden'}>${
+        bulkRulesLast ? bulkRulesReport(bulkRulesLast) : ''}</div>
+    </div>`;
+}
+
+function bindBulkRuleForm() {
+  const area = $('bulkRulesText');
+  const file = $('bulkRulesFile');
+  const out = $('bulkRulesResult');
+  if (!area) return;
+
+  $('bulkRulesPick').addEventListener('click', () => file.click());
+  file.addEventListener('change', async () => {
+    const chosen = file.files && file.files[0];
+    if (!chosen) return;
+    try {
+      area.value = await chosen.text();
+      flashHint(`Файл «${chosen.name}» прочитан — проверьте список и нажмите «Загрузить».`);
+    } catch (err) {
+      flashHint(`Не удалось прочитать файл: ${err.message}`, 'error');
+    }
+    // Сбрасываем выбор: иначе повторный выбор ТОГО ЖЕ файла не даёт события
+    // change, и кнопка выглядит сломанной.
+    file.value = '';
+  });
+
+  $('bulkRulesApply').addEventListener('click', async () => {
+    const text = area.value.trim();
+    if (!text) return flashHint('Список пуст — вставьте строки или выберите файл', 'error');
+    try {
+      const data = await postJSON('/api/chip-rules/bulk', { text });
+      if (data.view) applyView(data.view);
+      bulkRulesLast = data;
+      // Перерисовываем вкладку целиком: счётчик «Номеров» у каждого правила
+      // считается по отчёту, а отчёт только что приехал заново. Сам итог
+      // загрузки переживёт перерисовку — он лежит в bulkRulesLast.
+      renderSettings();
+      flashHint(`Правила навешены: ${data.applied} на ${data.numbers} `
+        + `${plural(data.numbers, 'номер', 'номера', 'номеров')}.`);
+    } catch (err) {
+      out.hidden = false;
+      out.innerHTML = `<div class="panel-hint warn">Не удалось загрузить: ${esc(err.message)}</div>`;
+    }
+  });
+}
+
+/** Отчёт о загрузке: что легло, а что нет и почему. */
+function bulkRulesReport(data) {
+  const s = data.stats || {};
+  const lines = [`<div class="panel-hint">Навешено правил: <b>${data.applied}</b>`
+    + ` на ${data.numbers} ${plural(data.numbers, 'номер', 'номера', 'номеров')}`
+    + (data.colors ? `, цветов ${data.colors}` : '')
+    + (data.marks ? `, пометок ${data.marks}` : '')
+    + '.</div>'];
+
+  // НЕЗАГРУЖЕННОЕ ПОКАЗЫВАЕМ ПОИМЁННО. «Загружено 40 из 300» без объяснения,
+  // где потерялись остальные, хуже, чем отказ целиком: человек не знает, что
+  // чинить, и грузит тот же файл заново.
+  if ((data.unknown || []).length) {
+    lines.push(`<div class="panel-hint warn">Таких правил в справочнике нет —
+      строки пропущены (${s.unknown}). Заведите правило в таблице выше с точно
+      таким названием и загрузите список ещё раз:<br>${
+        data.unknown.map((u) => `<b>${esc(u.name)}</b> — ${u.count} `
+          + `${plural(u.count, 'строка', 'строки', 'строк')}`).join('; ')}</div>`);
+  }
+  if ((data.bad || []).length) {
+    lines.push(`<div class="panel-hint warn">Не разобрано строк: ${s.bad}. В них
+      не нашлось либо номера, либо названия правила. Например:<br>${
+        data.bad.slice(0, 5).map((b) => `<code>${esc(b)}</code>`).join('<br>')}</div>`);
+  }
+  return lines.join('');
 }
 
 // Код правила, заведённого последним нажатием «+ Цвет» / «+ Пометка».
