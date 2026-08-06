@@ -526,7 +526,11 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     свои цифры, иначе переключатель показывает карточки без итогов.
     """
     counted = company_records(records)
-    excluded = sum(1 for r in records if is_excluded(r))
+    # Исключённые — отдельная ГРУППА СПИСКА, а не просто счётчик. Значит нужна
+    # и её сумма: группу показывают на экране, и группа без итога — это
+    # карточки, про которые нельзя сказать, сколько там денег.
+    excluded_records = [r for r in records if is_excluded(r)]
+    excluded = len(excluded_records)
     self_paid = [r for r in records if is_self_paid(r) and not is_excluded(r)]
 
     company = sum(float(r["payment"]["company_pays"]) for r in counted)
@@ -550,6 +554,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "limit_reserve": round(reserve, 2),
         "company_by_bucket": {k: round(v, 2) for k, v in by_bucket.items()},
         "excluded_count": excluded,
+        "excluded_total": round(sum(float(r["total"]) for r in excluded_records), 2),
         "counted": len(counted),
         # Группа «платят сами за себя» — для переключателя над списком.
         "self_paid_count": len(self_paid),

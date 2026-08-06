@@ -413,33 +413,49 @@ function renderPayerTabs() {
   const panel = $('payerTabs');
   if (!panel) return;
 
-  const all = state.subscribers.length;
-  const self = state.subscribers.filter(isSelfPaid).length;
-  setText('payerCountAll', all);
-  setText('payerCountCompany', all - self);
+  // Считаем ТОЙ ЖЕ функцией, что отбирает карточки (inPayerGroup): число на
+  // кнопке и длина списка под ней обязаны сходиться. Исключённый номер в две
+  // группы сразу не попадёт — иначе счётчики в сумме дали бы больше, чем
+  // номеров в парке.
+  const count = (group) => state.subscribers.filter((s) => inPayerGroup(s, group)).length;
+  const off = count('excluded');
+  const self = count('self');
+  setText('payerCountAll', count('all'));
+  setText('payerCountCompany', count('company'));
   setText('payerCountSelf', self);
+  setText('payerCountExcluded', off);
 
-  $$('.payer-tab', panel).forEach((b) =>
-    b.classList.toggle('active', b.dataset.payer === state.payer));
-
-  // Пока самоплатящих нет, переключатель только мешает: две группы из трёх
-  // пустые. Прячем его целиком и показываем весь список.
-  panel.hidden = self === 0;
+  // ВЫБОР ПОПРАВЛЯЕМ ДО ПОДСВЕТКИ, а не после. Группа, которую только что
+  // опустошили (сняли последнюю пометку), не должна остаться выбранной: на
+  // экране будет пусто, а почему — непонятно. Раньше это стояло ниже, и
+  // подсветка на один проход оставалась на кнопке, которой уже нет.
   if (self === 0 && state.payer === 'self') state.payer = 'company';
+  if (off === 0 && state.payer === 'excluded') state.payer = 'company';
+
+  $$('.payer-tab', panel).forEach((b) => {
+    b.classList.toggle('active', b.dataset.payer === state.payer);
+    // Пустую группу не показываем вовсе: пустая вкладка выглядит поломкой.
+    // «Все» и «Платит компания» есть всегда.
+    if (b.dataset.payer === 'self') b.hidden = self === 0;
+    if (b.dataset.payer === 'excluded') b.hidden = off === 0;
+  });
+
+  // Пока нет ни самоплатящих, ни исключённых, переключатель только мешает:
+  // все группы, кроме одной, пустые. Прячем его целиком.
+  panel.hidden = self === 0 && off === 0;
 
   // Подпись объясняет расхождение, которое иначе выглядит как ошибка: в
-  // группе «Платит компания» номеров больше, чем в KPI сверху. Исключённые
-  // остаются в списке — иначе снять с них пометку было бы нечем, — но в
-  // сводки не идут.
+  // группе «Платит компания» номеров меньше, чем всего в парке.
   const ps = state.paymentSummary;
   const note = [];
   if (self && ps) {
     note.push(`сотрудники вносят за себя ${money(ps.self_paid_total)}`
       + ' — в расходы и экономию компании это не входит');
   }
-  if (ps && ps.excluded_count) {
-    note.push(`${ps.excluded_count} ${plural(ps.excluded_count, 'номер', 'номера', 'номеров')}`
-      + ' помечены «не учитывать»: в списке видны, в сводках — нет');
+  if (off && ps) {
+    note.push(`${off} ${plural(off, 'номер', 'номера', 'номеров')} в группе`
+      + ` «Не считаем»${ps.excluded_total ? ` на ${money(ps.excluded_total)}` : ''}`
+      + ' — ни в одну цифру над списком они не входят');
   }
   setText('payerTabsNote', note.join(' · '));
 }
@@ -447,6 +463,60 @@ function renderPayerTabs() {
 /** Платит ли сотрудник за номер сам. Считает сервер, здесь только читаем. */
 function isSelfPaid(s) {
   return !!(s.payment || {}).self_paid;
+}
+
+/**
+ * Номер из группы «Не считаем» — за него ТОЧНО не считаем и его ТОЧНО не
+ * учитываем.
+ *
+ *     Черемшу берут не всю, что на делянке выросла:
+ *     Эта под трактором мятая, ту собака метила, а вон та вовсе не та.
+ *     Их не в кузов кладут и не на весы, но и не выбрасывают —
+ *     Кладут отдельно, с краю. Чтоб рука второй раз не потянулась.
+ *
+ * ПОЧЕМУ ОТДЕЛЬНАЯ ГРУППА, А НЕ ПРОСТО ПОМЕТКА. Пометка «не учитывать» и
+ * раньше убирала номер из всех сводок, но сам он оставался лежать в общем
+ * списке — среди тех, за кого компания платит. Выглядело это так: в KPI одно
+ * число, в списке под ним другое, и объяснить разницу нечем.
+ *
+ * ПОЧЕМУ НЕ ПРЯЧЕМ СОВСЕМ. Спрятанный номер нельзя вернуть: снять пометку не с
+ * чего. Поэтому группа своя, видимая и в один щелчок доступная.
+ *
+ * ЧЕМ ЗАДАЁТСЯ СОСТАВ. Признаком «Искл.» у правила номера (Настройки →
+ * Правила номеров). Значит группа настолько же гибкая, насколько и правила:
+ * признак вешают на любое правило, правило — на любой номер мышью в «⚙» или
+ * списком через «Загрузить правила списком». Отдельного справочника «кого не
+ * считать» нарочно нет — он был бы третьим местом, где хранится одно и то же.
+ */
+function isExcluded(s) {
+  return !!(s.payment || {}).excluded;
+}
+
+/**
+ * Входит ли номер в группу переключателя.
+ *
+ * ЕДИНСТВЕННОЕ МЕСТО, ГДЕ ЭТО РЕШАЕТСЯ. По этой же функции считаются число на
+ * кнопке группы, знаменатель «N из M» над списком и сам отбор карточек. Пока
+ * правило было расписано в трёх местах, оно и разъезжалось: на кнопке одно
+ * число, в списке другое, и понять, кто из них врёт, было нечем.
+ *
+ * ПОРЯДОК ПРОВЕРОК ВАЖЕН. «Не считаем» сильнее всех: номер оттуда не всплывает
+ * ни у компании, ни у самоплатящих, даже если он помечен и тем и другим.
+ * В «Все номера» видно всех — это ровно тот случай, когда человек хочет
+ * посмотреть парк целиком, ничего не отсеивая.
+ *
+ * НЕЗНАКОМОЕ ИМЯ ГРУППЫ РАВНО «ВСЕМ», и это не придирка: имя приезжает из
+ * разметки кнопки и переживает перезагрузку вкладки. Стоит когда-нибудь
+ * переименовать группу — и номера начнут молча пропадать с экрана. Пусть уж
+ * лучше покажется лишнее: пропажу заметить нечем, а лишнее видно сразу.
+ */
+const PAYER_GROUPS = new Set(['company', 'self', 'excluded']);
+
+function inPayerGroup(s, group) {
+  if (!PAYER_GROUPS.has(group)) return true;         // «Все номера»
+  if (isExcluded(s)) return group === 'excluded';
+  if (group === 'excluded') return false;
+  return group === 'self' ? isSelfPaid(s) : !isSelfPaid(s);
 }
 
 function bindUpload(buttonId, inputId, handler) {
@@ -464,6 +534,139 @@ function bindUpload(buttonId, inputId, handler) {
 function debounce(fn, ms) {
   let timer = null;
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * ПЕРЕРИСОВКА, КОТОРАЯ НЕ ВЫБРАСЫВАЕТ НАВЕРХ
+ *
+ *     Пришёл на делянку, дошёл до дальнего края,
+ *     Нагнулся к кусту, срезал, разогнулся — а ты у ворот.
+ *     И так двадцать раз: срезал пучок — и обратно к воротам,
+ *     К вечеру ног нет, а в кузове три пучка черемши.
+ *
+ *     Не поле виновато и не спина твоя, милок,
+ *     А тот, кто тропу за тобой каждый раз заново стелет.
+ *     Раз уж встал человек на своё место — там его и оставь,
+ *     А правь то, что поправить просили. Вот и вся недолга.
+ *
+ * ЧТО БЫЛО. Любая правка — выбрал плательщика в выпадающем списке, щёлкнул
+ * правило в карточке, включил блок в виджетах — уходила на сервер, сервер
+ * возвращал пересчитанный отчёт, а мы перерисовывали ЦЕЛИКОМ тот кусок, где
+ * человек в этот момент стоял. Прокрутка при этом сбрасывается в ноль: и у
+ * окна настроек (`.settings-content` — свой прокручиваемый блок), и у главного
+ * экрана. Со стороны это ровно то самое «выбрал пункт — перекинуло обратно».
+ * Заодно из-под курсора улетал фокус, а из полей — набранный текст.
+ *
+ * ЧТО СТАЛО. Перерисовка обёрнута: до неё запоминаем, где человек стоял и в
+ * каком поле держал курсор, после — возвращаем. Обёртка одна на все разделы,
+ * поэтому разъехаться они не могут.
+ *
+ * ПОЧЕМУ НЕ «ПРОСТО НЕ ПЕРЕРИСОВЫВАТЬ». Кое-где перерисовка нужна по делу:
+ * правило меняет суммы во всех карточках, счётчик «Номеров» в таблице правил
+ * считается по отчёту. Отказаться от неё значит показывать старые числа.
+ *
+ * АДРЕС ПОЛЯ, а не ссылка на элемент: старый элемент после перерисовки
+ * выброшен, и возвращать фокус надо НОВОМУ — тому, что встало на его место.
+ * Адрес складывается из ключа строки (data-code / data-id / data-number) и
+ * имени поля (data-f); у одиночных полей хватает id.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+const EDITABLE_TAGS = new Set(['INPUT', 'SELECT', 'TEXTAREA']);
+
+// Ставится изнутри перерисовки, когда та сама решает, куда смотреть (см.
+// flashRow). Живёт ровно один вызов keepPlace и им же гасится.
+let placeClaimed = false;
+
+/** Ключ строки таблицы: по нему поле находится заново после перерисовки. */
+function rowKeyOf(el) {
+  const row = el.closest('[data-code],[data-id],[data-number]');
+  if (!row) return '';
+  return row.dataset.code || row.dataset.id || row.dataset.number || '';
+}
+
+// Имя поля в разметке: в таблицах справочников это data-f, в панели «⚙»
+// карточки — data-field. Держим оба, чтобы фокус возвращался и там, и там:
+// именно выпадающий список плательщика в карточке и жаловались, что «кидает».
+const fieldNameOf = (el) => el.dataset.f || el.dataset.field || '';
+
+function fieldAddress(el) {
+  if (!el || !EDITABLE_TAGS.has(el.tagName)) return null;
+  if (el.id) return { id: el.id };
+  const field = fieldNameOf(el);
+  if (!field) return null;
+  // data-i отличает строки каталога тарифов: ключа у них нет, только номер.
+  return { key: rowKeyOf(el), field, index: el.dataset.i || '' };
+}
+
+/**
+ * Найти поле по адресу. Перебором, а не селектором: в ключах лежат коды
+ * правил и номера телефонов, и собирать из них строку селектора — верный
+ * способ однажды получить синтаксическую ошибку на пустом месте.
+ */
+function findField(addr, root = document) {
+  if (!addr) return null;
+  if (addr.id) return document.getElementById(addr.id);
+  return $$('input, select, textarea', root).find((el) =>
+    fieldNameOf(el) === addr.field
+    && (el.dataset.i || '') === addr.index
+    && rowKeyOf(el) === addr.key) || null;
+}
+
+/**
+ * Перерисовать, оставив человека на месте.
+ *
+ * Прокрутку запоминаем у ВСЕХ прокручиваемых предков активного элемента, а не
+ * только у окна: настройки прокручиваются внутри модалки, список абонентов —
+ * внутри своего блока, а главный экран — самим окном.
+ */
+// Прокручиваемые блоки, которые переживают перерисовку не сами, а по адресу:
+// сам элемент может быть выброшен и создан заново, поэтому запоминаем его
+// МЕСТО (селектор + порядковый номер), а не ссылку.
+const SCROLL_BOXES = '.settings-content, .subscribers-list, .trip-list, .num-list';
+
+function keepPlace(redraw) {
+  // Гасим флаг НА ВХОДЕ, а не только на выходе: flashRow вызывают и снаружи
+  // keepPlace, и оставленный им взведённый флаг съел бы восстановление места
+  // у следующей, ни в чём не повинной перерисовки.
+  placeClaimed = false;
+  const boxes = $$(SCROLL_BOXES).map((el, i) => [i, el.scrollTop, el.scrollLeft]);
+  const pageX = window.scrollX;
+  const pageY = window.scrollY;
+
+  const was = document.activeElement;
+  const addr = fieldAddress(was);
+  // Каретку возвращаем только там, где она вообще есть: у input[type=number]
+  // и у select обращение к setSelectionRange бросает исключение.
+  let caret = null;
+  if (addr && was.setSelectionRange && ['text', 'search', 'textarea', 'url', 'tel', 'password']
+      .includes(was.type || 'textarea')) {
+    try { caret = [was.selectionStart, was.selectionEnd]; } catch (_) { caret = null; }
+  }
+
+  redraw();
+
+  // ПЕРЕРИСОВКА МОГЛА САМА ЗАХОТЕТЬ ДРУГОГО МЕСТА. Заводя новое правило,
+  // экран нарочно доводит взгляд до свежей строки (flashRow) — она садится в
+  // конец группы, обычно за краем окна. Возвращать человека на прежнее место
+  // в этом случае значит спрятать от него то, что он только что создал.
+  if (placeClaimed) { placeClaimed = false; return; }
+
+  const fresh = $$(SCROLL_BOXES);
+  boxes.forEach(([i, top, left]) => {
+    const el = fresh[i];
+    if (!el) return;
+    el.scrollTop = top;
+    el.scrollLeft = left;
+  });
+  window.scrollTo(pageX, pageY);
+
+  if (!addr) return;
+  const again = findField(addr);
+  if (!again) return;
+  // preventScroll — иначе браузер сам догоняет до поля и рушит только что
+  // восстановленную прокрутку.
+  try { again.focus({ preventScroll: true }); } catch (_) { return; }
+  if (caret) { try { again.setSelectionRange(caret[0], caret[1]); } catch (_) { /* не текст */ } }
 }
 
 /* ── Обмен с сервером ────────────────────────────────────────────────────── */
@@ -1659,9 +1862,12 @@ function bindChipPanel(panel) {
       const data = await postJSON(`/api/chips/${encodeURIComponent(number)}`, payload);
       flash('Сохранено');
       // Отчёт пересобирается на сервере: правило могло изменить суммы.
+      // Перерисовка списка — под keepPlace: человек стоит у своей карточки,
+      // а карточек в списке весь парк. Без этого выбор плательщика в «⚙»
+      // отбрасывал к самому верху отчёта — то самое «перекинуло обратно».
       if (data.view) {
         state.openPanels[number] = 'chip';
-        applyView(data.view);
+        keepPlace(() => applyView(data.view));
       }
     } catch (err) {
       flash(err.message, true);
@@ -2493,9 +2699,8 @@ function renderUsers(fresh = false) {
     }
     // ГРУППА «КТО ПЛАТИТ» — проверяется до фильтра и сильнее его.
     // Фильтр сужает список внутри группы; сама группа решает, чьи деньги мы
-    // смотрим, и подменять её фильтром нельзя.
-    if (state.payer === 'company' && isSelfPaid(s)) return false;
-    if (state.payer === 'self' && !isSelfPaid(s)) return false;
+    // смотрим, и подменять её фильтром нельзя. Само правило — в inPayerGroup.
+    if (!inPayerGroup(s, state.payer)) return false;
 
     // Фильтр по правилу номера: rule:unlimited, rule:personal и т.п.
     // Список таких пунктов собирается из действующих правил (см.
@@ -2517,7 +2722,6 @@ function renderUsers(fresh = false) {
       case 'roaming': return (s.roaming_cost || 0) > 0;
       case 'paid-by-us': return (pay.company_pays || 0) >= (pay.employee_pays || 0);
       case 'paid-by-user': return (pay.employee_pays || 0) > (pay.company_pays || 0);
-      case 'excluded': return !!pay.excluded;
       case 'noted': return !!((s.chip || {}).note || '').trim();
       default: return true;
     }
@@ -2538,10 +2742,9 @@ function renderUsers(fresh = false) {
   list = list.sort((a, b) => dir * (cmp[state.sort] || cmp.waste)(a, b));
   state.filtered = list;
 
-  const groupSize = state.payer === 'company'
-    ? state.subscribers.filter((s) => !isSelfPaid(s)).length
-    : (state.payer === 'self' ? state.subscribers.filter(isSelfPaid).length
-      : state.subscribers.length);
+  // Знаменатель «N из M» — размер ВЫБРАННОЙ группы, а не всего парка: иначе
+  // «12 из 153» в группе на дюжину номеров читается как потерянные сто сорок.
+  const groupSize = state.subscribers.filter((s) => inPayerGroup(s, state.payer)).length;
   setText('resultCount', `${list.length} из ${groupSize}`);
 
   if (!list.length) {
@@ -3649,14 +3852,32 @@ function payerSelect(name, value) {
     `<option value="${v}"${v === (value || 'auto') ? ' selected' : ''}>${t}</option>`).join('')}</select>`;
 }
 
-/** Общий обработчик сохранения справочника: шлём на сервер, применяем отчёт. */
-async function saveDictionary(url, payload, onDone) {
+/**
+ * Общий обработчик сохранения справочника: шлём на сервер, применяем отчёт,
+ * перерисовываем ТОЛЬКО то, что попросили, — и оставляем человека на месте.
+ *
+ * `redraw` — что перерисовать после ответа. Раньше здесь безусловно стоял
+ * renderSettings(), то есть вкладка собиралась заново ЦЕЛИКОМ на каждую
+ * правку. Это сбрасывало прокрутку в ноль и заодно вычищало всё, что человек
+ * успел набрать в полях вкладки (например, список в «Загрузить правила
+ * списком»). Разделы, у которых есть свой draw() по своим строкам, передают
+ * его сюда; остальным по-прежнему годится renderSettings.
+ *
+ * `after` вызывается уже ПОСЛЕ перерисовки, внутри той же обёртки: там ищут
+ * только что созданную строку, а до перерисовки её на экране ещё нет.
+ */
+async function saveDictionary(url, payload, { redraw = renderSettings, after = null } = {}) {
   try {
     const data = await postJSON(url, payload);
     if (data.chip_rules) state.chipRules = data.chip_rules;
-    if (data.view) applyView(data.view);
-    if (onDone) onDone(data);
-    renderSettings();
+    // Обе перерисовки — под одной обёрткой: applyView трогает главный экран,
+    // redraw — открытую вкладку. Порознь они дважды сбрасывали бы прокрутку,
+    // и вторая затирала бы восстановленную первой.
+    keepPlace(() => {
+      if (data.view) applyView(data.view);
+      redraw();
+      if (after) after(data);
+    });
     flashHint('Сохранено, отчёт пересчитан.');
   } catch (err) {
     flashHint(err.message, 'error');
@@ -3803,9 +4024,15 @@ function renderChipRuleSettings(el) {
       // нажатие молча перезаписывало первое правило вместо создания второго.
       return saveDictionary(CHIP_RULES_API, {
         label: k.addName, kind: k.kind, hex: '#6b7a74', sort_order: 900,
-      }, (data) => {
-        const fresh = (data.chip_rules || []).find((r) => !before.has(r.code));
-        newChipRule = fresh ? fresh.code : '';
+      }, {
+        redraw: draw,
+        // Свежая строка садится в конец своей группы, а групп две — вторая
+        // обычно за краем окна. Доводим взгляд до неё сами; keepPlace об этом
+        // узнаёт через flashRow и прежнее место не возвращает.
+        after: (data) => {
+          const fresh = (data.chip_rules || []).find((r) => !before.has(r.code));
+          if (fresh) flashRow(groups.querySelector(`.rule-row[data-code="${cssEsc(fresh.code)}"]`));
+        },
       });
     }
 
@@ -3813,11 +4040,15 @@ function renderChipRuleSettings(el) {
     if (!del) return;
     const k = CHIP_RULE_KINDS.find((x) => x.kind === del.closest('.rule-row').dataset.kind);
     if (!confirm(k.confirm)) return;
-    saveDictionary(`${CHIP_RULES_API}/delete`, { code: del.dataset.del });
+    saveDictionary(`${CHIP_RULES_API}/delete`, { code: del.dataset.del }, { redraw: draw });
   });
 
   // Правка любого поля строки сразу летит на сервер: отдельной кнопки
   // «сохранить» нет намеренно — она только плодит несохранённые состояния.
+  //
+  // Перерисовываем ТОЛЬКО таблицы правил (draw), а не вкладку целиком: ниже
+  // на этой же вкладке живёт поле «Загрузить правила списком», и полный
+  // перерендер стирал бы из него набранный текст на каждую правку строки.
   groups.addEventListener('change', (e) => {
     const row = e.target.closest('.rule-row');
     if (!row) return;
@@ -3826,20 +4057,10 @@ function renderChipRuleSettings(el) {
     $$('input, select', row).forEach((f) => {
       payload[f.dataset.f] = f.type === 'checkbox' ? f.checked : f.value;
     });
-    saveDictionary(CHIP_RULES_API, payload);
+    saveDictionary(CHIP_RULES_API, payload, { redraw: draw });
   });
 
   draw();
-  // Правило только что завели — довести до него взгляд. Новое правило садится
-  // в конец своей группы, а групп две, и вторая обычно за краем экрана:
-  // человек нажимал «+ Пометка», строка появлялась ниже видимой области, и
-  // выглядело это как «кнопка не сработала».
-  if (newChipRule) {
-    const row = groups.querySelector(`.rule-row[data-code="${cssEsc(newChipRule)}"]`);
-    newChipRule = '';
-    flashRow(row);
-  }
-
   bindBulkRuleForm();
 }
 
@@ -3966,10 +4187,6 @@ function bulkRulesReport(data) {
   return lines.join('');
 }
 
-// Код правила, заведённого последним нажатием «+ Цвет» / «+ Пометка».
-// Перерисовка идёт через renderSettings, то есть функция вызывается заново и
-// локальная переменная не переживёт — держим снаружи.
-let newChipRule = '';
 
 /** Экранирование строки для подстановки в селектор querySelector. */
 function cssEsc(value) {
@@ -3979,12 +4196,14 @@ function cssEsc(value) {
 /** Подсветить только что появившуюся строку и прокрутить к ней. */
 function flashRow(row) {
   if (!row) return;
+  // Говорим keepPlace не возвращать прокрутку: место здесь выбираем мы.
+  placeClaimed = true;
   row.scrollIntoView({ block: 'center', behavior: 'smooth' });
   row.classList.add('is-fresh');
   // Через полторы секунды подсветка снимается сама: она нужна ровно на то
   // время, пока глаз ищет, что изменилось.
   setTimeout(() => row.classList.remove('is-fresh'), 1500);
-  const name = row.querySelector('[data-f="label"], [data-f="match_value"]');
+  const name = row.querySelector('[data-f="label"], [data-f="match_value"], [data-f="name"]');
   if (name) name.focus();
 }
 
@@ -4080,7 +4299,9 @@ async function renderRoamingSettings(el) {
     try {
       const data = await postJSON(url, payload);
       roamingZones = data.zones || roamingZones;
-      draw();
+      // Таблица зон длинная и правится по ставке за раз: без keepPlace каждая
+      // поправленная цифра отбрасывала к первой зоне.
+      keepPlace(draw);
       flashHint('Ставки роуминга сохранены.');
     } catch (err) { flashHint(err.message, 'error'); }
   };
@@ -4171,8 +4392,13 @@ async function renderRuleSettings(el) {
     try {
       const data = await postJSON(url, payload);
       paymentRules = data.rules || paymentRules;
-      if (data.view) applyView(data.view);
-      draw();
+      // Правил под три десятка, и у каждого два выпадающих списка. Выбор
+      // «Корзина» или «Платит» в середине таблицы без keepPlace отбрасывал к
+      // её началу — ровно то, на что жаловались.
+      keepPlace(() => {
+        if (data.view) applyView(data.view);
+        draw();
+      });
       // Новое правило пустое: ни условия, ни пояснения. Среди трёх десятков
       // заполненных строк его глазом не найти, поэтому подсвечиваем и ставим
       // курсор прямо в поле условия — дописывать всё равно придётся.
@@ -4324,8 +4550,12 @@ async function renderNumberChangeSettings(el) {
             (c) => c.old_number === h.old_number || c.new_number === h.new_number
               || c.old_number === h.new_number || c.new_number === h.old_number)),
       };
-      if (data.view) applyView(data.view);
-      draw();
+      // Подсказок «похоже на смену номера» бывает десятки: связал одну —
+      // остальные должны остаться там же, где были, а не уехать к началу.
+      keepPlace(() => {
+        if (data.view) applyView(data.view);
+        draw();
+      });
       flashHint('Готово, отчёт пересчитан.');
     } catch (err) { flashHint(err.message, 'error'); }
   };
@@ -4441,7 +4671,7 @@ async function renderTripSettings(el) {
       // возвращает view: null, и список нужно обнулить вручную, иначе вкладка
       // покажет уже удалённые командировки.
       else state.trips = [];
-      renderSettings();
+      keepPlace(renderSettings);
       flashHint('Командировки удалены, отчёт пересчитан.');
     } catch (err) { flashHint(err.message, 'error'); }
   };
@@ -4677,7 +4907,10 @@ function renderTariffSettings(el) {
       });
     });
     $$('[data-del]', rows).forEach((btn) => {
-      btn.addEventListener('click', () => { state.tariffs.splice(Number(btn.dataset.del), 1); draw(); });
+      btn.addEventListener('click', () => {
+        state.tariffs.splice(Number(btn.dataset.del), 1);
+        keepPlace(draw);
+      });
     });
   };
   draw();
@@ -4688,12 +4921,16 @@ function renderTariffSettings(el) {
       minutes: 0, sms: 0, internet_mb: 0, unlimited_internet: false,
       rate_min: 0.18, rate_sms: 0.05, rate_mb: 0.05, note: '',
     });
+    // Новый тариф садится в конец списка — сюда и доводим взгляд, как это
+    // делают правила (flashRow). Прежнее место человеку тут уже не нужно.
     draw();
+    const rows = $$('.tariff-editor-row', $('tariffRows'));
+    flashRow(rows[rows.length - 1]);
   };
   $('tariffReset').onclick = async () => {
     try {
       state.tariffs = (await postJSON('/api/tariffs/reset', {})).tariffs;
-      draw();
+      keepPlace(draw);
       await refreshView();
       flashHint('Каталог сброшен к значениям по умолчанию.');
     } catch (err) { flashHint(err.message, 'error'); }
@@ -4784,7 +5021,12 @@ function renderWidgetSettings(el) {
   // Блоки перерисовываются целиком: график и матрица считают ширину по
   // контейнеру, а у скрытого элемента она равна нулю — без пересчёта
   // включённый блок остался бы с раскладкой «на 360 px».
-  const commit = () => {
+  // ВСЯ ПЕРЕРИСОВКА — ОДНИМ КУСКОМ ПОД keepPlace.
+  // Список блоков длинный, переключателей в нём под три десятка, и вкладка
+  // после каждого щелчка собиралась заново целиком — вместе с прокруткой,
+  // сброшенной в ноль. Выключил блок в середине списка — и ищи его снова
+  // сверху. Это и есть то самое «перекидывает обратно».
+  const commit = () => keepPlace(() => {
     saveWidgetPrefs();
     applyWidgetVisibility();
     if (state.subscribers.length) {
@@ -4795,7 +5037,7 @@ function renderWidgetSettings(el) {
       renderExtras();
     }
     renderWidgetSettings(el);
-  };
+  });
 
   draw();
 

@@ -379,6 +379,15 @@
       <span class="payer-tab-name">Платят сами за себя</span>
       <span class="payer-tab-n" id="payerCountSelf">0</span>
     </button>
+    <!-- ТОЧНО НЕ СЧИТАЕМ. Отдельная группа, а не пометка среди прочих: эти
+         номера не должны попадать ни в одну цифру над списком, но и пропасть
+         с глаз не могут — иначе снять с них пометку будет нечем. Состав
+         группы задаётся правилом с признаком «Искл.», поэтому меняется он
+         так же, как любое другое правило: мышью в карточке или списком. -->
+    <button class="payer-tab payer-tab-off" data-payer="excluded" type="button">
+      <span class="payer-tab-name">Не считаем</span>
+      <span class="payer-tab-n" id="payerCountExcluded">0</span>
+    </button>
     <span class="payer-tabs-note" id="payerTabsNote"></span>
   </section>
 
@@ -409,8 +418,11 @@
           <option value="trip">В командировке</option>
           <option value="roaming">Роуминг</option>
         </optgroup>
+        <!-- «Исключённые» отсюда убраны: теперь это не фильтр, а ГРУППА
+             «Не считаем» в переключателе над списком. Пунктом фильтра он
+             только путал: в группе «Платит компания» исключённых нет по
+             определению, и выбор давал пустой список. -->
         <optgroup label="Пометки" id="filterRuleGroup">
-          <option value="excluded">Исключённые</option>
           <option value="noted">С заметкой</option>
         </optgroup>
       </select>
