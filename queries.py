@@ -1122,10 +1122,11 @@ def category_rows(bundles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for bundle in bundles:
         items = bundle["items"]
         usage = domain.aggregate_usage(items)
-        cost = {c: 0.0 for c in domain.CATEGORY_ORDER}
-        for it in items:
-            if it["cat"] in cost and not domain.is_addon(it["service"]):
-                cost[it["cat"]] += it["cost"]
+        # Та же разбивка по категориям, что и в отчёте. Раньше цикл стоял
+        # здесь своей копией — и «начислено по интернету» на графике истории
+        # считалось отдельно от «начислено по интернету» в карточке. Пока
+        # правила одинаковые, копии совпадают; разъедутся они молча.
+        cost = domain.category_costs(items)
         out.append({
             "month": bundle["month"],
             "voice_min": usage["voice_min"],

@@ -26,6 +26,7 @@ domain.py — прикладная логика («что означают да�
 from __future__ import annotations
 
 import functools
+import heapq
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -1069,6 +1070,56 @@ def is_fmc(tariff: dict[str, Any]) -> bool:
             or "fmc" in str(tariff.get("name") or "").lower())
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  ПОДГОТОВЛЕННЫЙ КАТАЛОГ
+#
+#      Черешню перебирают один раз, когда принесли с рынка:
+#      гнилую — вон, с черенками — в кучку, чистую — в миску.
+#      А не так, чтобы к каждому пирогу заново перетряхивать всё ведро,
+#      да ещё и удивляться, отчего это выпечка к ночи поспела.
+#
+#  Каталог за отчёт ОДИН и не меняется, а `compare_tariffs` звалась на каждый
+#  номер и каждый раз делала над ним одну и ту же работу заново:
+#
+#     * искала текущий тариф перебором — полсотни сравнений на номер;
+#     * отбирала половину каталога по kind;
+#     * прогоняла `is_fmc` по каждому тарифу, а та дважды приводит строку к
+#       нижнему регистру — полсотни новых строк на номер.
+#
+#  На парке в полторы тысячи номеров это семьдесят пять тысяч повторов
+#  расчёта, у которого ровно два возможных исхода.
+#
+#  Кэш на ОДИН каталог и по ТОЖДЕСТВУ объекта (`is`, не `==`). Каждый отчёт
+#  собирает каталог заново (_month_context), поэтому индекс живёт ровно один
+#  отчёт и устареть не успевает. Сравнение по `is` тут не оптимизация, а
+#  условие безопасности: подменили каталог — получили новый индекс, а не
+#  чужие пулы к чужим тарифам.
+#
+#  Потоки. Присвоение кортежа и его чтение в CPython атомарны, блокировка не
+#  нужна: худшее, что случится при гонке, — два потока посчитают индекс
+#  дважды и запишут равнозначные значения.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CATALOG_INDEX: tuple[Any, dict[str, Any]] | None = None
+
+
+def _catalog_index(catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    """Каталог, разобранный для подбора: поиск по коду и готовые пулы."""
+    cached = _CATALOG_INDEX
+    if cached is not None and cached[0] is catalog:
+        return cached[1]
+
+    pools: dict[str, list[dict[str, Any]]] = {}
+    for kind in ("voice", "internet"):
+        same = [t for t in catalog if t["kind"] == kind] or list(catalog)
+        # Комбинации с FMC из подбора убираем — см. шапку раздела выше.
+        pools[kind] = [t for t in same if not is_fmc(t)] or same
+
+    index = {"by_id": {t["id"]: t for t in catalog}, "pools": pools}
+    globals()["_CATALOG_INDEX"] = (catalog, index)
+    return index
+
+
 def compare_tariffs(usage: dict[str, float], catalog: list[dict[str, Any]],
                     current_id: Any = None) -> list[dict[str, Any]]:
     """Оценка месяца на подходящих тарифах, от дешёвого к дорогому.
@@ -1084,22 +1135,30 @@ def compare_tariffs(usage: dict[str, float], catalog: list[dict[str, Any]],
     собираем только для тех, кто кому-то нужен. Порядок и содержимое
     результата от этого не меняются.
     """
+    index = _catalog_index(catalog)
+
     # Текущий тариф ищем ДО выбора ветки каталога: он же и решает, телефон
     # это или модем. Раньше он доставался в самом низу, только чтобы попасть
     # в список сравнения, — и ветка выбиралась вслепую, по одному потреблению.
-    current = (next((t for t in catalog if t["id"] == current_id), None)
-               if current_id is not None else None)
+    current = index["by_id"].get(current_id) if current_id is not None else None
 
     kind = "internet" if _fits_internet_only(usage, current) else "voice"
-    candidates = [t for t in catalog if t["kind"] == kind] or catalog
-    # Комбинации с FMC из подбора убираем — см. шапку раздела выше.
-    candidates = [t for t in candidates if not is_fmc(t)] or candidates
+    # Готовые пулы: нужная половина каталога, уже без комбинаций с FMC.
+    # Считаются один раз на отчёт, а не заново на каждый номер.
+    candidates = index["pools"][kind]
 
-    ranked = sorted(candidates, key=lambda t: (_month_total_on(t, usage), t["fee"]))
-    keep = ranked[:TARIFF_CHOICES]
-    if current is not None and current not in keep:
+    # nsmallest, а не полная сортировка: из полусотни тарифов нужны пять
+    # дешёвых, и городить ради них полный порядок незачем.
+    keep = heapq.nsmallest(TARIFF_CHOICES, candidates,
+                           key=lambda t: (_month_total_on(t, usage), t["fee"]))
+    if current is not None and not any(t["id"] == current["id"] for t in keep):
         # Текущий тариф нужен всегда, даже если он далеко не в лидерах: по
         # нему считается «сколько платим сейчас».
+        #
+        # Сравниваем по id, а не оператором `in`. Тарифы — словари на
+        # тринадцать полей, и `current not in keep` сличал их ПОЗНАЧЕНИЮ:
+        # до пяти полных сравнений словарей на каждый номер парка. Ключ у
+        # тарифа один, по нему и смотрим.
         keep.append(current)
 
     estimates = [estimate_cost(t, usage) for t in keep]
