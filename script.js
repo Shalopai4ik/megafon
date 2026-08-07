@@ -1181,10 +1181,21 @@ function renderKpis() {
   const psAll = state.paymentSummary;
   if (psAll) {
     setText('kpiChargedAll', money(psAll.charged_all));
-    setText('kpiChargedAllSub', psAll.off_count
-      ? `${psAll.numbers_all} ${plural(psAll.numbers_all, 'номер', 'номера', 'номеров')} по счёту`
-        + ` · ${money(psAll.charged_off)} не считаем`
-      : `${psAll.numbers_all} ${plural(psAll.numbers_all, 'номер', 'номера', 'номеров')} по счёту`);
+
+    // Сумма здесь считается ПО АБОНЕНТАМ, а в шапке счёта стоит своя,
+    // заявленная оператором. Обычно они совпадают копейка в копейку — на том
+    // и держится смысл виджета «сверь с бумагой». А вот когда файл пришёл
+    // обрезанным (выгрузили не весь парк), они расходятся в разы, и молчать
+    // об этом нельзя: человек сверит с бумагой, не сойдётся, и виноватой
+    // окажется программа. Расхождение уже посчитано при загрузке
+    // (server._bill_checksum) — остаётся его показать.
+    const check = (state.invoice || {}).checksum || {};
+    const parts = [`${psAll.numbers_all} ${plural(psAll.numbers_all, 'номер', 'номера', 'номеров')} по счёту`];
+    if (psAll.off_count) parts.push(`${money(psAll.charged_off)} не считаем`);
+    if (check.checked && !check.ok) parts.push(`в шапке счёта ${money(check.declared)} — файл неполный`);
+    setText('kpiChargedAllSub', parts.join(' · '));
+    const card = document.querySelector('[data-widget="kpiChargedAllCard"]');
+    if (card) card.classList.toggle('kpi-tone-danger', Boolean(check.checked && !check.ok));
   }
 
   setText('kpiCost', money(s.total_cost));
