@@ -106,7 +106,8 @@ const WIDGET_GROUPS = [
     title: 'Показатели сверху', container: 'kpiPanel',
     items: [
       { id: 'kpiCountCard', label: 'Абонентов', note: 'сколько номеров в периоде' },
-      { id: 'kpiCostCard', label: 'Начислено за период', note: 'сумма счёта и средний чек' },
+      { id: 'kpiChargedAllCard', label: 'Итого начислено всего', note: 'весь счёт целиком, как у оператора' },
+      { id: 'kpiCostCard', label: 'Начислено за период', note: 'то же за вычетом исключённых' },
       { id: 'kpiCompanyCard', label: 'Платит компания', note: 'абонплата и опции по правилам' },
       { id: 'kpiEmployeeCard', label: 'Платит сотрудник', note: 'перерасход и роуминг' },
       { id: 'kpiWasteCard', label: 'Платим впустую', note: 'оплаченный, но не выбранный пакет' },
@@ -1172,8 +1173,24 @@ function renderKpis() {
   setText('kpiCountSub', (state.month ? formatMonth(state.month) : '')
     + (trips ? ` · ${trips} в командировке` : ''));
 
+  // ── Две суммы счёта: «всего» и «за вычетом исключённых» ─────────────
+  // Верхняя сверяется с бумагой оператора и потому не знает ни про какие
+  // правила. Нижняя — рабочая: из неё уже убрали тех, кого мы не считаем.
+  // Подпись под каждой объясняет, чем она отличается от соседней, иначе две
+  // разные цифры под одинаковыми словами читаются как ошибка программы.
+  const psAll = state.paymentSummary;
+  if (psAll) {
+    setText('kpiChargedAll', money(psAll.charged_all));
+    setText('kpiChargedAllSub', psAll.off_count
+      ? `${psAll.numbers_all} ${plural(psAll.numbers_all, 'номер', 'номера', 'номеров')} по счёту`
+        + ` · ${money(psAll.charged_off)} не считаем`
+      : `${psAll.numbers_all} ${plural(psAll.numbers_all, 'номер', 'номера', 'номеров')} по счёту`);
+  }
+
   setText('kpiCost', money(s.total_cost));
-  setText('kpiCostSub', `в среднем ${money(s.avg_cost)} на номер`);
+  setText('kpiCostSub', (psAll && psAll.off_count
+    ? `без ${psAll.off_count} исключённых · `
+    : '') + `в среднем ${money(s.avg_cost)} на номер`);
 
   setText('kpiEconomy', money(s.economy_potential));
   const changing = (s.by_action.raise || 0) + (s.by_action.lower || 0) + (s.by_action.switch || 0);

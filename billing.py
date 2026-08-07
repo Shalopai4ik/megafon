@@ -530,6 +530,28 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     # и её сумма: группу показывают на экране, и группа без итога — это
     # карточки, про которые нельзя сказать, сколько там денег.
     excluded_records = [r for r in records if is_excluded(r)]
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  ДВЕ СУММЫ СЧЁТА, А НЕ ОДНА
+    #
+    #      Огурец с помидором в одной банке лежат, а солятся врозь:
+    #      тот хрустит, этот киснет — и рассол у них разный.
+    #      Кто их в общую кучу свалил, тот зимой и остался ни с чем,
+    #      а хозяин достал две банки и обе поставил на стол.
+    #
+    #  `charged_all` — ВЕСЬ счёт, все номера, включая исключённые и
+    #  самоплатящих. Ровно та сумма, что стоит в «Итого начислено» у
+    #  оператора: её сверяют с бумажкой, и она не имеет права отличаться.
+    #
+    #  `total_cost` в сводке (domain.build_summary) — сумма ПОСЛЕ исключений,
+    #  деньги, которыми компания реально управляет.
+    #
+    #  Раньше наверху висела только вторая. Человек открывал счёт, видел
+    #  78 133 ₽ на бумаге и 75 291 ₽ на экране — и дальше разговаривать было
+    #  не о чем: программа «врёт». Теперь показываются обе, и разница между
+    #  ними подписана числом исключённых номеров.
+    # ═══════════════════════════════════════════════════════════════════════
+    charged_all = sum(float(r["total"]) for r in records)
     excluded = len(excluded_records)
     self_paid = [r for r in records if is_self_paid(r) and not is_excluded(r)]
 
@@ -556,6 +578,15 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "excluded_count": excluded,
         "excluded_total": round(sum(float(r["total"]) for r in excluded_records), 2),
         "counted": len(counted),
+        # Весь счёт целиком и то, что из него вычли. Вторая цифра — не сумма
+        # excluded_total и self_paid_total «на глаз», а именно разность: если
+        # завтра появится третья причина не считать номер, подпись под
+        # виджетом не соврёт.
+        "charged_all": round(charged_all, 2),
+        "charged_counted": round(sum(float(r["total"]) for r in counted), 2),
+        "charged_off": round(charged_all - sum(float(r["total"]) for r in counted), 2),
+        "off_count": len(records) - len(counted),
+        "numbers_all": len(records),
         # Группа «платят сами за себя» — для переключателя над списком.
         "self_paid_count": len(self_paid),
         "self_paid_total": round(sum(float(r["total"]) for r in self_paid), 2),

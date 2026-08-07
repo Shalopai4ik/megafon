@@ -177,6 +177,15 @@
       <div class="kpi-label">Абонентов</div><div id="kpiCount" class="kpi-value">0</div>
       <div id="kpiCountSub" class="kpi-sub"></div>
     </div>
+    <!-- ДВЕ СУММЫ СЧЁТА ИДУТ ПАРОЙ И ВСЕГДА РЯДОМ.
+         Первая — как в бумаге оператора, все номера без разбора.
+         Вторая — то же самое минус исключённые и самоплатящие.
+         Порознь они бессмысленны: одну не с чем сверить, вторую нечем
+         объяснить. См. billing.summarize, поле charged_all. -->
+    <div class="kpi-card" data-widget="kpiChargedAllCard">
+      <div class="kpi-label">Итого начислено всего</div><div id="kpiChargedAll" class="kpi-value">0 ₽</div>
+      <div id="kpiChargedAllSub" class="kpi-sub"></div>
+    </div>
     <div class="kpi-card" data-widget="kpiCostCard">
       <div class="kpi-label">Начислено за период</div><div id="kpiCost" class="kpi-value">0 ₽</div>
       <div id="kpiCostSub" class="kpi-sub"></div>
